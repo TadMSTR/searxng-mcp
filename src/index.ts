@@ -5,7 +5,7 @@ import { z } from "zod";
 
 const SEARXNG_URL = "http://localhost:8081";
 const FIRECRAWL_URL = "http://localhost:3002";
-const FIRECRAWL_API_KEY = "placeholder-local"; // auth disabled on local instance
+const FIRECRAWL_API_KEY = process.env.FIRECRAWL_API_KEY ?? "placeholder-local";
 const RERANKER_URL = "http://localhost:8787";
 
 const CategorySchema = z
@@ -52,6 +52,29 @@ interface RerankResponse {
   results: RerankResult[];
 }
 
+// --- URL safety ---
+
+function assertPublicUrl(url: string): void {
+  const { hostname, protocol } = new URL(url);
+  if (!/^https?:$/.test(protocol)) {
+    throw new Error(`Only http/https URLs are supported`);
+  }
+  const blocked = [
+    /^localhost$/i,
+    /^127\./,
+    /^0\.0\.0\.0$/,
+    /^10\./,
+    /^192\.168\./,
+    /^172\.(1[6-9]|2[0-9]|3[01])\./,
+    /^host\.docker\.internal$/i,
+    /^fc00:/i,
+    /^fe80:/i,
+  ];
+  if (blocked.some((r) => r.test(hostname))) {
+    throw new Error(`Internal/private addresses are not allowed`);
+  }
+}
+
 // --- SearXNG ---
 
 async function searxSearch(
@@ -69,7 +92,9 @@ async function searxSearch(
     pageno: "1",
   });
 
-  const res = await fetch(`${SEARXNG_URL}/search?${params}`);
+  const res = await fetch(`${SEARXNG_URL}/search?${params}`, {
+    signal: AbortSignal.timeout(10000),
+  });
   if (!res.ok) {
     throw new Error(`SearXNG error: ${res.status} ${res.statusText}`);
   }
@@ -103,7 +128,9 @@ async function rerank(
   }
 
   const data = (await res.json()) as RerankResponse;
-  return data.results.map((r) => results[r.index]);
+  return data.results
+    .filter((r) => r.index >= 0 && r.index < results.length)
+    .map((r) => results[r.index]);
 }
 
 async function rerankWithFallback(
@@ -124,6 +151,7 @@ async function rerankWithFallback(
 async function firecrawlScrape(
   url: string
 ): Promise<{ title: string; url: string; text: string }> {
+  assertPublicUrl(url);
   const res = await fetch(`${FIRECRAWL_URL}/v1/scrape`, {
     method: "POST",
     headers: {
