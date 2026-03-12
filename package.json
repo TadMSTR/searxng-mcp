@@ -1,0 +1,21 @@
+{
+  "name": "searxng-mcp",
+  "version": "1.0.0",
+  "description": "MCP server for SearXNG — private web search for Claude Code",
+  "main": "build/src/index.js",
+  "type": "module",
+  "scripts": {
+    "build": "tsc && chmod 755 build/src/index.js"
+  },
+  "keywords": ["searxng", "mcp", "search"],
+  "author": "TadMSTR",
+  "license": "MIT",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.7.0",
+    "zod": "^3.24.2"
+  },
+  "devDependencies": {
+    "@types/node": "^22.13.10",
+    "typescript": "^5.8.2"
+  }
+}
