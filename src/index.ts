@@ -4,10 +4,15 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 
 const SEARXNG_URL = "http://localhost:8081";
+const FIRECRAWL_URL = "http://localhost:3002";
+const FIRECRAWL_API_KEY = "placeholder-local"; // auth disabled on local instance
+const RERANKER_URL = "http://localhost:8787";
 
 const CategorySchema = z
   .enum(["general", "news", "it", "science"])
   .default("general");
+
+// --- SearXNG types ---
 
 interface SearxResult {
   title: string;
@@ -22,11 +27,41 @@ interface SearxResponse {
   results: SearxResult[];
 }
 
+// --- Firecrawl types ---
+
+interface FirecrawlScrapeResponse {
+  success: boolean;
+  data?: {
+    markdown?: string;
+    metadata?: {
+      title?: string;
+      sourceURL?: string;
+    };
+  };
+  error?: string;
+}
+
+// --- Reranker types ---
+
+interface RerankResult {
+  index: number;
+  relevance_score: number;
+}
+
+interface RerankResponse {
+  results: RerankResult[];
+}
+
+// --- SearXNG ---
+
 async function searxSearch(
   query: string,
   category: string,
   numResults: number
 ): Promise<SearxResult[]> {
+  // Fetch more than needed so reranker has a larger pool to work with
+  const fetchCount = Math.min(numResults * 3, 20);
+
   const params = new URLSearchParams({
     q: query,
     format: "json",
@@ -40,8 +75,82 @@ async function searxSearch(
   }
 
   const data = (await res.json()) as SearxResponse;
-  return data.results.slice(0, numResults);
+  return data.results.slice(0, fetchCount);
 }
+
+// --- Reranker ---
+
+async function rerank(
+  query: string,
+  results: SearxResult[],
+  topN: number
+): Promise<SearxResult[]> {
+  if (results.length === 0) return results;
+
+  const documents = results.map(
+    (r) => `${r.title}. ${r.content ?? ""}`.trim()
+  );
+
+  const res = await fetch(`${RERANKER_URL}/v1/rerank`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ query, documents, top_n: topN }),
+    signal: AbortSignal.timeout(5000),
+  });
+
+  if (!res.ok) {
+    throw new Error(`Reranker error: ${res.status} ${res.statusText}`);
+  }
+
+  const data = (await res.json()) as RerankResponse;
+  return data.results.map((r) => results[r.index]);
+}
+
+async function rerankWithFallback(
+  query: string,
+  results: SearxResult[],
+  topN: number
+): Promise<SearxResult[]> {
+  try {
+    return await rerank(query, results, topN);
+  } catch {
+    // Reranker unavailable — fall back to SearXNG order
+    return results.slice(0, topN);
+  }
+}
+
+// --- Firecrawl ---
+
+async function firecrawlScrape(
+  url: string
+): Promise<{ title: string; url: string; text: string }> {
+  const res = await fetch(`${FIRECRAWL_URL}/v1/scrape`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${FIRECRAWL_API_KEY}`,
+    },
+    body: JSON.stringify({ url, formats: ["markdown"] }),
+    signal: AbortSignal.timeout(15000),
+  });
+
+  if (!res.ok) {
+    throw new Error(`Firecrawl error: ${res.status} ${res.statusText}`);
+  }
+
+  const data = (await res.json()) as FirecrawlScrapeResponse;
+
+  if (!data.success || !data.data) {
+    throw new Error(data.error ?? "Firecrawl returned no data");
+  }
+
+  const title = data.data.metadata?.title ?? url;
+  const text = (data.data.markdown ?? "").slice(0, 8000);
+
+  return { title, url: data.data.metadata?.sourceURL ?? url, text };
+}
+
+// --- Formatting ---
 
 function formatResults(results: SearxResult[]): string {
   if (results.length === 0) return "No results found.";
@@ -56,56 +165,16 @@ function formatResults(results: SearxResult[]): string {
     .join("\n\n");
 }
 
-function stripHtml(html: string): string {
-  // Remove scripts and styles entirely
-  let text = html.replace(/<script[^>]*>[\s\S]*?<\/script>/gi, "");
-  text = text.replace(/<style[^>]*>[\s\S]*?<\/style>/gi, "");
-  // Replace block-level elements with newlines
-  text = text.replace(/<\/?(p|br|div|h[1-6]|li|tr|blockquote)[^>]*>/gi, "\n");
-  // Strip remaining tags
-  text = text.replace(/<[^>]+>/g, "");
-  // Decode common HTML entities
-  text = text
-    .replace(/&amp;/g, "&")
-    .replace(/&lt;/g, "<")
-    .replace(/&gt;/g, ">")
-    .replace(/&quot;/g, '"')
-    .replace(/&#39;/g, "'")
-    .replace(/&nbsp;/g, " ");
-  // Collapse whitespace
-  text = text.replace(/[ \t]+/g, " ");
-  text = text.replace(/\n{3,}/g, "\n\n");
-  return text.trim();
-}
-
-async function fetchAndExtract(
-  url: string
-): Promise<{ title: string; url: string; text: string }> {
-  const res = await fetch(url, {
-    headers: { "User-Agent": "Mozilla/5.0 (compatible; searxng-mcp/1.0)" },
-    signal: AbortSignal.timeout(10000),
-  });
-
-  if (!res.ok) {
-    throw new Error(`Fetch error: ${res.status} ${res.statusText}`);
-  }
-
-  const html = await res.text();
-  const titleMatch = html.match(/<title[^>]*>([^<]*)<\/title>/i);
-  const title = titleMatch ? titleMatch[1].trim() : url;
-  const text = stripHtml(html).slice(0, 8000);
-
-  return { title, url, text };
-}
+// --- Server ---
 
 const server = new McpServer({
   name: "searxng-mcp",
-  version: "1.0.0",
+  version: "2.0.0",
 });
 
 server.tool(
   "search",
-  "Search the web via the local SearXNG instance. Returns structured results with title, URL, snippet, source engine, and publication date where available. Prefer this over built-in web search.",
+  "Search the web via the local SearXNG instance with reranking. Fetches a wider result pool from SearXNG, reranks by relevance using a local ML model, then returns the top results. Prefer this over the built-in WebSearch tool.",
   {
     query: z.string().describe("Search query"),
     num_results: z
@@ -119,14 +188,15 @@ server.tool(
     ),
   },
   async ({ query, num_results, category }) => {
-    const results = await searxSearch(query, category, num_results);
-    return { content: [{ type: "text", text: formatResults(results) }] };
+    const raw = await searxSearch(query, category, num_results);
+    const ranked = await rerankWithFallback(query, raw, num_results);
+    return { content: [{ type: "text", text: formatResults(ranked) }] };
   }
 );
 
 server.tool(
   "search_and_fetch",
-  "Search the web and fetch the full text of the top result. Use when a snippet is not enough and you need the full article or page content.",
+  "Search the web, rerank results, then fetch the full content of the top result using Firecrawl (handles JS-rendered pages). Returns the result list plus clean markdown of the top page.",
   {
     query: z.string().describe("Search query"),
     category: CategorySchema.describe(
@@ -134,18 +204,19 @@ server.tool(
     ),
   },
   async ({ query, category }) => {
-    const results = await searxSearch(query, category, 5);
-    if (results.length === 0) {
+    const raw = await searxSearch(query, category, 5);
+    if (raw.length === 0) {
       return { content: [{ type: "text", text: "No results found." }] };
     }
 
-    const searchText = formatResults(results);
-    const topUrl = results[0].url;
-    let fetchedSection = "";
+    const ranked = await rerankWithFallback(query, raw, 5);
+    const searchText = formatResults(ranked);
+    const topUrl = ranked[0].url;
 
+    let fetchedSection = "";
     try {
-      const fetched = await fetchAndExtract(topUrl);
-      fetchedSection = `\n\n--- Full content: ${fetched.title} ---\n${fetched.text}`;
+      const scraped = await firecrawlScrape(topUrl);
+      fetchedSection = `\n\n--- Full content: ${scraped.title} ---\n${scraped.text}`;
     } catch (e) {
       fetchedSection = `\n\n--- Could not fetch top result: ${e instanceof Error ? e.message : String(e)} ---`;
     }
@@ -156,12 +227,12 @@ server.tool(
 
 server.tool(
   "fetch_url",
-  "Fetch and extract readable text from any URL. Strips HTML tags and returns title plus content (truncated to 8000 characters). Useful for reading articles linked in search results.",
+  "Fetch and extract readable content from any URL using Firecrawl (handles JS-rendered pages, returns clean markdown). Content truncated to 8000 characters.",
   {
-    url: z.string().url().describe("URL to fetch and extract text from"),
+    url: z.string().url().describe("URL to fetch and extract content from"),
   },
   async ({ url }) => {
-    const { title, url: fetchedUrl, text } = await fetchAndExtract(url);
+    const { title, url: fetchedUrl, text } = await firecrawlScrape(url);
     const output = [`Title: ${title}`, `URL: ${fetchedUrl}`, "", text].join(
       "\n"
     );
