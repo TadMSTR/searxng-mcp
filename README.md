@@ -27,12 +27,16 @@ MCP client (stdio)
       │
       ▼
   searxng-mcp
-      ├── search query ──→ SearXNG ($SEARXNG_URL)      ──→ raw results
-      ├── rerank ─────────→ Reranker ($RERANKER_URL)    ──→ ranked results
-      └── fetch content ──→ Firecrawl ($FIRECRAWL_URL)  ──→ page markdown
+      ├── search ──────────→ SearXNG ($SEARXNG_URL)      → raw results
+      ├── rerank ──────────→ Reranker ($RERANKER_URL)    → ranked results
+      │                      (fallback: SearXNG order if reranker unavailable)
+      └── fetch content ───┬→ GitHub API (github.com)    → markdown
+                           └→ Firecrawl ($FIRECRAWL_URL) → page markdown
 ```
 
-All three backing services are expected to be running and reachable. The reranker is optional — if unavailable, the server falls back to SearXNG's native result ordering.
+![Fetch routing](assets/fetch-routing.drawio.svg)
+
+SearXNG and Firecrawl are required. The reranker is optional — if unavailable, the server falls back to SearXNG's native result ordering.
 
 ## Transport
 
