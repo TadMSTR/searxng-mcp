@@ -3,10 +3,10 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 
-const SEARXNG_URL = "http://localhost:8081";
-const FIRECRAWL_URL = "http://localhost:3002";
+const SEARXNG_URL = process.env.SEARXNG_URL ?? "http://localhost:8081";
+const FIRECRAWL_URL = process.env.FIRECRAWL_URL ?? "http://localhost:3002";
 const FIRECRAWL_API_KEY = process.env.FIRECRAWL_API_KEY ?? "placeholder-local";
-const RERANKER_URL = "http://localhost:8787";
+const RERANKER_URL = process.env.RERANKER_URL ?? "http://localhost:8787";
 
 const CategorySchema = z
   .enum(["general", "news", "it", "science"])
