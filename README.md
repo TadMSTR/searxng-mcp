@@ -6,11 +6,19 @@ Designed for use with Claude Code and LibreChat agents that need web search with
 
 ## Tools
 
-| Tool | Description |
-|------|-------------|
-| `search` | Search the web via SearXNG with local reranking. Fetches a wider result pool, reranks by relevance, returns top N results. |
-| `search_and_fetch` | Search, rerank, then fetch full content of the top result via Firecrawl (handles JS-rendered pages). |
-| `fetch_url` | Fetch and extract readable markdown content from any public URL via Firecrawl. Truncated to 8,000 characters. |
+| Tool | Description | Key Parameters |
+|------|-------------|----------------|
+| `search` | Search via SearXNG with local reranking. Fetches a wider result pool, reranks by relevance, returns top N. | `query`, `num_results` (1–20), `category`, `time_range` |
+| `search_and_fetch` | Search, rerank, then fetch full content of the top result(s) via Firecrawl (handles JS-rendered pages). | `query`, `category`, `time_range`, `fetch_count` (1–3) |
+| `fetch_url` | Fetch and extract readable markdown from any public URL via Firecrawl. Truncated to 8,000 characters. | `url` |
+
+### Parameters
+
+**`category`** — `general` (default), `news`, `it`, `science`
+
+**`time_range`** — `day`, `week`, `month`, `year` — limits results by publication date. Omit for all-time results.
+
+**`fetch_count`** — number of top reranked results to fetch full content for (default `1`, max `3`). The 8,000-character content budget is divided evenly across fetched pages.
 
 ## Architecture
 
@@ -19,12 +27,12 @@ MCP client (stdio)
       │
       ▼
   searxng-mcp
-      ├── search query ──→ SearXNG (port 8081) ──→ raw results
-      ├── rerank ─────────→ Reranker (port 8787) ──→ ranked results
-      └── fetch_url ──────→ Firecrawl (port 3002) ──→ page markdown
+      ├── search query ──→ SearXNG ($SEARXNG_URL)      ──→ raw results
+      ├── rerank ─────────→ Reranker ($RERANKER_URL)    ──→ ranked results
+      └── fetch content ──→ Firecrawl ($FIRECRAWL_URL)  ──→ page markdown
 ```
 
-All three backing services are expected to be running locally on localhost. The reranker is optional — if unavailable, the server falls back to SearXNG's native result ordering.
+All three backing services are expected to be running and reachable. The reranker is optional — if unavailable, the server falls back to SearXNG's native result ordering.
 
 ## Transport
 
@@ -34,9 +42,9 @@ stdio (compatible with Claude Code MCP plugin and LibreChat `stdio` config).
 
 - Node.js 22+
 - pnpm (or npm)
-- A running [SearXNG](https://github.com/searxng/searxng) instance on port 8081
-- A running reranker on port 8787 (optional — falls back gracefully if not available)
-- A running [Firecrawl](https://github.com/mendableai/firecrawl) instance on port 3002
+- A running [SearXNG](https://github.com/searxng/searxng) instance
+- A running reranker exposing a Jina-compatible `/v1/rerank` endpoint (optional)
+- A running [Firecrawl](https://github.com/mendableai/firecrawl) instance
 
 ### SearXNG
 
@@ -55,19 +63,18 @@ The reranker must expose a Jina-compatible `/v1/rerank` endpoint. A lightweight 
 
 ### Firecrawl
 
-Any Firecrawl-compatible instance works. The local [firecrawl-simple](https://github.com/mendableai/firecrawl/tree/main/apps/api) deployment is sufficient. Set the `FIRECRAWL_API_KEY` environment variable if your instance requires authentication (defaults to `placeholder-local` for local deployments that skip auth).
+Any Firecrawl-compatible instance works. The local [firecrawl-simple](https://github.com/mendableai/firecrawl/tree/main/apps/api) deployment is sufficient. Set `FIRECRAWL_API_KEY` if your instance requires authentication (defaults to `placeholder-local` for local deployments that skip auth).
 
 ## Configuration
 
-The server uses hardcoded localhost addresses by default:
+All service URLs are configurable via environment variables. Defaults point to localhost.
 
-| Service | Default |
-|---------|---------|
-| SearXNG | `http://localhost:8081` |
-| Firecrawl | `http://localhost:3002` |
-| Reranker | `http://localhost:8787` |
-
-If your services run on different ports, update the constants at the top of `src/index.ts` and rebuild.
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `SEARXNG_URL` | `http://localhost:8081` | SearXNG instance URL |
+| `FIRECRAWL_URL` | `http://localhost:3002` | Firecrawl instance URL |
+| `RERANKER_URL` | `http://localhost:8787` | Reranker instance URL |
+| `FIRECRAWL_API_KEY` | `placeholder-local` | Firecrawl API key (if required) |
 
 ## Build
 
@@ -87,7 +94,13 @@ Output: `build/src/index.js`
   "mcpServers": {
     "searxng": {
       "command": "node",
-      "args": ["/path/to/searxng-mcp/build/src/index.js"]
+      "args": ["/path/to/searxng-mcp/build/src/index.js"],
+      "env": {
+        "SEARXNG_URL": "http://localhost:8081",
+        "FIRECRAWL_URL": "http://localhost:3002",
+        "RERANKER_URL": "http://localhost:8787",
+        "FIRECRAWL_API_KEY": "placeholder-local"
+      }
     }
   }
 }
@@ -103,19 +116,11 @@ mcpServers:
     args:
       - /path/to/searxng-mcp/build/src/index.js
     env:
-      FIRECRAWL_API_KEY: your-api-key-if-required
+      SEARXNG_URL: http://localhost:8081
+      FIRECRAWL_URL: http://localhost:3002
+      RERANKER_URL: http://localhost:8787
+      FIRECRAWL_API_KEY: placeholder-local
 ```
-
-## Search Categories
-
-The `search` and `search_and_fetch` tools accept a `category` parameter:
-
-| Category | Use for |
-|----------|---------|
-| `general` | Default — broad web search |
-| `news` | Recent news articles |
-| `it` | Technical/IT topics |
-| `science` | Academic and scientific content |
 
 ## URL Safety
 
