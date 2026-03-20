@@ -213,7 +213,7 @@ server.tool(
   {
     query: z.string().describe("Search query"),
     num_results: z
-      .number()
+      .coerce.number()
       .min(1)
       .max(20)
       .default(5)
@@ -244,7 +244,7 @@ server.tool(
       "Limit results to: day, week, month, or year (omit for all time)"
     ),
     fetch_count: z
-      .number()
+      .coerce.number()
       .min(1)
       .max(3)
       .default(1)
