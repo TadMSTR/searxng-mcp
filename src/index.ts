@@ -12,6 +12,10 @@ const CategorySchema = z
   .enum(["general", "news", "it", "science"])
   .default("general");
 
+const TimeRangeSchema = z
+  .enum(["day", "week", "month", "year"])
+  .optional();
+
 // --- SearXNG types ---
 
 interface SearxResult {
@@ -80,7 +84,8 @@ function assertPublicUrl(url: string): void {
 async function searxSearch(
   query: string,
   category: string,
-  numResults: number
+  numResults: number,
+  timeRange?: string
 ): Promise<SearxResult[]> {
   // Fetch more than needed so reranker has a larger pool to work with
   const fetchCount = Math.min(numResults * 3, 20);
@@ -91,6 +96,7 @@ async function searxSearch(
     categories: category,
     pageno: "1",
   });
+  if (timeRange) params.set("time_range", timeRange);
 
   const res = await fetch(`${SEARXNG_URL}/search?${params}`, {
     signal: AbortSignal.timeout(10000),
@@ -149,7 +155,8 @@ async function rerankWithFallback(
 // --- Firecrawl ---
 
 async function firecrawlScrape(
-  url: string
+  url: string,
+  maxChars = 8000
 ): Promise<{ title: string; url: string; text: string }> {
   assertPublicUrl(url);
   const res = await fetch(`${FIRECRAWL_URL}/v1/scrape`, {
@@ -173,7 +180,7 @@ async function firecrawlScrape(
   }
 
   const title = data.data.metadata?.title ?? url;
-  const text = (data.data.markdown ?? "").slice(0, 8000);
+  const text = (data.data.markdown ?? "").slice(0, maxChars);
 
   return { title, url: data.data.metadata?.sourceURL ?? url, text };
 }
@@ -214,9 +221,12 @@ server.tool(
     category: CategorySchema.describe(
       "Search category: general, news, it, or science (default general)"
     ),
+    time_range: TimeRangeSchema.describe(
+      "Limit results to: day, week, month, or year (omit for all time)"
+    ),
   },
-  async ({ query, num_results, category }) => {
-    const raw = await searxSearch(query, category, num_results);
+  async ({ query, num_results, category, time_range }) => {
+    const raw = await searxSearch(query, category, num_results, time_range);
     const ranked = await rerankWithFallback(query, raw, num_results);
     return { content: [{ type: "text", text: formatResults(ranked) }] };
   }
@@ -224,32 +234,52 @@ server.tool(
 
 server.tool(
   "search_and_fetch",
-  "Search the web, rerank results, then fetch the full content of the top result using Firecrawl (handles JS-rendered pages). Returns the result list plus clean markdown of the top page.",
+  "Search the web, rerank results, then fetch the full content of the top result(s) using Firecrawl (handles JS-rendered pages). Returns the result list plus clean markdown of the fetched pages.",
   {
     query: z.string().describe("Search query"),
     category: CategorySchema.describe(
       "Search category: general, news, it, or science (default general)"
     ),
+    time_range: TimeRangeSchema.describe(
+      "Limit results to: day, week, month, or year (omit for all time)"
+    ),
+    fetch_count: z
+      .number()
+      .min(1)
+      .max(3)
+      .default(1)
+      .describe("Number of top results to fetch full content for (default 1, max 3)"),
   },
-  async ({ query, category }) => {
-    const raw = await searxSearch(query, category, 5);
+  async ({ query, category, time_range, fetch_count }) => {
+    const raw = await searxSearch(query, category, 5, time_range);
     if (raw.length === 0) {
       return { content: [{ type: "text", text: "No results found." }] };
     }
 
     const ranked = await rerankWithFallback(query, raw, 5);
     const searchText = formatResults(ranked);
-    const topUrl = ranked[0].url;
 
-    let fetchedSection = "";
-    try {
-      const scraped = await firecrawlScrape(topUrl);
-      fetchedSection = `\n\n--- Full content: ${scraped.title} ---\n${scraped.text}`;
-    } catch (e) {
-      fetchedSection = `\n\n--- Could not fetch top result: ${e instanceof Error ? e.message : String(e)} ---`;
-    }
+    // Divide the 8000-char budget evenly across fetched pages
+    const maxCharsPerPage = Math.floor(8000 / fetch_count);
+    const toFetch = ranked.slice(0, fetch_count);
 
-    return { content: [{ type: "text", text: searchText + fetchedSection }] };
+    const fetched = await Promise.allSettled(
+      toFetch.map((r) => firecrawlScrape(r.url, maxCharsPerPage))
+    );
+
+    const fetchedSections = fetched
+      .map((result, i) => {
+        if (result.status === "fulfilled") {
+          const { title, text } = result.value;
+          return `\n\n--- Full content: ${title} ---\n${text}`;
+        } else {
+          const err = result.reason instanceof Error ? result.reason.message : String(result.reason);
+          return `\n\n--- Could not fetch result ${i + 1}: ${err} ---`;
+        }
+      })
+      .join("");
+
+    return { content: [{ type: "text", text: searchText + fetchedSections }] };
   }
 );
 
