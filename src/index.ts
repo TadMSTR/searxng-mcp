@@ -7,6 +7,7 @@ const SEARXNG_URL = process.env.SEARXNG_URL ?? "http://localhost:8081";
 const FIRECRAWL_URL = process.env.FIRECRAWL_URL ?? "http://localhost:3002";
 const FIRECRAWL_API_KEY = process.env.FIRECRAWL_API_KEY ?? "placeholder-local";
 const RERANKER_URL = process.env.RERANKER_URL ?? "http://localhost:8787";
+const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
 
 const CategorySchema = z
   .enum(["general", "news", "it", "science"])
@@ -152,13 +153,64 @@ async function rerankWithFallback(
   }
 }
 
+// --- GitHub ---
+
+interface GitHubReadmeResponse {
+  content: string;
+  name: string;
+  html_url: string;
+}
+
+async function githubFetch(
+  url: string,
+  maxChars = 8000
+): Promise<{ title: string; url: string; text: string }> {
+  const parsed = new URL(url);
+  const parts = parsed.pathname.split("/").filter(Boolean);
+  // parts: [owner, repo] or [owner, repo, "blob"|"tree", branch, ...path]
+
+  const headers: Record<string, string> = {
+    "Accept": "application/vnd.github+json",
+    "X-GitHub-Api-Version": "2022-11-28",
+    "User-Agent": "searxng-mcp",
+  };
+  if (GITHUB_TOKEN) headers["Authorization"] = `Bearer ${GITHUB_TOKEN}`;
+
+  if (parts.length >= 4 && parts[2] === "blob") {
+    // Rewrite blob URL to raw content
+    const [owner, repo, , branch, ...filePath] = parts;
+    const rawUrl = `https://raw.githubusercontent.com/${owner}/${repo}/${branch}/${filePath.join("/")}`;
+    const rawHeaders: Record<string, string> = { "User-Agent": "searxng-mcp" };
+    if (GITHUB_TOKEN) rawHeaders["Authorization"] = `Bearer ${GITHUB_TOKEN}`;
+    const res = await fetch(rawUrl, {
+      headers: rawHeaders,
+      signal: AbortSignal.timeout(10000),
+    });
+    if (!res.ok) throw new Error(`GitHub raw fetch error: ${res.status} ${res.statusText}`);
+    const text = (await res.text()).slice(0, maxChars);
+    const fileName = filePath[filePath.length - 1] ?? url;
+    return { title: fileName, url: rawUrl, text };
+  }
+
+  // Repo root or tree — fetch README via GitHub API
+  const [owner, repo] = parts;
+  const apiUrl = `https://api.github.com/repos/${owner}/${repo}/readme`;
+  const res = await fetch(apiUrl, {
+    headers,
+    signal: AbortSignal.timeout(10000),
+  });
+  if (!res.ok) throw new Error(`GitHub API error: ${res.status} ${res.statusText}`);
+  const data = (await res.json()) as GitHubReadmeResponse;
+  const text = Buffer.from(data.content, "base64").toString("utf-8").slice(0, maxChars);
+  return { title: `${owner}/${repo} — ${data.name}`, url: data.html_url, text };
+}
+
 // --- Firecrawl ---
 
 async function firecrawlScrape(
   url: string,
   maxChars = 8000
 ): Promise<{ title: string; url: string; text: string }> {
-  assertPublicUrl(url);
   const res = await fetch(`${FIRECRAWL_URL}/v1/scrape`, {
     method: "POST",
     headers: {
@@ -183,6 +235,20 @@ async function firecrawlScrape(
   const text = (data.data.markdown ?? "").slice(0, maxChars);
 
   return { title, url: data.data.metadata?.sourceURL ?? url, text };
+}
+
+// --- Page fetcher (routes GitHub URLs to GitHub API, others to Firecrawl) ---
+
+async function fetchPage(
+  url: string,
+  maxChars = 8000
+): Promise<{ title: string; url: string; text: string }> {
+  assertPublicUrl(url);
+  const { hostname } = new URL(url);
+  if (hostname === "github.com") {
+    return githubFetch(url, maxChars);
+  }
+  return firecrawlScrape(url, maxChars);
 }
 
 // --- Formatting ---
@@ -234,7 +300,7 @@ server.tool(
 
 server.tool(
   "search_and_fetch",
-  "Search the web, rerank results, then fetch the full content of the top result(s) using Firecrawl (handles JS-rendered pages). Returns the result list plus clean markdown of the fetched pages.",
+  "Search the web, rerank results, then fetch the full content of the top result(s). GitHub URLs are fetched via the GitHub API; all others use Firecrawl. Returns the result list plus clean markdown of the fetched pages.",
   {
     query: z.string().describe("Search query"),
     category: CategorySchema.describe(
@@ -264,7 +330,7 @@ server.tool(
     const toFetch = ranked.slice(0, fetch_count);
 
     const fetched = await Promise.allSettled(
-      toFetch.map((r) => firecrawlScrape(r.url, maxCharsPerPage))
+      toFetch.map((r) => fetchPage(r.url, maxCharsPerPage))
     );
 
     const fetchedSections = fetched
@@ -285,12 +351,12 @@ server.tool(
 
 server.tool(
   "fetch_url",
-  "Fetch and extract readable content from any URL using Firecrawl (handles JS-rendered pages, returns clean markdown). Content truncated to 8000 characters.",
+  "Fetch and extract readable content from any URL. GitHub URLs are fetched via the GitHub API; all others use Firecrawl (handles JS-rendered pages, returns clean markdown). Content truncated to 8000 characters.",
   {
     url: z.string().url().describe("URL to fetch and extract content from"),
   },
   async ({ url }) => {
-    const { title, url: fetchedUrl, text } = await firecrawlScrape(url);
+    const { title, url: fetchedUrl, text } = await fetchPage(url);
     const output = [`Title: ${title}`, `URL: ${fetchedUrl}`, "", text].join(
       "\n"
     );

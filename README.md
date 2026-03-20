@@ -10,7 +10,7 @@ Designed for use with Claude Code and LibreChat agents that need web search with
 |------|-------------|----------------|
 | `search` | Search via SearXNG with local reranking. Fetches a wider result pool, reranks by relevance, returns top N. | `query`, `num_results` (1–20), `category`, `time_range` |
 | `search_and_fetch` | Search, rerank, then fetch full content of the top result(s) via Firecrawl (handles JS-rendered pages). | `query`, `category`, `time_range`, `fetch_count` (1–3) |
-| `fetch_url` | Fetch and extract readable markdown from any public URL via Firecrawl. Truncated to 8,000 characters. | `url` |
+| `fetch_url` | Fetch and extract readable markdown from any public URL. GitHub URLs use the GitHub API; all others use Firecrawl. Truncated to 8,000 characters. | `url` |
 
 ### Parameters
 
@@ -75,6 +75,7 @@ All service URLs are configurable via environment variables. Defaults point to l
 | `FIRECRAWL_URL` | `http://localhost:3002` | Firecrawl instance URL |
 | `RERANKER_URL` | `http://localhost:8787` | Reranker instance URL |
 | `FIRECRAWL_API_KEY` | `placeholder-local` | Firecrawl API key (if required) |
+| `GITHUB_TOKEN` | *(unset)* | GitHub personal access token — increases GitHub API rate limit from 60 to 5,000 req/hour |
 
 ## Build
 
@@ -121,6 +122,15 @@ mcpServers:
       RERANKER_URL: http://localhost:8787
       FIRECRAWL_API_KEY: placeholder-local
 ```
+
+## GitHub URLs
+
+`github.com` URLs are handled natively without Firecrawl:
+
+- **Repo root** (`github.com/owner/repo`) — fetches the README via the GitHub API
+- **File blob** (`github.com/owner/repo/blob/branch/path/to/file`) — fetches raw content from `raw.githubusercontent.com`
+
+Unauthenticated requests are rate-limited to 60/hour. Set `GITHUB_TOKEN` to raise this to 5,000/hour.
 
 ## URL Safety
 
