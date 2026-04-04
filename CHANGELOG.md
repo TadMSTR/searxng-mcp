@@ -12,9 +12,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 - `search_and_fetch`, `search_and_summarize`, `search`: `expand` parameter coercion switched to `z.coerce.boolean()` across all three tools — fixes `MCP error -32602: Expected boolean, received string` when MCP serialization layer coerces `true` to `"true"`
+
+### Security
+- Validate `task_id` format against `^[a-zA-Z0-9_-]+$` before use in `pollCrawl4aiTask` URL path construction — prevents path traversal
+- Block HTTP redirects in `rawFetch()` — prevents SSRF bypass via redirect chains to internal addresses
+
+## [3.0.2] - 2026-04-04
+
+### Fixed
+- `search_and_summarize`: added regex extraction of the JSON object before parsing — qwen3:14b occasionally appends trailing text after the JSON block, causing `JSON.parse` to throw and silently fall back on every call
+
+## [3.0.1] - 2026-04-04
+
+### Fixed
 - `search_and_summarize`: increased summarization timeout from 15s to 45s — qwen3:14b over an HTTPS proxy requires ~17–35s depending on content length; 15s was reliably too short
 - `search_and_summarize`: removed `format: "json"` from the Ollama chat request — grammar-constrained generation with qwen3 causes the request to hang indefinitely; the model follows JSON instructions from the prompt without it
-- `search_and_summarize`: added regex extraction of the JSON object before parsing — qwen3:14b occasionally appends trailing text after the JSON, which caused `JSON.parse` to throw and silently fall back on every call
 
 ## [3.0.0] - 2026-04-04
 
@@ -74,7 +86,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Result reranking using a local ML model with fallback to raw SearXNG ordering when the reranker is unavailable
 - Category filtering: `general`, `news`, `it`, `science`
 
-[Unreleased]: https://github.com/TadMSTR/searxng-mcp/compare/v3.0.0...HEAD
+[Unreleased]: https://github.com/TadMSTR/searxng-mcp/compare/v3.0.2...HEAD
+[3.0.2]: https://github.com/TadMSTR/searxng-mcp/compare/v3.0.1...v3.0.2
+[3.0.1]: https://github.com/TadMSTR/searxng-mcp/compare/v3.0.0...v3.0.1
 [3.0.0]: https://github.com/TadMSTR/searxng-mcp/compare/v2.2.0...v3.0.0
 [2.2.0]: https://github.com/TadMSTR/searxng-mcp/compare/v2.1.0...v2.2.0
 [2.1.0]: https://github.com/TadMSTR/searxng-mcp/compare/v2.0.0...v2.1.0
