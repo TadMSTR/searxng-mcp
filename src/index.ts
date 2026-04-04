@@ -231,6 +231,9 @@ function assertPublicUrl(url: string): void {
     /^host\.docker\.internal$/i,
     /^fc00:/i,
     /^fe80:/i,
+    /^::1$/,
+    /^0:0:0:0:0:0:0:1$/,
+    /^fd[0-9a-f]{2}:/i,
   ];
   if (blocked.some((r) => r.test(hostname))) {
     throw new Error(`Internal/private addresses are not allowed`);
