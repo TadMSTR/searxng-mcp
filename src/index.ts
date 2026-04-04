@@ -160,6 +160,15 @@ interface OllamaGenerateResponse {
   response: string;
 }
 
+interface OllamaChatMessage {
+  role: string;
+  content: string;
+}
+
+interface OllamaChatResponse {
+  message: OllamaChatMessage;
+}
+
 async function expandQuery(query: string): Promise<string[]> {
   const prompt =
     `Generate 2-3 search query variants for the query below. ` +
@@ -540,6 +549,81 @@ async function fetchPage(
   return result;
 }
 
+// --- Ollama summarization ---
+
+interface Citation {
+  url: string;
+  title: string;
+  key_facts: string[];
+}
+
+interface SummaryResult {
+  summary: string;
+  citations: Citation[];
+}
+
+async function summarizePages(
+  query: string,
+  pages: Array<{ title: string; url: string; text: string }>
+): Promise<SummaryResult> {
+  if (pages.length === 0) {
+    return { summary: "No content to summarize.", citations: [] };
+  }
+
+  const MAX_CHARS_PER_PAGE = 4000;
+  const pageBlocks = pages
+    .map((p, i) =>
+      `[Source ${i + 1}] ${p.title}\nURL: ${p.url}\n\n${p.text.slice(0, MAX_CHARS_PER_PAGE)}`
+    )
+    .join("\n\n---\n\n");
+
+  const prompt =
+    `You are a research assistant. Synthesize the sources below to answer the query.\n\n` +
+    `Query: ${query}\n\n` +
+    `Sources:\n${pageBlocks}\n\n` +
+    `Respond with JSON only, no markdown fences, matching this exact schema:\n` +
+    `{"summary":"<synthesized answer>","citations":[{"url":"<url>","title":"<title>","key_facts":["<fact>"]}]}\n` +
+    `Include only sources that contributed to the answer. key_facts: 1-3 short phrases per source.`;
+
+  try {
+    const res = await fetch(`${OLLAMA_URL}/api/chat`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: "qwen3:14b",
+        messages: [{ role: "user", content: prompt }],
+        stream: false,
+        format: "json",
+        options: { think: false },
+      }),
+      signal: AbortSignal.timeout(15000),
+    });
+
+    if (!res.ok) throw new Error(`Ollama error: ${res.status}`);
+
+    const data = (await res.json()) as OllamaChatResponse;
+    const parsed = JSON.parse(data.message.content) as SummaryResult;
+    return {
+      summary: parsed.summary ?? "",
+      citations: Array.isArray(parsed.citations) ? parsed.citations : [],
+    };
+  } catch {
+    // Ollama unavailable, timeout, or parse error — return null to signal fallback
+    return { summary: "", citations: [] };
+  }
+}
+
+function formatSummaryResult(result: SummaryResult): string {
+  if (!result.summary) return "";
+  const citationText = result.citations
+    .map((c) => {
+      const facts = c.key_facts.map((f) => `     - ${f}`).join("\n");
+      return `  - ${c.title}\n    URL: ${c.url}\n${facts}`;
+    })
+    .join("\n\n");
+  return `## Summary\n\n${result.summary}\n\n## Sources\n\n${citationText}`;
+}
+
 // --- Formatting ---
 
 function formatResults(results: SearxResult[]): string {
@@ -559,7 +643,7 @@ function formatResults(results: SearxResult[]): string {
 
 const server = new McpServer({
   name: "searxng-mcp",
-  version: "2.1.0",
+  version: "3.0.0",
 });
 
 const DomainProfileSchema = z
@@ -669,6 +753,72 @@ server.tool(
     const output = [`Title: ${title}`, `URL: ${fetchedUrl}`, "", text].join(
       "\n"
     );
+    return { content: [{ type: "text", text: output }] };
+  }
+);
+
+server.tool(
+  "search_and_summarize",
+  "Search, rerank, fetch top results, then synthesize a summary with citations using a local LLM (qwen3:14b). Returns a structured answer with source attribution. Falls back to raw fetched content if Ollama is unavailable. Best for deep research where you want pre-digested synthesis rather than raw pages.",
+  {
+    query: z.string().describe("Research query to search for and summarize"),
+    fetch_count: z
+      .coerce.number()
+      .min(1)
+      .max(5)
+      .default(3)
+      .describe("Number of top results to fetch and synthesize (default 3, max 5)"),
+    category: CategorySchema.describe(
+      "Search category: general, news, it, or science (default general)"
+    ),
+    time_range: TimeRangeSchema.describe(
+      "Limit results to: day, week, month, or year (omit for all time)"
+    ),
+    domain_profile: DomainProfileSchema,
+    expand: z
+      .boolean()
+      .optional()
+      .describe("Use query expansion before searching (default: off)"),
+  },
+  async ({ query, fetch_count, category, time_range, domain_profile, expand }) => {
+    const raw = await searxSearch(query, category, fetch_count + 2, time_range, domain_profile, expand);
+    if (raw.length === 0) {
+      return { content: [{ type: "text", text: "No results found." }] };
+    }
+
+    const ranked = await rerankWithFallback(query, raw, fetch_count);
+    const searchText = formatResults(ranked);
+
+    // Fetch top N pages; 4000 chars each (summarizer doesn't need the full 8000)
+    const toFetch = ranked.slice(0, fetch_count);
+    const fetched = await Promise.allSettled(
+      toFetch.map((r) => fetchPage(r.url, 4000, domain_profile))
+    );
+
+    const successfulPages = fetched
+      .map((r) => (r.status === "fulfilled" ? r.value : null))
+      .filter((r): r is { title: string; url: string; text: string } => r !== null);
+
+    // Summarize — fall back to search_and_fetch output if Ollama fails
+    const summaryResult = await summarizePages(query, successfulPages);
+
+    if (!summaryResult.summary) {
+      // Ollama fallback: return raw fetched content same as search_and_fetch
+      const fetchedSections = fetched
+        .map((result, i) => {
+          if (result.status === "fulfilled") {
+            const { title, text } = result.value;
+            return `\n\n--- Full content: ${title} ---\n${text}`;
+          } else {
+            const err = result.reason instanceof Error ? result.reason.message : String(result.reason);
+            return `\n\n--- Could not fetch result ${i + 1}: ${err} ---`;
+          }
+        })
+        .join("");
+      return { content: [{ type: "text", text: searchText + fetchedSections }] };
+    }
+
+    const output = formatSummaryResult(summaryResult);
     return { content: [{ type: "text", text: output }] };
   }
 );
