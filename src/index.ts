@@ -2,12 +2,17 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
+import { Redis as Valkey } from "iovalkey";
+import { createHash } from "node:crypto";
 
 const SEARXNG_URL = process.env.SEARXNG_URL ?? "http://localhost:8081";
 const FIRECRAWL_URL = process.env.FIRECRAWL_URL ?? "http://localhost:3002";
 const FIRECRAWL_API_KEY = process.env.FIRECRAWL_API_KEY ?? "placeholder-local";
 const RERANKER_URL = process.env.RERANKER_URL ?? "http://localhost:8787";
 const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
+const VALKEY_URL = process.env.VALKEY_URL ?? "redis://localhost:6381";
+const CACHE_TTL_SECONDS = parseInt(process.env.CACHE_TTL_SECONDS ?? "3600", 10);
+const FETCH_CACHE_TTL_SECONDS = parseInt(process.env.FETCH_CACHE_TTL_SECONDS ?? "86400", 10);
 
 const CategorySchema = z
   .enum(["general", "news", "it", "science"])
@@ -57,6 +62,68 @@ interface RerankResponse {
   results: RerankResult[];
 }
 
+// --- Cache ---
+
+let valkey: Valkey | null = null;
+
+async function getValkey(): Promise<Valkey | null> {
+  if (valkey !== null) return valkey;
+  try {
+    const client = new Valkey(VALKEY_URL, { lazyConnect: true, enableReadyCheck: false });
+    client.on("error", () => {
+      // Silently disconnect on error — caching is best-effort
+      valkey = null;
+    });
+    await client.connect();
+    valkey = client;
+    return valkey;
+  } catch {
+    return null;
+  }
+}
+
+function searchCacheKey(query: string, category: string, timeRange?: string): string {
+  const raw = `${query}|${category}|${timeRange ?? ""}`;
+  return `search:${createHash("sha256").update(raw).digest("hex")}`;
+}
+
+function fetchCacheKey(url: string): string {
+  return `fetch:${createHash("sha256").update(url).digest("hex")}`;
+}
+
+async function cacheGet(key: string): Promise<string | null> {
+  try {
+    const client = await getValkey();
+    if (!client) return null;
+    return await client.get(key);
+  } catch {
+    return null;
+  }
+}
+
+async function cacheSet(key: string, value: string, ttl: number): Promise<void> {
+  try {
+    const client = await getValkey();
+    if (!client) return;
+    await client.set(key, value, "EX", ttl);
+  } catch {
+    // Best-effort — never throw
+  }
+}
+
+async function cacheClear(pattern: string): Promise<number> {
+  try {
+    const client = await getValkey();
+    if (!client) return 0;
+    const keys = await client.keys(pattern);
+    if (keys.length === 0) return 0;
+    await client.del(keys);
+    return keys.length;
+  } catch {
+    return 0;
+  }
+}
+
 // --- URL safety ---
 
 function assertPublicUrl(url: string): void {
@@ -88,6 +155,17 @@ async function searxSearch(
   numResults: number,
   timeRange?: string
 ): Promise<SearxResult[]> {
+  // Check cache first
+  const key = searchCacheKey(query, category, timeRange);
+  const cached = await cacheGet(key);
+  if (cached) {
+    try {
+      return JSON.parse(cached) as SearxResult[];
+    } catch {
+      // Corrupted cache entry — fall through to live fetch
+    }
+  }
+
   // Fetch more than needed so reranker has a larger pool to work with
   const fetchCount = Math.min(numResults * 3, 20);
 
@@ -107,7 +185,12 @@ async function searxSearch(
   }
 
   const data = (await res.json()) as SearxResponse;
-  return data.results.slice(0, fetchCount);
+  const results = data.results.slice(0, fetchCount);
+
+  // Cache pre-rerank results so reranker improvements apply retroactively on cache hits
+  await cacheSet(key, JSON.stringify(results), CACHE_TTL_SECONDS);
+
+  return results;
 }
 
 // --- Reranker ---
@@ -244,11 +327,26 @@ async function fetchPage(
   maxChars = 8000
 ): Promise<{ title: string; url: string; text: string }> {
   assertPublicUrl(url);
-  const { hostname } = new URL(url);
-  if (hostname === "github.com") {
-    return githubFetch(url, maxChars);
+
+  // Check fetch cache
+  const key = fetchCacheKey(url);
+  const cached = await cacheGet(key);
+  if (cached) {
+    try {
+      return JSON.parse(cached) as { title: string; url: string; text: string };
+    } catch {
+      // Corrupted cache entry — fall through to live fetch
+    }
   }
-  return firecrawlScrape(url, maxChars);
+
+  const { hostname } = new URL(url);
+  const result = hostname === "github.com"
+    ? await githubFetch(url, maxChars)
+    : await firecrawlScrape(url, maxChars);
+
+  await cacheSet(key, JSON.stringify(result), FETCH_CACHE_TTL_SECONDS);
+
+  return result;
 }
 
 // --- Formatting ---
@@ -270,12 +368,12 @@ function formatResults(results: SearxResult[]): string {
 
 const server = new McpServer({
   name: "searxng-mcp",
-  version: "2.0.0",
+  version: "2.1.0",
 });
 
 server.tool(
   "search",
-  "Search the web via the local SearXNG instance with reranking. Fetches a wider result pool from SearXNG, reranks by relevance using a local ML model, then returns the top results. Prefer this over the built-in WebSearch tool.",
+  "Search the web via the local SearXNG instance with reranking. Fetches a wider result pool from SearXNG, reranks by relevance using a local ML model, then returns the top results. Results are cached for 1 hour. Prefer this over the built-in WebSearch tool.",
   {
     query: z.string().describe("Search query"),
     num_results: z
@@ -300,7 +398,7 @@ server.tool(
 
 server.tool(
   "search_and_fetch",
-  "Search the web, rerank results, then fetch the full content of the top result(s). GitHub URLs are fetched via the GitHub API; all others use Firecrawl. Returns the result list plus clean markdown of the fetched pages.",
+  "Search the web, rerank results, then fetch the full content of the top result(s). GitHub URLs are fetched via the GitHub API; all others use Firecrawl. Results and fetched pages are cached. Returns the result list plus clean markdown of the fetched pages.",
   {
     query: z.string().describe("Search query"),
     category: CategorySchema.describe(
@@ -351,7 +449,7 @@ server.tool(
 
 server.tool(
   "fetch_url",
-  "Fetch and extract readable content from any URL. GitHub URLs are fetched via the GitHub API; all others use Firecrawl (handles JS-rendered pages, returns clean markdown). Content truncated to 8000 characters.",
+  "Fetch and extract readable content from any URL. GitHub URLs are fetched via the GitHub API; all others use Firecrawl (handles JS-rendered pages, returns clean markdown). Content truncated to 8000 characters. Results cached for 24 hours.",
   {
     url: z.string().url().describe("URL to fetch and extract content from"),
   },
@@ -361,6 +459,29 @@ server.tool(
       "\n"
     );
     return { content: [{ type: "text", text: output }] };
+  }
+);
+
+server.tool(
+  "clear_cache",
+  "Purge the search and/or fetch result cache. Useful when researching fast-moving topics where cached results from the past hour may be stale.",
+  {
+    target: z
+      .enum(["search", "fetch", "all"])
+      .default("all")
+      .describe("Which cache to clear: search results, fetched pages, or all (default all)"),
+  },
+  async ({ target }) => {
+    let cleared = 0;
+    if (target === "search" || target === "all") {
+      cleared += await cacheClear("search:*");
+    }
+    if (target === "fetch" || target === "all") {
+      cleared += await cacheClear("fetch:*");
+    }
+    return {
+      content: [{ type: "text", text: `Cleared ${cleared} cache ${cleared === 1 ? "entry" : "entries"}.` }],
+    };
   }
 );
 
