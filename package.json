@@ -7,11 +7,16 @@
   "scripts": {
     "build": "tsc && chmod 755 build/src/index.js"
   },
-  "keywords": ["searxng", "mcp", "search"],
+  "keywords": [
+    "searxng",
+    "mcp",
+    "search"
+  ],
   "author": "TadMSTR",
   "license": "MIT",
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.7.0",
+    "iovalkey": "^0.3.3",
     "zod": "^3.24.2"
   },
   "devDependencies": {
