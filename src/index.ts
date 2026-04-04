@@ -652,8 +652,9 @@ async function fetchPage(
     let fetched: { title: string; url: string; text: string } | null = null;
     try {
       fetched = await firecrawlScrape(url, maxChars);
+      if (!fetched?.text) fetched = null; // treat empty content as failure (bot-block, challenge pages)
     } catch {
-      // fall through to next tier
+      fetched = null;
     }
 
     // Tier 2: Crawl4AI (skipped if CRAWL4AI_URL not set)
