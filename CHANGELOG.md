@@ -6,6 +6,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [3.0.0] - 2026-04-04
+
+### Added
+- `search_and_summarize` tool — searches, fetches top results, then summarizes via Ollama qwen3:14b; returns a structured response with a summary paragraph and `citations` array (url, title, key_facts per source)
+- 15-second summarization timeout with graceful fallback to raw fetch output when Ollama is unavailable or slow
+
+### Security
+- Removed hardcoded personal `OLLAMA_URL` default from public repo; `OLLAMA_URL` now defaults to empty string — `expand` and `search_and_summarize` features are call-gated and return a descriptive error when the env var is not set
+
+## [2.2.0] - 2026-04-04
+
+### Added
+- `expand` parameter on `search` and `search_and_fetch` — when `true`, rewrites the query via Ollama qwen3:4b to improve recall before sending to SearXNG
+- `EXPAND_QUERIES` environment variable — set to `true` to enable expansion globally without passing `expand=true` per call
+- `OLLAMA_URL` environment variable — configures the Ollama API base URL for query expansion
+
+### Security
+- Deleted core dump files from repo history and added `core` pattern to `.gitignore`
+
 ## [2.1.0] - 2026-04-04
 
 ### Added
@@ -45,7 +64,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Result reranking using a local ML model with fallback to raw SearXNG ordering when the reranker is unavailable
 - Category filtering: `general`, `news`, `it`, `science`
 
-[Unreleased]: https://github.com/TadMSTR/searxng-mcp/compare/v2.1.0...HEAD
+[Unreleased]: https://github.com/TadMSTR/searxng-mcp/compare/v3.0.0...HEAD
+[3.0.0]: https://github.com/TadMSTR/searxng-mcp/compare/v2.2.0...v3.0.0
+[2.2.0]: https://github.com/TadMSTR/searxng-mcp/compare/v2.1.0...v2.2.0
 [2.1.0]: https://github.com/TadMSTR/searxng-mcp/compare/v2.0.0...v2.1.0
 [2.0.0]: https://github.com/TadMSTR/searxng-mcp/compare/v1.0.0...v2.0.0
 [1.0.0]: https://github.com/TadMSTR/searxng-mcp/releases/tag/v1.0.0
