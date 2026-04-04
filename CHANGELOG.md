@@ -9,9 +9,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Added
 - Crawl4AI fetch adapter as second-tier fallback in the fetch cascade (`CRAWL4AI_URL` env var) — uses `markdown.raw_markdown` for clean content extraction on JS-heavy or Firecrawl-failing pages; skipped silently if `CRAWL4AI_URL` is not set
 - Raw HTTP fetch as third-tier fallback — ensures fetch never fails silently when both Firecrawl and Crawl4AI are unavailable
+- `CRAWL4AI_API_TOKEN` env var — optional Bearer token for Crawl4AI instances with API token protection; included as `Authorization: Bearer <token>` header when set
 
 ### Fixed
 - `search_and_fetch`, `search_and_summarize`, `search`: `expand` parameter coercion switched to `z.coerce.boolean()` across all three tools — fixes `MCP error -32602: Expected boolean, received string` when MCP serialization layer coerces `true` to `"true"`
+- Fetch cascade now falls through to Crawl4AI on empty Firecrawl response — Firecrawl returns `success: true` with empty content on bot-blocked or challenge pages rather than throwing; empty-content check added so Crawl4AI activates on soft failures, not only on exceptions
 
 ### Security
 - Validate `task_id` format against `^[a-zA-Z0-9_-]+$` before use in `pollCrawl4aiTask` URL path construction — prevents path traversal
