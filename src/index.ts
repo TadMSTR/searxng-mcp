@@ -191,7 +191,7 @@ async function expandQuery(query: string): Promise<string[]> {
         stream: false,
         options: { think: false },
       }),
-      signal: AbortSignal.timeout(3000),
+      signal: AbortSignal.timeout(12000),
     });
 
     if (!res.ok) throw new Error(`Ollama error: ${res.status}`);
@@ -595,10 +595,9 @@ async function summarizePages(
         model: "qwen3:14b",
         messages: [{ role: "user", content: prompt }],
         stream: false,
-        format: "json",
         options: { think: false },
       }),
-      signal: AbortSignal.timeout(15000),
+      signal: AbortSignal.timeout(45000),
     });
 
     if (!res.ok) throw new Error(`Ollama error: ${res.status}`);
