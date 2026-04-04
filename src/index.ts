@@ -527,9 +527,12 @@ async function crawl4aiFetch(
   const timeout = setTimeout(() => controller.abort(), 45_000);
 
   try {
+    const crawlHeaders: Record<string, string> = { "Content-Type": "application/json" };
+    const crawl4aiToken = process.env.CRAWL4AI_API_TOKEN;
+    if (crawl4aiToken) crawlHeaders["Authorization"] = `Bearer ${crawl4aiToken}`;
     const resp = await fetch(`${CRAWL4AI_URL}/crawl`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: crawlHeaders,
       body: JSON.stringify({ urls: [url] }),
       signal: controller.signal,
     });
