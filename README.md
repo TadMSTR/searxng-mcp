@@ -1,6 +1,6 @@
 # searxng-mcp
 
-An MCP server for private web search via a self-hosted [SearXNG](https://github.com/searxng/searxng) instance. Results are reranked by a local ML model before being returned, and a Firecrawl instance handles full-page content fetching for JS-rendered sites.
+An MCP server for private web search via a self-hosted [SearXNG](https://github.com/searxng/searxng) instance. Results are reranked by a local ML model, full-page content is fetched via Firecrawl, and an optional Ollama instance provides query expansion and LLM-synthesized summaries.
 
 Designed for use with Claude Code and LibreChat agents that need web search without sending queries to a third-party search API.
 
@@ -8,9 +8,11 @@ Designed for use with Claude Code and LibreChat agents that need web search with
 
 | Tool | Description | Key Parameters |
 |------|-------------|----------------|
-| `search` | Search via SearXNG with local reranking. Fetches a wider result pool, reranks by relevance, returns top N. | `query`, `num_results` (1–20), `category`, `time_range` |
-| `search_and_fetch` | Search, rerank, then fetch full content of the top result(s) via Firecrawl (handles JS-rendered pages). | `query`, `category`, `time_range`, `fetch_count` (1–3) |
-| `fetch_url` | Fetch and extract readable markdown from any public URL. GitHub URLs use the GitHub API; all others use Firecrawl. Truncated to 8,000 characters. | `url` |
+| `search` | Search via SearXNG with local reranking. Fetches a wider result pool, reranks by relevance, returns top N. | `query`, `num_results` (1–20), `category`, `time_range`, `domain_profile`, `expand` |
+| `search_and_fetch` | Search, rerank, then fetch full content of the top result(s) via Firecrawl. | `query`, `category`, `time_range`, `fetch_count` (1–3), `domain_profile`, `expand` |
+| `search_and_summarize` | Search, fetch top results, then synthesize a summary with citations via Ollama (qwen3:14b). Falls back to raw fetched content if Ollama is unavailable. | `query`, `fetch_count` (1–5), `category`, `time_range`, `domain_profile`, `expand` |
+| `fetch_url` | Fetch and extract readable markdown from any public URL. GitHub URLs use the GitHub API; all others use Firecrawl. Truncated to 8,000 characters. | `url`, `domain_profile` |
+| `clear_cache` | Purge the search cache, fetch cache, or both. Useful when researching fast-moving topics where cached results may be stale. | `target` (`search`, `fetch`, `all`) |
 
 ### Parameters
 
@@ -18,7 +20,11 @@ Designed for use with Claude Code and LibreChat agents that need web search with
 
 **`time_range`** — `day`, `week`, `month`, `year` — limits results by publication date. Omit for all-time results.
 
-**`fetch_count`** — number of top reranked results to fetch full content for (default `1`, max `3`). The 8,000-character content budget is divided evenly across fetched pages.
+**`fetch_count`** — number of top reranked results to fetch full content for (default `1`, max `3` for `search_and_fetch`; default `3`, max `5` for `search_and_summarize`).
+
+**`domain_profile`** — apply a named domain filter profile: `homelab` (surfaces self-hosted/Linux docs) or `dev` (surfaces Stack Overflow, MDN, npm). Omit for default filters.
+
+**`expand`** — when `true`, rewrites the query via Ollama (qwen3:4b) before searching to improve recall. Requires `OLLAMA_URL`. Defaults to the `EXPAND_QUERIES` env var value.
 
 ## Architecture
 
@@ -26,17 +32,20 @@ Designed for use with Claude Code and LibreChat agents that need web search with
 MCP client (stdio)
       │
       ▼
-  searxng-mcp
-      ├── search ──────────→ SearXNG ($SEARXNG_URL)      → raw results
-      ├── rerank ──────────→ Reranker ($RERANKER_URL)    → ranked results
-      │                      (fallback: SearXNG order if reranker unavailable)
-      └── fetch content ───┬→ GitHub API (github.com)    → markdown
-                           └→ Firecrawl ($FIRECRAWL_URL) → page markdown
+  searxng-mcp ──────────────→ Valkey ($VALKEY_URL)        → result cache (search 1h, fetch 24h)
+      │
+      ├── expand (optional) →  Ollama ($OLLAMA_URL)        → rewritten query (qwen3:4b)
+      ├── search ───────────→ SearXNG ($SEARXNG_URL)      → raw results
+      ├── rerank ───────────→ Reranker ($RERANKER_URL)    → ranked results
+      │                       (fallback: SearXNG order if reranker unavailable)
+      ├── fetch content ────┬→ GitHub API (github.com)    → markdown
+      │                     └→ Firecrawl ($FIRECRAWL_URL) → page markdown
+      └── summarize (opt.) →  Ollama ($OLLAMA_URL)        → synthesized summary (qwen3:14b)
 ```
 
 ![Fetch routing](assets/fetch-routing.drawio.svg)
 
-SearXNG and Firecrawl are required. The reranker is optional — if unavailable, the server falls back to SearXNG's native result ordering.
+SearXNG and Firecrawl are required. Valkey, Ollama, and the reranker are optional — the server degrades gracefully when any of these are unavailable.
 
 ## Transport
 
@@ -47,8 +56,10 @@ stdio (compatible with Claude Code MCP plugin and LibreChat `stdio` config).
 - Node.js 22+
 - pnpm (or npm)
 - A running [SearXNG](https://github.com/searxng/searxng) instance
-- A running reranker exposing a Jina-compatible `/v1/rerank` endpoint (optional)
 - A running [Firecrawl](https://github.com/mendableai/firecrawl) instance
+- A running reranker exposing a Jina-compatible `/v1/rerank` endpoint (optional)
+- A running [Valkey](https://valkey.io/) or Redis-compatible instance (optional, for result caching)
+- A running [Ollama](https://ollama.com/) instance with `qwen3:4b` and/or `qwen3:14b` pulled (optional, for query expansion and summarization)
 
 ### SearXNG
 
@@ -69,9 +80,24 @@ The reranker must expose a Jina-compatible `/v1/rerank` endpoint. A lightweight 
 
 Any Firecrawl-compatible instance works. The local [firecrawl-simple](https://github.com/mendableai/firecrawl/tree/main/apps/api) deployment is sufficient. Set `FIRECRAWL_API_KEY` if your instance requires authentication (defaults to `placeholder-local` for local deployments that skip auth).
 
+### Valkey / Redis
+
+Any Redis-compatible instance. Valkey is recommended. Search results are cached for 1 hour; fetched pages for 24 hours. If unavailable, the server operates without caching.
+
+### Ollama
+
+Required for `expand` and `search_and_summarize`. Pull the required models:
+
+```bash
+ollama pull qwen3:4b   # query expansion
+ollama pull qwen3:14b  # summarization
+```
+
+Set `think: false` behavior is handled automatically — no extra Ollama configuration needed.
+
 ## Configuration
 
-All service URLs are configurable via environment variables. Defaults point to localhost.
+All service URLs are configurable via environment variables.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
@@ -79,7 +105,12 @@ All service URLs are configurable via environment variables. Defaults point to l
 | `FIRECRAWL_URL` | `http://localhost:3002` | Firecrawl instance URL |
 | `RERANKER_URL` | `http://localhost:8787` | Reranker instance URL |
 | `FIRECRAWL_API_KEY` | `placeholder-local` | Firecrawl API key (if required) |
-| `GITHUB_TOKEN` | *(unset)* | GitHub personal access token — increases GitHub API rate limit from 60 to 5,000 req/hour |
+| `GITHUB_TOKEN` | *(unset)* | GitHub personal access token — increases rate limit from 60 to 5,000 req/hour |
+| `OLLAMA_URL` | *(unset)* | Ollama API base URL — required for `expand` and `search_and_summarize` |
+| `VALKEY_URL` | *(unset)* | Redis-compatible URL (e.g. `redis://localhost:6379`) — enables result caching |
+| `CACHE_TTL_SECONDS` | `3600` | Search result cache TTL in seconds |
+| `FETCH_CACHE_TTL_SECONDS` | `86400` | Fetched page cache TTL in seconds |
+| `EXPAND_QUERIES` | `false` | Set to `true` to enable query expansion globally |
 
 ## Build
 
@@ -92,7 +123,30 @@ Output: `build/src/index.js`
 
 ## MCP Client Configuration
 
-### Claude Code (`.mcp.json` or `claude_desktop_config.json`)
+### Claude Code (CLI)
+
+The recommended approach uses `claude mcp add-json` to register the server with full env var support:
+
+```bash
+claude mcp add-json searxng --scope user '{
+  "command": "node",
+  "args": ["/path/to/searxng-mcp/build/src/index.js"],
+  "env": {
+    "SEARXNG_URL": "http://localhost:8081",
+    "FIRECRAWL_URL": "http://localhost:3002",
+    "RERANKER_URL": "http://localhost:8787",
+    "OLLAMA_URL": "http://localhost:11434",
+    "VALKEY_URL": "redis://localhost:6379",
+    "CACHE_TTL_SECONDS": "3600",
+    "FETCH_CACHE_TTL_SECONDS": "86400",
+    "EXPAND_QUERIES": "false"
+  }
+}'
+```
+
+This writes to `~/.claude.json`. Do not add searxng to `~/.claude/settings.json` — that file is not used for MCP env var injection in Claude Code.
+
+### Claude Desktop (`claude_desktop_config.json`)
 
 ```json
 {
@@ -104,7 +158,8 @@ Output: `build/src/index.js`
         "SEARXNG_URL": "http://localhost:8081",
         "FIRECRAWL_URL": "http://localhost:3002",
         "RERANKER_URL": "http://localhost:8787",
-        "FIRECRAWL_API_KEY": "placeholder-local"
+        "OLLAMA_URL": "http://localhost:11434",
+        "VALKEY_URL": "redis://localhost:6379"
       }
     }
   }
@@ -124,7 +179,8 @@ mcpServers:
       SEARXNG_URL: http://localhost:8081
       FIRECRAWL_URL: http://localhost:3002
       RERANKER_URL: http://localhost:8787
-      FIRECRAWL_API_KEY: placeholder-local
+      OLLAMA_URL: http://localhost:11434
+      VALKEY_URL: redis://localhost:6379
 ```
 
 ## GitHub URLs
