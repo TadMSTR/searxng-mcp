@@ -600,9 +600,13 @@ async function rawFetch(
 ): Promise<{ title: string; url: string; text: string }> {
   const res = await fetch(url, {
     headers: { "User-Agent": "Mozilla/5.0 (compatible; searxng-mcp/1.0)" },
+    redirect: "manual",
     signal: AbortSignal.timeout(15000),
   });
 
+  if (res.status >= 300 && res.status < 400) {
+    throw new Error(`Redirect blocked: ${res.status} → ${res.headers.get("location")}`);
+  }
   if (!res.ok) throw new Error(`Raw fetch error: ${res.status} ${res.statusText}`);
 
   const text = (await res.text()).slice(0, maxChars);
