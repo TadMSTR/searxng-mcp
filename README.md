@@ -39,13 +39,15 @@ MCP client (stdio)
       ├── rerank ───────────→ Reranker ($RERANKER_URL)    → ranked results
       │                       (fallback: SearXNG order if reranker unavailable)
       ├── fetch content ────┬→ GitHub API (github.com)    → markdown
-      │                     └→ Firecrawl ($FIRECRAWL_URL) → page markdown
+      │                     ├→ Firecrawl ($FIRECRAWL_URL) → page markdown (tier 1)
+      │                     ├→ Crawl4AI ($CRAWL4AI_URL)  → page markdown (tier 2, optional)
+      │                     └→ Raw HTTP fetch             → page text (tier 3 fallback)
       └── summarize (opt.) →  Ollama ($OLLAMA_URL)        → synthesized summary (qwen3:14b)
 ```
 
 ![Fetch routing](assets/fetch-routing.drawio.svg)
 
-SearXNG and Firecrawl are required. Valkey, Ollama, and the reranker are optional — the server degrades gracefully when any of these are unavailable.
+SearXNG and Firecrawl are required. Crawl4AI, Valkey, Ollama, and the reranker are optional — the server degrades gracefully when any of these are unavailable.
 
 ## Transport
 
@@ -111,6 +113,7 @@ All service URLs are configurable via environment variables.
 | `CACHE_TTL_SECONDS` | `3600` | Search result cache TTL in seconds |
 | `FETCH_CACHE_TTL_SECONDS` | `86400` | Fetched page cache TTL in seconds |
 | `EXPAND_QUERIES` | `false` | Set to `true` to enable query expansion globally |
+| `CRAWL4AI_URL` | *(unset)* | Crawl4AI instance URL — enables second-tier fetch fallback when Firecrawl fails |
 
 ## Build
 
@@ -139,7 +142,8 @@ claude mcp add-json searxng --scope user '{
     "VALKEY_URL": "redis://localhost:6379",
     "CACHE_TTL_SECONDS": "3600",
     "FETCH_CACHE_TTL_SECONDS": "86400",
-    "EXPAND_QUERIES": "false"
+    "EXPAND_QUERIES": "false",
+    "CRAWL4AI_URL": "http://localhost:11235"
   }
 }'
 ```
@@ -159,7 +163,8 @@ This writes to `~/.claude.json`. Do not add searxng to `~/.claude/settings.json`
         "FIRECRAWL_URL": "http://localhost:3002",
         "RERANKER_URL": "http://localhost:8787",
         "OLLAMA_URL": "http://localhost:11434",
-        "VALKEY_URL": "redis://localhost:6379"
+        "VALKEY_URL": "redis://localhost:6379",
+        "CRAWL4AI_URL": "http://localhost:11235"
       }
     }
   }
@@ -181,6 +186,7 @@ mcpServers:
       RERANKER_URL: http://localhost:8787
       OLLAMA_URL: http://localhost:11434
       VALKEY_URL: redis://localhost:6379
+      CRAWL4AI_URL: http://localhost:11235
 ```
 
 ## GitHub URLs

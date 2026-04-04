@@ -6,7 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+- Crawl4AI fetch adapter as second-tier fallback in the fetch cascade (`CRAWL4AI_URL` env var) — uses `markdown.raw_markdown` for clean content extraction on JS-heavy or Firecrawl-failing pages; skipped silently if `CRAWL4AI_URL` is not set
+- Raw HTTP fetch as third-tier fallback — ensures fetch never fails silently when both Firecrawl and Crawl4AI are unavailable
+
 ### Fixed
+- `search_and_fetch`, `search_and_summarize`, `search`: `expand` parameter coercion switched to `z.coerce.boolean()` across all three tools — fixes `MCP error -32602: Expected boolean, received string` when MCP serialization layer coerces `true` to `"true"`
 - `search_and_summarize`: increased summarization timeout from 15s to 45s — qwen3:14b over an HTTPS proxy requires ~17–35s depending on content length; 15s was reliably too short
 - `search_and_summarize`: removed `format: "json"` from the Ollama chat request — grammar-constrained generation with qwen3 causes the request to hang indefinitely; the model follows JSON instructions from the prompt without it
 - `search_and_summarize`: added regex extraction of the JSON object before parsing — qwen3:14b occasionally appends trailing text after the JSON, which caused `JSON.parse` to throw and silently fall back on every call

@@ -18,6 +18,7 @@ const CACHE_TTL_SECONDS = parseInt(process.env.CACHE_TTL_SECONDS ?? "3600", 10);
 const FETCH_CACHE_TTL_SECONDS = parseInt(process.env.FETCH_CACHE_TTL_SECONDS ?? "86400", 10);
 const OLLAMA_URL = process.env.OLLAMA_URL ?? "";
 const EXPAND_QUERIES_DEFAULT = process.env.EXPAND_QUERIES === "true";
+const CRAWL4AI_URL = process.env.CRAWL4AI_URL ?? null;
 
 // --- Domain filtering ---
 
@@ -514,7 +515,100 @@ async function firecrawlScrape(
   return { title, url: data.data.metadata?.sourceURL ?? url, text };
 }
 
-// --- Page fetcher (routes GitHub URLs to GitHub API, others to Firecrawl) ---
+// --- Crawl4AI fetch (second-tier fallback) ---
+
+async function crawl4aiFetch(
+  url: string,
+  maxChars = 8000
+): Promise<{ title: string; url: string; text: string } | null> {
+  if (!CRAWL4AI_URL) return null;
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 45_000);
+
+  try {
+    const resp = await fetch(`${CRAWL4AI_URL}/crawl`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ urls: [url] }),
+      signal: controller.signal,
+    });
+
+    if (!resp.ok) return null;
+    const data = await resp.json() as Record<string, unknown>;
+
+    // Synchronous response — results returned directly
+    if (Array.isArray(data.results) && data.results.length > 0) {
+      const result = data.results[0] as Record<string, unknown>;
+      const md = result.markdown as Record<string, string> | null;
+      const text = (md?.raw_markdown ?? "").slice(0, maxChars);
+      if (!text) return null;
+      return { title: url, url, text };
+    }
+
+    // Asynchronous response — poll for completion
+    if (typeof data.task_id === "string") {
+      return await pollCrawl4aiTask(data.task_id, url, maxChars, controller.signal);
+    }
+
+    return null;
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function pollCrawl4aiTask(
+  taskId: string,
+  url: string,
+  maxChars: number,
+  signal: AbortSignal
+): Promise<{ title: string; url: string; text: string } | null> {
+  const deadline = Date.now() + 40_000;
+
+  while (Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, 2000));
+    if (signal.aborted) return null;
+
+    try {
+      const resp = await fetch(`${CRAWL4AI_URL}/task/${taskId}`, { signal });
+      if (!resp.ok) return null;
+
+      const data = await resp.json() as Record<string, unknown>;
+      if (data.status === "completed") {
+        const result = data.result as Record<string, unknown> | null;
+        const md = result?.markdown as Record<string, string> | null;
+        const text = (md?.raw_markdown ?? "").slice(0, maxChars);
+        return text ? { title: url, url, text } : null;
+      }
+      if (data.status === "failed") return null;
+    } catch {
+      return null;
+    }
+  }
+
+  return null;
+}
+
+// --- Raw HTTP fetch (third-tier fallback) ---
+
+async function rawFetch(
+  url: string,
+  maxChars = 8000
+): Promise<{ title: string; url: string; text: string }> {
+  const res = await fetch(url, {
+    headers: { "User-Agent": "Mozilla/5.0 (compatible; searxng-mcp/1.0)" },
+    signal: AbortSignal.timeout(15000),
+  });
+
+  if (!res.ok) throw new Error(`Raw fetch error: ${res.status} ${res.statusText}`);
+
+  const text = (await res.text()).slice(0, maxChars);
+  return { title: url, url, text };
+}
+
+// --- Page fetcher (routes GitHub URLs to GitHub API, others through fetch cascade) ---
 
 async function fetchPage(
   url: string,
@@ -541,9 +635,27 @@ async function fetchPage(
   }
 
   const { hostname } = new URL(url);
-  const result = hostname === "github.com"
-    ? await githubFetch(url, maxChars)
-    : await firecrawlScrape(url, maxChars);
+
+  let result: { title: string; url: string; text: string };
+  if (hostname === "github.com") {
+    result = await githubFetch(url, maxChars);
+  } else {
+    // Tier 1: Firecrawl
+    let fetched: { title: string; url: string; text: string } | null = null;
+    try {
+      fetched = await firecrawlScrape(url, maxChars);
+    } catch {
+      // fall through to next tier
+    }
+
+    // Tier 2: Crawl4AI (skipped if CRAWL4AI_URL not set)
+    if (!fetched) {
+      fetched = await crawl4aiFetch(url, maxChars);
+    }
+
+    // Tier 3: Raw HTTP fetch
+    result = fetched ?? await rawFetch(url, maxChars);
+  }
 
   await cacheSet(key, JSON.stringify(result), FETCH_CACHE_TTL_SECONDS);
 
@@ -672,7 +784,7 @@ server.tool(
     ),
     domain_profile: DomainProfileSchema,
     expand: z
-      .boolean()
+      .coerce.boolean()
       .optional()
       .describe(
         "Use local LLM to generate 2-3 query variants and merge results for a wider search surface (default: off). Adds ~3s latency; most useful for research queries where one phrasing may miss relevant results."
@@ -704,7 +816,7 @@ server.tool(
       .describe("Number of top results to fetch full content for (default 1, max 3)"),
     domain_profile: DomainProfileSchema,
     expand: z
-      .boolean()
+      .coerce.boolean()
       .optional()
       .describe(
         "Use local LLM to generate 2-3 query variants and merge results for a wider search surface (default: off). Adds ~3s latency."
@@ -778,7 +890,7 @@ server.tool(
     ),
     domain_profile: DomainProfileSchema,
     expand: z
-      .boolean()
+      .coerce.boolean()
       .optional()
       .describe("Use query expansion before searching (default: off)"),
   },
