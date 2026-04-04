@@ -16,7 +16,7 @@ const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
 const VALKEY_URL = process.env.VALKEY_URL ?? "redis://localhost:6381";
 const CACHE_TTL_SECONDS = parseInt(process.env.CACHE_TTL_SECONDS ?? "3600", 10);
 const FETCH_CACHE_TTL_SECONDS = parseInt(process.env.FETCH_CACHE_TTL_SECONDS ?? "86400", 10);
-const OLLAMA_URL = process.env.OLLAMA_URL ?? "https://your-ollama-instance";
+const OLLAMA_URL = process.env.OLLAMA_URL ?? "";
 const EXPAND_QUERIES_DEFAULT = process.env.EXPAND_QUERIES === "true";
 
 // --- Domain filtering ---
@@ -170,6 +170,7 @@ interface OllamaChatResponse {
 }
 
 async function expandQuery(query: string): Promise<string[]> {
+  if (!OLLAMA_URL) return [];
   const prompt =
     `Generate 2-3 search query variants for the query below. ` +
     `Output ONLY the variant queries, one per line. No numbering, no explanations, no extra text.\n\n` +
@@ -566,6 +567,7 @@ async function summarizePages(
   query: string,
   pages: Array<{ title: string; url: string; text: string }>
 ): Promise<SummaryResult> {
+  if (!OLLAMA_URL) return { summary: "", citations: [] };
   if (pages.length === 0) {
     return { summary: "No content to summarize.", citations: [] };
   }
