@@ -603,7 +603,8 @@ async function summarizePages(
     if (!res.ok) throw new Error(`Ollama error: ${res.status}`);
 
     const data = (await res.json()) as OllamaChatResponse;
-    const parsed = JSON.parse(data.message.content) as SummaryResult;
+    const raw = (data.message.content.match(/\{[\s\S]*\}/) ?? [data.message.content])[0];
+    const parsed = JSON.parse(raw) as SummaryResult;
     return {
       summary: parsed.summary ?? "",
       citations: Array.isArray(parsed.citations) ? parsed.citations : [],
