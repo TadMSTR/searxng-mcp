@@ -1,6 +1,5 @@
 node_modules/
 build/
-pnpm-lock.yaml
 core.*
 *.core
 .env
