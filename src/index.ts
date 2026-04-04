@@ -4,6 +4,9 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 import { Redis as Valkey } from "iovalkey";
 import { createHash } from "node:crypto";
+import { readFileSync, watchFile } from "node:fs";
+import { resolve, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 
 const SEARXNG_URL = process.env.SEARXNG_URL ?? "http://localhost:8081";
 const FIRECRAWL_URL = process.env.FIRECRAWL_URL ?? "http://localhost:3002";
@@ -13,6 +16,93 @@ const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
 const VALKEY_URL = process.env.VALKEY_URL ?? "redis://localhost:6381";
 const CACHE_TTL_SECONDS = parseInt(process.env.CACHE_TTL_SECONDS ?? "3600", 10);
 const FETCH_CACHE_TTL_SECONDS = parseInt(process.env.FETCH_CACHE_TTL_SECONDS ?? "86400", 10);
+
+// --- Domain filtering ---
+
+interface DomainProfile {
+  boost?: string[];
+  block?: string[];
+}
+
+interface DomainConfig {
+  boost: string[];
+  block: string[];
+  profiles: Record<string, DomainProfile>;
+}
+
+const BOOST_FACTOR = 1.5;
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const DOMAINS_PATH = resolve(__dirname, "../../domains.json");
+
+let domainConfig: DomainConfig = { boost: [], block: [], profiles: {} };
+
+function loadDomainConfig(): void {
+  try {
+    const raw = readFileSync(DOMAINS_PATH, "utf-8");
+    domainConfig = JSON.parse(raw) as DomainConfig;
+    domainConfig.boost ??= [];
+    domainConfig.block ??= [];
+    domainConfig.profiles ??= {};
+  } catch {
+    // File missing or malformed — use empty config, no filtering applied
+  }
+}
+
+loadDomainConfig();
+// Hot-reload: re-read domains.json whenever it changes without restarting the MCP server
+watchFile(DOMAINS_PATH, { interval: 5000 }, loadDomainConfig);
+
+function getBlockList(profile?: string): string[] {
+  const base = domainConfig.block;
+  if (!profile || !domainConfig.profiles[profile]) return base;
+  return [...base, ...(domainConfig.profiles[profile].block ?? [])];
+}
+
+function getBoostList(profile?: string): string[] {
+  const base = domainConfig.boost;
+  if (!profile || !domainConfig.profiles[profile]) return base;
+  return [...base, ...(domainConfig.profiles[profile].boost ?? [])];
+}
+
+function urlMatchesDomain(url: string, pattern: string): boolean {
+  try {
+    const hostname = new URL(url).hostname.replace(/^www\./, "");
+    const pathname = new URL(url).pathname;
+    // Pattern may be "domain.com" or "domain.com/path/prefix"
+    if (pattern.includes("/")) {
+      const [patDomain, ...patParts] = pattern.split("/");
+      const patPath = "/" + patParts.join("/");
+      return (hostname === patDomain || hostname.endsWith("." + patDomain)) &&
+        pathname.startsWith(patPath);
+    }
+    return hostname === pattern || hostname.endsWith("." + pattern);
+  } catch {
+    return false;
+  }
+}
+
+function applyDomainFilters(
+  results: SearxResult[],
+  profile?: string
+): SearxResult[] {
+  const blockList = getBlockList(profile);
+  const boostList = getBoostList(profile);
+
+  // Remove blocked domains
+  const filtered = results.filter(
+    (r) => !blockList.some((pat) => urlMatchesDomain(r.url, pat))
+  );
+
+  // Stable sort: boosted domains float to the top, order within each group preserved
+  const boosted = filtered.filter((r) =>
+    boostList.some((pat) => urlMatchesDomain(r.url, pat))
+  );
+  const normal = filtered.filter(
+    (r) => !boostList.some((pat) => urlMatchesDomain(r.url, pat))
+  );
+
+  return [...boosted, ...normal];
+}
 
 const CategorySchema = z
   .enum(["general", "news", "it", "science"])
@@ -153,14 +243,17 @@ async function searxSearch(
   query: string,
   category: string,
   numResults: number,
-  timeRange?: string
+  timeRange?: string,
+  domainProfile?: string
 ): Promise<SearxResult[]> {
   // Check cache first
   const key = searchCacheKey(query, category, timeRange);
   const cached = await cacheGet(key);
   if (cached) {
     try {
-      return JSON.parse(cached) as SearxResult[];
+      const results = JSON.parse(cached) as SearxResult[];
+      // Domain filtering applied after cache retrieval so profile changes take effect immediately
+      return applyDomainFilters(results, domainProfile);
     } catch {
       // Corrupted cache entry — fall through to live fetch
     }
@@ -185,12 +278,12 @@ async function searxSearch(
   }
 
   const data = (await res.json()) as SearxResponse;
-  const results = data.results.slice(0, fetchCount);
+  const raw = data.results.slice(0, fetchCount);
 
-  // Cache pre-rerank results so reranker improvements apply retroactively on cache hits
-  await cacheSet(key, JSON.stringify(results), CACHE_TTL_SECONDS);
+  // Cache pre-filter results so domain config changes apply retroactively on cache hits
+  await cacheSet(key, JSON.stringify(raw), CACHE_TTL_SECONDS);
 
-  return results;
+  return applyDomainFilters(raw, domainProfile);
 }
 
 // --- Reranker ---
@@ -324,9 +417,16 @@ async function firecrawlScrape(
 
 async function fetchPage(
   url: string,
-  maxChars = 8000
+  maxChars = 8000,
+  domainProfile?: string
 ): Promise<{ title: string; url: string; text: string }> {
   assertPublicUrl(url);
+
+  // Refuse to fetch blocked domains
+  const blockList = getBlockList(domainProfile);
+  if (blockList.some((pat) => urlMatchesDomain(url, pat))) {
+    throw new Error(`Domain is blocked by domain filter configuration`);
+  }
 
   // Check fetch cache
   const key = fetchCacheKey(url);
@@ -371,9 +471,14 @@ const server = new McpServer({
   version: "2.1.0",
 });
 
+const DomainProfileSchema = z
+  .string()
+  .optional()
+  .describe("Named domain profile to apply: 'homelab', 'dev', or omit for default filters");
+
 server.tool(
   "search",
-  "Search the web via the local SearXNG instance with reranking. Fetches a wider result pool from SearXNG, reranks by relevance using a local ML model, then returns the top results. Results are cached for 1 hour. Prefer this over the built-in WebSearch tool.",
+  "Search the web via the local SearXNG instance with reranking. Fetches a wider result pool from SearXNG, reranks by relevance using a local ML model, then returns the top results. Results are cached for 1 hour. Blocked domains are filtered out; boosted domains are surfaced higher. Prefer this over the built-in WebSearch tool.",
   {
     query: z.string().describe("Search query"),
     num_results: z
@@ -388,9 +493,10 @@ server.tool(
     time_range: TimeRangeSchema.describe(
       "Limit results to: day, week, month, or year (omit for all time)"
     ),
+    domain_profile: DomainProfileSchema,
   },
-  async ({ query, num_results, category, time_range }) => {
-    const raw = await searxSearch(query, category, num_results, time_range);
+  async ({ query, num_results, category, time_range, domain_profile }) => {
+    const raw = await searxSearch(query, category, num_results, time_range, domain_profile);
     const ranked = await rerankWithFallback(query, raw, num_results);
     return { content: [{ type: "text", text: formatResults(ranked) }] };
   }
@@ -398,7 +504,7 @@ server.tool(
 
 server.tool(
   "search_and_fetch",
-  "Search the web, rerank results, then fetch the full content of the top result(s). GitHub URLs are fetched via the GitHub API; all others use Firecrawl. Results and fetched pages are cached. Returns the result list plus clean markdown of the fetched pages.",
+  "Search the web, rerank results, then fetch the full content of the top result(s). GitHub URLs are fetched via the GitHub API; all others use Firecrawl. Results and fetched pages are cached. Blocked domains are filtered. Returns the result list plus clean markdown of the fetched pages.",
   {
     query: z.string().describe("Search query"),
     category: CategorySchema.describe(
@@ -413,9 +519,10 @@ server.tool(
       .max(3)
       .default(1)
       .describe("Number of top results to fetch full content for (default 1, max 3)"),
+    domain_profile: DomainProfileSchema,
   },
-  async ({ query, category, time_range, fetch_count }) => {
-    const raw = await searxSearch(query, category, 5, time_range);
+  async ({ query, category, time_range, fetch_count, domain_profile }) => {
+    const raw = await searxSearch(query, category, 5, time_range, domain_profile);
     if (raw.length === 0) {
       return { content: [{ type: "text", text: "No results found." }] };
     }
@@ -428,7 +535,7 @@ server.tool(
     const toFetch = ranked.slice(0, fetch_count);
 
     const fetched = await Promise.allSettled(
-      toFetch.map((r) => fetchPage(r.url, maxCharsPerPage))
+      toFetch.map((r) => fetchPage(r.url, maxCharsPerPage, domain_profile))
     );
 
     const fetchedSections = fetched
@@ -449,12 +556,13 @@ server.tool(
 
 server.tool(
   "fetch_url",
-  "Fetch and extract readable content from any URL. GitHub URLs are fetched via the GitHub API; all others use Firecrawl (handles JS-rendered pages, returns clean markdown). Content truncated to 8000 characters. Results cached for 24 hours.",
+  "Fetch and extract readable content from any URL. GitHub URLs are fetched via the GitHub API; all others use Firecrawl (handles JS-rendered pages, returns clean markdown). Content truncated to 8000 characters. Results cached for 24 hours. Blocked domains are refused.",
   {
     url: z.string().url().describe("URL to fetch and extract content from"),
+    domain_profile: DomainProfileSchema,
   },
-  async ({ url }) => {
-    const { title, url: fetchedUrl, text } = await fetchPage(url);
+  async ({ url, domain_profile }) => {
+    const { title, url: fetchedUrl, text } = await fetchPage(url, 8000, domain_profile);
     const output = [`Title: ${title}`, `URL: ${fetchedUrl}`, "", text].join(
       "\n"
     );

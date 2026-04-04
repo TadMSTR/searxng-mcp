@@ -1,0 +1,38 @@
+{
+  "boost": [
+    "servethehome.com",
+    "arstechnica.com",
+    "level1techs.com",
+    "github.com",
+    "stackoverflow.com",
+    "superuser.com",
+    "unix.stackexchange.com"
+  ],
+  "block": [
+    "pinterest.com",
+    "quora.com"
+  ],
+  "profiles": {
+    "homelab": {
+      "boost": [
+        "reddit.com/r/homelab",
+        "reddit.com/r/selfhosted",
+        "forums.servethehome.com",
+        "linuxserver.io",
+        "docs.docker.com",
+        "wiki.archlinux.org"
+      ],
+      "block": []
+    },
+    "dev": {
+      "boost": [
+        "stackoverflow.com",
+        "github.com",
+        "dev.to",
+        "docs.npmjs.com",
+        "developer.mozilla.org"
+      ],
+      "block": []
+    }
+  }
+}
