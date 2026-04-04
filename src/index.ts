@@ -548,6 +548,7 @@ async function crawl4aiFetch(
 
     // Asynchronous response — poll for completion
     if (typeof data.task_id === "string") {
+      if (!/^[a-zA-Z0-9_-]{1,64}$/.test(data.task_id)) return null;
       return await pollCrawl4aiTask(data.task_id, url, maxChars, controller.signal);
     }
 
