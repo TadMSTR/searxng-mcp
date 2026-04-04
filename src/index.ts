@@ -16,6 +16,8 @@ const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
 const VALKEY_URL = process.env.VALKEY_URL ?? "redis://localhost:6381";
 const CACHE_TTL_SECONDS = parseInt(process.env.CACHE_TTL_SECONDS ?? "3600", 10);
 const FETCH_CACHE_TTL_SECONDS = parseInt(process.env.FETCH_CACHE_TTL_SECONDS ?? "86400", 10);
+const OLLAMA_URL = process.env.OLLAMA_URL ?? "https://ollama.helmforge.me";
+const EXPAND_QUERIES_DEFAULT = process.env.EXPAND_QUERIES === "true";
 
 // --- Domain filtering ---
 
@@ -152,6 +154,50 @@ interface RerankResponse {
   results: RerankResult[];
 }
 
+// --- Ollama query expansion ---
+
+interface OllamaGenerateResponse {
+  response: string;
+}
+
+async function expandQuery(query: string): Promise<string[]> {
+  const prompt =
+    `Generate 2-3 search query variants for the query below. ` +
+    `Output ONLY the variant queries, one per line. No numbering, no explanations, no extra text.\n\n` +
+    `Original query: ${query}\n\n` +
+    `Variant types:\n` +
+    `- Technical rephrasing: use precise technical terms\n` +
+    `- Product/specific: include product names or version numbers if applicable\n` +
+    `- Community: how someone would phrase it in a forum or community\n\n` +
+    `Output 2 or 3 variants only:`;
+
+  try {
+    const res = await fetch(`${OLLAMA_URL}/api/generate`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: "qwen3:4b",
+        prompt,
+        stream: false,
+        options: { think: false },
+      }),
+      signal: AbortSignal.timeout(3000),
+    });
+
+    if (!res.ok) throw new Error(`Ollama error: ${res.status}`);
+
+    const data = (await res.json()) as OllamaGenerateResponse;
+    return data.response
+      .split("\n")
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0 && line !== query)
+      .slice(0, 3);
+  } catch {
+    // Timeout, connection refused, or any error — fall back to original query
+    return [];
+  }
+}
+
 // --- Cache ---
 
 let valkey: Valkey | null = null;
@@ -242,17 +288,43 @@ function assertPublicUrl(url: string): void {
 
 // --- SearXNG ---
 
+async function searxSearchSingle(
+  query: string,
+  category: string,
+  fetchCount: number,
+  timeRange?: string
+): Promise<SearxResult[]> {
+  const params = new URLSearchParams({
+    q: query,
+    format: "json",
+    categories: category,
+    pageno: "1",
+  });
+  if (timeRange) params.set("time_range", timeRange);
+
+  const res = await fetch(`${SEARXNG_URL}/search?${params}`, {
+    signal: AbortSignal.timeout(10000),
+  });
+  if (!res.ok) throw new Error(`SearXNG error: ${res.status} ${res.statusText}`);
+
+  const data = (await res.json()) as SearxResponse;
+  return data.results.slice(0, fetchCount);
+}
+
 async function searxSearch(
   query: string,
   category: string,
   numResults: number,
   timeRange?: string,
-  domainProfile?: string
+  domainProfile?: string,
+  expand?: boolean
 ): Promise<SearxResult[]> {
-  // Check cache first
+  const shouldExpand = expand ?? EXPAND_QUERIES_DEFAULT;
+
+  // Check cache first (keyed on original query — expansion results are not cached separately)
   const key = searchCacheKey(query, category, timeRange);
   const cached = await cacheGet(key);
-  if (cached) {
+  if (cached && !shouldExpand) {
     try {
       const results = JSON.parse(cached) as SearxResult[];
       // Domain filtering applied after cache retrieval so profile changes take effect immediately
@@ -265,23 +337,39 @@ async function searxSearch(
   // Fetch more than needed so reranker has a larger pool to work with
   const fetchCount = Math.min(numResults * 3, 20);
 
-  const params = new URLSearchParams({
-    q: query,
-    format: "json",
-    categories: category,
-    pageno: "1",
-  });
-  if (timeRange) params.set("time_range", timeRange);
+  if (shouldExpand) {
+    // Run original query + expanded variants in parallel, merge, deduplicate by URL
+    const [variants, originalResults] = await Promise.all([
+      expandQuery(query),
+      searxSearchSingle(query, category, fetchCount, timeRange),
+    ]);
 
-  const res = await fetch(`${SEARXNG_URL}/search?${params}`, {
-    signal: AbortSignal.timeout(10000),
-  });
-  if (!res.ok) {
-    throw new Error(`SearXNG error: ${res.status} ${res.statusText}`);
+    const variantResults = await Promise.allSettled(
+      variants.map((v) => searxSearchSingle(v, category, fetchCount, timeRange))
+    );
+
+    // Merge: original results first, then variant results; deduplicate by URL
+    const seen = new Set<string>();
+    const merged: SearxResult[] = [];
+    for (const r of originalResults) {
+      if (!seen.has(r.url)) { seen.add(r.url); merged.push(r); }
+    }
+    for (const settled of variantResults) {
+      if (settled.status === "fulfilled") {
+        for (const r of settled.value) {
+          if (!seen.has(r.url)) { seen.add(r.url); merged.push(r); }
+        }
+      }
+    }
+
+    // Cache only the original query results (not the expanded pool)
+    await cacheSet(key, JSON.stringify(originalResults), CACHE_TTL_SECONDS);
+
+    return applyDomainFilters(merged, domainProfile);
   }
 
-  const data = (await res.json()) as SearxResponse;
-  const raw = data.results.slice(0, fetchCount);
+  // Non-expanded path
+  const raw = await searxSearchSingle(query, category, fetchCount, timeRange);
 
   // Cache pre-filter results so domain config changes apply retroactively on cache hits
   await cacheSet(key, JSON.stringify(raw), CACHE_TTL_SECONDS);
@@ -497,9 +585,15 @@ server.tool(
       "Limit results to: day, week, month, or year (omit for all time)"
     ),
     domain_profile: DomainProfileSchema,
+    expand: z
+      .boolean()
+      .optional()
+      .describe(
+        "Use local LLM to generate 2-3 query variants and merge results for a wider search surface (default: off). Adds ~3s latency; most useful for research queries where one phrasing may miss relevant results."
+      ),
   },
-  async ({ query, num_results, category, time_range, domain_profile }) => {
-    const raw = await searxSearch(query, category, num_results, time_range, domain_profile);
+  async ({ query, num_results, category, time_range, domain_profile, expand }) => {
+    const raw = await searxSearch(query, category, num_results, time_range, domain_profile, expand);
     const ranked = await rerankWithFallback(query, raw, num_results);
     return { content: [{ type: "text", text: formatResults(ranked) }] };
   }
@@ -523,9 +617,15 @@ server.tool(
       .default(1)
       .describe("Number of top results to fetch full content for (default 1, max 3)"),
     domain_profile: DomainProfileSchema,
+    expand: z
+      .boolean()
+      .optional()
+      .describe(
+        "Use local LLM to generate 2-3 query variants and merge results for a wider search surface (default: off). Adds ~3s latency."
+      ),
   },
-  async ({ query, category, time_range, fetch_count, domain_profile }) => {
-    const raw = await searxSearch(query, category, 5, time_range, domain_profile);
+  async ({ query, category, time_range, fetch_count, domain_profile, expand }) => {
+    const raw = await searxSearch(query, category, 5, time_range, domain_profile, expand);
     if (raw.length === 0) {
       return { content: [{ type: "text", text: "No results found." }] };
     }
