@@ -1,11 +1,13 @@
 {
   "name": "searxng-mcp",
-  "version": "3.0.0",
+  "version": "3.1.0",
   "description": "MCP server for SearXNG — private web search for Claude Code",
   "main": "build/src/index.js",
   "type": "module",
   "scripts": {
-    "build": "tsc && chmod 755 build/src/index.js"
+    "build": "tsc && chmod 755 build/src/index.js",
+    "test": "vitest run --typecheck",
+    "test:watch": "vitest --typecheck"
   },
   "keywords": [
     "searxng",
@@ -21,6 +23,7 @@
   },
   "devDependencies": {
     "@types/node": "^22.13.10",
-    "typescript": "^5.8.2"
+    "typescript": "^5.8.2",
+    "vitest": "^4.1.3"
   }
 }
