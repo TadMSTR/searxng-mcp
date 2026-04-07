@@ -9,9 +9,9 @@ Designed for use with Claude Code and LibreChat agents that need web search with
 | Tool | Description | Key Parameters |
 |------|-------------|----------------|
 | `search` | Search via SearXNG with local reranking. Fetches a wider result pool, reranks by relevance, returns top N. | `query`, `num_results` (1–20), `category`, `time_range`, `domain_profile`, `expand` |
-| `search_and_fetch` | Search, rerank, then fetch full content of the top result(s) via Firecrawl. | `query`, `category`, `time_range`, `fetch_count` (1–3), `domain_profile`, `expand` |
+| `search_and_fetch` | Search, rerank, then fetch full content of the top result(s) using the fetch cascade (Firecrawl → Crawl4AI → raw HTTP). | `query`, `category`, `time_range`, `fetch_count` (1–3), `domain_profile`, `expand` |
 | `search_and_summarize` | Search, fetch top results, then synthesize a summary with citations via Ollama (qwen3:14b). Falls back to raw fetched content if Ollama is unavailable. | `query`, `fetch_count` (1–5), `category`, `time_range`, `domain_profile`, `expand` |
-| `fetch_url` | Fetch and extract readable markdown from any public URL. GitHub URLs use the GitHub API; all others use Firecrawl. Truncated to 8,000 characters. | `url`, `domain_profile` |
+| `fetch_url` | Fetch and extract readable markdown from any public URL. GitHub URLs use the GitHub API; all others use the fetch cascade (Firecrawl → Crawl4AI → raw HTTP). Truncated to 8,000 characters. | `url`, `domain_profile` |
 | `clear_cache` | Purge the search cache, fetch cache, or both. Useful when researching fast-moving topics where cached results may be stale. | `target` (`search`, `fetch`, `all`) |
 
 ### Parameters
@@ -82,6 +82,16 @@ The reranker must expose a Jina-compatible `/v1/rerank` endpoint. A lightweight 
 
 Any Firecrawl-compatible instance works. The local [firecrawl-simple](https://github.com/mendableai/firecrawl/tree/main/apps/api) deployment is sufficient. Set `FIRECRAWL_API_KEY` if your instance requires authentication (defaults to `placeholder-local` for local deployments that skip auth).
 
+### Crawl4AI
+
+[Crawl4AI](https://github.com/unclecode/crawl4ai) is an optional second-tier fetch fallback used when Firecrawl returns empty content (bot-blocked pages, JS-heavy sites). Set `CRAWL4AI_URL` to enable it. If unset, the cascade skips to raw HTTP fetch.
+
+```bash
+docker run -d -p 11235:11235 unclecode/crawl4ai:0.8.6
+```
+
+If your instance requires API token authentication, set `CRAWL4AI_API_TOKEN`.
+
 ### Valkey / Redis
 
 Any Redis-compatible instance. Valkey is recommended. Search results are cached for 1 hour; fetched pages for 24 hours. If unavailable, the server operates without caching.
@@ -109,11 +119,12 @@ All service URLs are configurable via environment variables.
 | `FIRECRAWL_API_KEY` | `placeholder-local` | Firecrawl API key (if required) |
 | `GITHUB_TOKEN` | *(unset)* | GitHub personal access token — increases rate limit from 60 to 5,000 req/hour |
 | `OLLAMA_URL` | *(unset)* | Ollama API base URL — required for `expand` and `search_and_summarize` |
-| `VALKEY_URL` | *(unset)* | Redis-compatible URL (e.g. `redis://localhost:6379`) — enables result caching |
+| `VALKEY_URL` | `redis://localhost:6381` | Redis-compatible URL — enables result caching. Server degrades gracefully if unavailable. |
 | `CACHE_TTL_SECONDS` | `3600` | Search result cache TTL in seconds |
 | `FETCH_CACHE_TTL_SECONDS` | `86400` | Fetched page cache TTL in seconds |
 | `EXPAND_QUERIES` | `false` | Set to `true` to enable query expansion globally |
 | `CRAWL4AI_URL` | *(unset)* | Crawl4AI instance URL — enables second-tier fetch fallback when Firecrawl fails |
+| `CRAWL4AI_API_TOKEN` | *(unset)* | Optional Bearer token for Crawl4AI instances with API token protection |
 
 ## Build
 
@@ -200,7 +211,7 @@ Unauthenticated requests are rate-limited to 60/hour. Set `GITHUB_TOKEN` to rais
 
 ## URL Safety
 
-The `fetch_url` and `search_and_fetch` tools enforce a URL allowlist — private/internal IP ranges (`10.x`, `192.168.x`, `172.16-31.x`, `localhost`, `127.x`) and non-HTTP protocols are blocked. This prevents the server from being used as an SSRF proxy into your local network.
+The `fetch_url` and `search_and_fetch` tools enforce a URL allowlist — private/internal IP ranges (`10.x`, `192.168.x`, `172.16-31.x`, `localhost`, `127.x`), IPv6 private ranges (`::1`, `fc00::/7`, `fe80::/10`), and non-HTTP protocols are blocked. This prevents the server from being used as an SSRF proxy into your local network.
 
 ## License
 
