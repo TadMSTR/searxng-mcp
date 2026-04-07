@@ -10,3 +10,6 @@ export const OLLAMA_URL = process.env.OLLAMA_URL ?? "";
 export const EXPAND_QUERIES_DEFAULT = process.env.EXPAND_QUERIES === "true";
 export const CRAWL4AI_URL = process.env.CRAWL4AI_URL ?? null;
 export const CRAWL4AI_API_TOKEN = process.env.CRAWL4AI_API_TOKEN;
+export const RERANK_RECENCY_WEIGHT = parseFloat(
+  process.env.RERANK_RECENCY_WEIGHT ?? "0.15"
+);
