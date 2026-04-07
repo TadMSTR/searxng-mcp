@@ -10,3 +10,14 @@ export const OLLAMA_URL = process.env.OLLAMA_URL ?? "";
 export const EXPAND_QUERIES_DEFAULT = process.env.EXPAND_QUERIES === "true";
 export const CRAWL4AI_URL = process.env.CRAWL4AI_URL ?? null;
 export const CRAWL4AI_API_TOKEN = process.env.CRAWL4AI_API_TOKEN;
+export const RERANK_RECENCY_WEIGHT = (() => {
+  const v = parseFloat(process.env.RERANK_RECENCY_WEIGHT ?? "0.15");
+  if (isNaN(v) || v < 0) {
+    console.warn(`[searxng-mcp] RERANK_RECENCY_WEIGHT="${process.env.RERANK_RECENCY_WEIGHT}" is invalid; recency weighting disabled.`);
+    return 0;
+  }
+  if (v > 1) {
+    console.warn(`[searxng-mcp] RERANK_RECENCY_WEIGHT=${v} exceeds 1.0; recency may dominate relevance scores.`);
+  }
+  return v;
+})();

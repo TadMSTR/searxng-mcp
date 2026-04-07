@@ -6,6 +6,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [3.2.0] - 2026-04-07
+
+### Added
+- Recency weighting in reranker — blends `publishedDate`-based exponential decay score
+  with the cross-encoder relevance score (90-day decay constant, weight 0.15 by default).
+  Surfaces fresher results within relevance-close clusters without overriding large
+  relevance gaps. Configurable via `RERANK_RECENCY_WEIGHT` env var; set to `0` to disable.
+  Skipped automatically when `time_range` is set (pool is already date-filtered).
+
+### Changed
+- Reranker now requests scores for the full result pool rather than only the final topN,
+  enabling post-score re-ordering across all candidates.
+
 ## [3.1.0] - 2026-04-07
 
 ### Added
@@ -91,7 +104,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Result reranking using a local ML model with fallback to raw SearXNG ordering when the reranker is unavailable
 - Category filtering: `general`, `news`, `it`, `science`
 
-[Unreleased]: https://github.com/TadMSTR/searxng-mcp/compare/v3.1.0...HEAD
+[Unreleased]: https://github.com/TadMSTR/searxng-mcp/compare/v3.2.0...HEAD
+[3.2.0]: https://github.com/TadMSTR/searxng-mcp/compare/v3.1.0...v3.2.0
 [3.1.0]: https://github.com/TadMSTR/searxng-mcp/compare/v3.0.2...v3.1.0
 [3.0.2]: https://github.com/TadMSTR/searxng-mcp/compare/v3.0.1...v3.0.2
 [3.0.1]: https://github.com/TadMSTR/searxng-mcp/compare/v3.0.0...v3.0.1

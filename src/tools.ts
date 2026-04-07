@@ -53,7 +53,7 @@ export function registerTools(server: McpServer): void {
     },
     async ({ query, num_results, category, time_range, domain_profile, expand }) => {
       const raw = await searxSearch(query, category, num_results, time_range, domain_profile, expand);
-      const ranked = await rerankWithFallback(query, raw, num_results);
+      const ranked = await rerankWithFallback(query, raw, num_results, time_range);
       return { content: [{ type: "text", text: formatResults(ranked) }] };
     }
   );
@@ -89,7 +89,7 @@ export function registerTools(server: McpServer): void {
         return { content: [{ type: "text", text: "No results found." }] };
       }
 
-      const ranked = await rerankWithFallback(query, raw, 5);
+      const ranked = await rerankWithFallback(query, raw, 5, time_range);
       const searchText = formatResults(ranked);
 
       // Divide the 8000-char budget evenly across fetched pages
@@ -161,7 +161,7 @@ export function registerTools(server: McpServer): void {
         return { content: [{ type: "text", text: "No results found." }] };
       }
 
-      const ranked = await rerankWithFallback(query, raw, fetch_count);
+      const ranked = await rerankWithFallback(query, raw, fetch_count, time_range);
       const searchText = formatResults(ranked);
 
       // Fetch top N pages; 4000 chars each (summarizer doesn't need the full 8000)
