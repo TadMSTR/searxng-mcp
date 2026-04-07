@@ -50,6 +50,22 @@ describe("assertPublicUrl", () => {
     expect(() => assertPublicUrl("http://[::1]/page")).toThrow("Internal/private addresses are not allowed");
   });
 
+  it("throws on [0:0:0:0:0:0:0:1] (IPv6 full-form loopback, bracket notation)", () => {
+    expect(() => assertPublicUrl("http://[0:0:0:0:0:0:0:1]/page")).toThrow("Internal/private addresses are not allowed");
+  });
+
+  it("throws on [fc00::] (IPv6 ULA fc range, bracket notation)", () => {
+    expect(() => assertPublicUrl("http://[fc00::]/page")).toThrow("Internal/private addresses are not allowed");
+  });
+
+  it("throws on [fd00::] (IPv6 ULA fd range, bracket notation)", () => {
+    expect(() => assertPublicUrl("http://[fd00::]/page")).toThrow("Internal/private addresses are not allowed");
+  });
+
+  it("throws on [fe80::] (IPv6 link-local, bracket notation)", () => {
+    expect(() => assertPublicUrl("http://[fe80::]/page")).toThrow("Internal/private addresses are not allowed");
+  });
+
   it("throws on non-http protocol", () => {
     expect(() => assertPublicUrl("ftp://example.com/page")).toThrow("Only http/https URLs are supported");
   });
