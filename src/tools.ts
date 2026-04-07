@@ -60,7 +60,7 @@ export function registerTools(server: McpServer): void {
 
   server.tool(
     "search_and_fetch",
-    "Search the web, rerank results, then fetch the full content of the top result(s). GitHub URLs are fetched via the GitHub API; all others use Firecrawl. Results and fetched pages are cached. Blocked domains are filtered. Returns the result list plus clean markdown of the fetched pages.",
+    "Search the web, rerank results, then fetch the full content of the top result(s). GitHub URLs are fetched via the GitHub API; all others go through a fetch cascade: Firecrawl → Crawl4AI → raw HTTP. Results and fetched pages are cached. Blocked domains are filtered. Returns the result list plus clean markdown of the fetched pages.",
     {
       query: z.string().describe("Search query"),
       category: CategorySchema.describe(
@@ -118,7 +118,7 @@ export function registerTools(server: McpServer): void {
 
   server.tool(
     "fetch_url",
-    "Fetch and extract readable content from any URL. GitHub URLs are fetched via the GitHub API; all others use Firecrawl (handles JS-rendered pages, returns clean markdown). Content truncated to 8000 characters. Results cached for 24 hours. Blocked domains are refused.",
+    "Fetch and extract readable content from any URL. GitHub URLs are fetched via the GitHub API; all others go through a fetch cascade: Firecrawl → Crawl4AI → raw HTTP. Returns clean markdown where possible. Content truncated to 8000 characters. Results cached for 24 hours. Blocked domains are refused.",
     {
       url: z.string().url().describe("URL to fetch and extract content from"),
       domain_profile: DomainProfileSchema,
