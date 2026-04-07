@@ -5,7 +5,7 @@ import { registerTools } from "./tools.js";
 
 const server = new McpServer({
   name: "searxng-mcp",
-  version: "3.0.0",
+  version: "3.1.0",
 });
 
 registerTools(server);

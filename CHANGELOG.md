@@ -6,18 +6,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [3.1.0] - 2026-04-07
+
 ### Added
 - Crawl4AI fetch adapter as second-tier fallback in the fetch cascade (`CRAWL4AI_URL` env var) — uses `markdown.raw_markdown` for clean content extraction on JS-heavy or Firecrawl-failing pages; skipped silently if `CRAWL4AI_URL` is not set
-- Raw HTTP fetch as third-tier fallback — ensures fetch never fails silently when both Firecrawl and Crawl4AI are unavailable
-- `CRAWL4AI_API_TOKEN` env var — optional Bearer token for Crawl4AI instances with API token protection; included as `Authorization: Bearer <token>` header when set
+- Raw HTTP fetch as third-tier fallback — ensures `fetch_url` never fails silently when both Firecrawl and Crawl4AI are unavailable
+- `CRAWL4AI_API_TOKEN` env var — optional Bearer token for Crawl4AI instances with API token protection
 
 ### Fixed
-- `search_and_fetch`, `search_and_summarize`, `search`: `expand` parameter coercion switched to `z.coerce.boolean()` across all three tools — fixes `MCP error -32602: Expected boolean, received string` when MCP serialization layer coerces `true` to `"true"`
-- Fetch cascade now falls through to Crawl4AI on empty Firecrawl response — Firecrawl returns `success: true` with empty content on bot-blocked or challenge pages rather than throwing; empty-content check added so Crawl4AI activates on soft failures, not only on exceptions
+- `search`, `search_and_fetch`, `search_and_summarize`: `expand` parameter coercion switched to `z.coerce.boolean()` — fixes `MCP error -32602: Expected boolean, received string` when MCP serialization coerces `true` to `"true"`
+- Fetch cascade falls through to Crawl4AI on empty Firecrawl response — Firecrawl returns `success: true` with empty content on bot-blocked pages rather than throwing; now treated as a soft failure
 
 ### Security
-- Validate `task_id` format against `^[a-zA-Z0-9_-]+$` before use in `pollCrawl4aiTask` URL path construction — prevents path traversal
+- `fetch_url` now correctly blocks IPv6 private-range addresses in bracket notation — `::1`, ULA (`fc00::/7`), and link-local (`fe80::/10`) were not matched because `URL.hostname` returns brackets (e.g., `[::1]`) which the prior regexes didn't account for
 - Block HTTP redirects in `rawFetch()` — prevents SSRF bypass via redirect chains to internal addresses
+- Validate `task_id` format before use in Crawl4AI poll URL — prevents path traversal
 
 ## [3.0.2] - 2026-04-04
 
@@ -88,7 +91,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Result reranking using a local ML model with fallback to raw SearXNG ordering when the reranker is unavailable
 - Category filtering: `general`, `news`, `it`, `science`
 
-[Unreleased]: https://github.com/TadMSTR/searxng-mcp/compare/v3.0.2...HEAD
+[Unreleased]: https://github.com/TadMSTR/searxng-mcp/compare/v3.1.0...HEAD
+[3.1.0]: https://github.com/TadMSTR/searxng-mcp/compare/v3.0.2...v3.1.0
 [3.0.2]: https://github.com/TadMSTR/searxng-mcp/compare/v3.0.1...v3.0.2
 [3.0.1]: https://github.com/TadMSTR/searxng-mcp/compare/v3.0.0...v3.0.1
 [3.0.0]: https://github.com/TadMSTR/searxng-mcp/compare/v2.2.0...v3.0.0
