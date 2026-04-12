@@ -56,21 +56,26 @@ export async function summarizePages(
     )
     .join("\n\n---\n\n");
 
-  const prompt =
-    `You are a research assistant. Synthesize the sources below to answer the query.\n\n` +
-    `Query: ${query}\n\n` +
-    `Sources:\n${pageBlocks}\n\n` +
-    `Respond with JSON only, no markdown fences, matching this exact schema:\n` +
-    `{"summary":"<synthesized answer>","citations":[{"url":"<url>","title":"<title>","key_facts":["<fact>"]}]}\n` +
-    `Include only sources that contributed to the answer. key_facts: 1-3 short phrases per source.`;
-
   try {
     const res = await fetch(`${OLLAMA_URL}/api/chat`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         model: "qwen3:14b",
-        messages: [{ role: "user", content: prompt }],
+        messages: [
+          {
+            role: "system",
+            content:
+              "You are a research assistant. Synthesize the provided sources to answer the query. " +
+              "Respond with JSON only, no markdown fences, matching this exact schema: " +
+              '{"summary":"<synthesized answer>","citations":[{"url":"<url>","title":"<title>","key_facts":["<fact>"]}]} ' +
+              "Include only sources that contributed to the answer. key_facts: 1-3 short phrases per source.",
+          },
+          {
+            role: "user",
+            content: `Query: ${query}\n\nSources:\n${pageBlocks}`,
+          },
+        ],
         stream: false,
         options: { think: false },
       }),
