@@ -1,3 +1,8 @@
+---
+tier: showcase
+promoted: null
+---
+
 # AGENTS.md — searxng-mcp
 
 MCP server that wraps a self-hosted SearXNG instance with optional reranking and full-page fetching via Firecrawl.
