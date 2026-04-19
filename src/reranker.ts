@@ -1,11 +1,11 @@
-import { RERANKER_URL, RERANK_RECENCY_WEIGHT } from "./config.js";
-import type { SearxResult, RerankResponse } from "./types.js";
+import { RERANK_RECENCY_WEIGHT, RERANKER_URL } from "./config.js";
+import type { RerankResponse, SearxResult } from "./types.js";
 
 /** Exponential decay recency score. Returns 0 for missing/unparseable dates. */
 export function recencyScore(date?: string): number {
   if (!date) return 0;
   const ms = Date.parse(date);
-  if (isNaN(ms)) return 0;
+  if (Number.isNaN(ms)) return 0;
   const ageDays = (Date.now() - ms) / 86_400_000;
   if (ageDays < 0) return 0; // future dates treated as neutral
   return Math.exp(-ageDays / 90);
@@ -15,13 +15,11 @@ async function rerank(
   query: string,
   results: SearxResult[],
   topN: number,
-  applyRecency: boolean
+  applyRecency: boolean,
 ): Promise<SearxResult[]> {
   if (results.length === 0) return results;
 
-  const documents = results.map(
-    (r) => `${r.title}. ${r.content ?? ""}`.trim()
-  );
+  const documents = results.map((r) => `${r.title}. ${r.content ?? ""}`.trim());
 
   const res = await fetch(`${RERANKER_URL}/v1/rerank`, {
     method: "POST",
@@ -45,7 +43,8 @@ async function rerank(
       const result = results[r.index];
       const combined =
         applyRecency && RERANK_RECENCY_WEIGHT > 0
-          ? r.relevance_score + RERANK_RECENCY_WEIGHT * recencyScore(result.publishedDate)
+          ? r.relevance_score +
+            RERANK_RECENCY_WEIGHT * recencyScore(result.publishedDate)
           : r.relevance_score;
       return { result, score: combined };
     });
@@ -58,7 +57,7 @@ export async function rerankWithFallback(
   query: string,
   results: SearxResult[],
   topN: number,
-  timeRange?: string
+  timeRange?: string,
 ): Promise<SearxResult[]> {
   const applyRecency = !timeRange; // skip when caller already filtered by date
   try {

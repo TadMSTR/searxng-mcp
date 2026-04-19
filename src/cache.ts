@@ -7,7 +7,10 @@ let valkey: Valkey | null = null;
 export async function getValkey(): Promise<Valkey | null> {
   if (valkey !== null) return valkey;
   try {
-    const client = new Valkey(VALKEY_URL, { lazyConnect: true, enableReadyCheck: false });
+    const client = new Valkey(VALKEY_URL, {
+      lazyConnect: true,
+      enableReadyCheck: false,
+    });
     client.on("error", () => {
       // Silently disconnect on error — caching is best-effort
       valkey = null;
@@ -20,7 +23,11 @@ export async function getValkey(): Promise<Valkey | null> {
   }
 }
 
-export function searchCacheKey(query: string, category: string, timeRange?: string): string {
+export function searchCacheKey(
+  query: string,
+  category: string,
+  timeRange?: string,
+): string {
   const raw = `${query}|${category}|${timeRange ?? ""}`;
   return `search:${createHash("sha256").update(raw).digest("hex")}`;
 }
@@ -39,7 +46,11 @@ export async function cacheGet(key: string): Promise<string | null> {
   }
 }
 
-export async function cacheSet(key: string, value: string, ttl: number): Promise<void> {
+export async function cacheSet(
+  key: string,
+  value: string,
+  ttl: number,
+): Promise<void> {
   try {
     const client = await getValkey();
     if (!client) return;

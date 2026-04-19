@@ -1,8 +1,14 @@
 # searxng-mcp
 
+[![Built with Claude Code](https://img.shields.io/badge/Built_with-Claude_Code-6B57FF?logo=claude&logoColor=white)](https://claude.ai/code)
+[![CI](https://github.com/TadMSTR/searxng-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/TadMSTR/searxng-mcp/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+
 An MCP server for private web search via a self-hosted [SearXNG](https://github.com/searxng/searxng) instance. Results are reranked by a local ML model, full-page content is fetched via Firecrawl, and an optional Ollama instance provides query expansion and LLM-synthesized summaries.
 
 Designed for use with Claude Code and LibreChat agents that need web search without sending queries to a third-party search API.
+
+Built with [Claude Code](https://claude.ai/code) using the multi-agent workflow from [homelab-agent](https://github.com/TadMSTR/homelab-agent) — the same platform that uses searxng-mcp in production for AI-assisted research.
 
 ## Tools
 
@@ -55,7 +61,7 @@ stdio (compatible with Claude Code MCP plugin and LibreChat `stdio` config).
 
 ## Prerequisites
 
-- Node.js 22+
+- Node.js 20+
 - pnpm (or npm)
 - A running [SearXNG](https://github.com/searxng/searxng) instance
 - A running [Firecrawl](https://github.com/mendableai/firecrawl) instance
@@ -209,9 +215,27 @@ mcpServers:
 
 Unauthenticated requests are rate-limited to 60/hour. Set `GITHUB_TOKEN` to raise this to 5,000/hour.
 
-## URL Safety
+## Security
+
+### URL safety
 
 The `fetch_url` and `search_and_fetch` tools enforce a URL allowlist — private/internal IP ranges (`10.x`, `192.168.x`, `172.16-31.x`, `localhost`, `127.x`), IPv6 private ranges (`::1`, `fc00::/7`, `fe80::/10`), and non-HTTP protocols are blocked. This prevents the server from being used as an SSRF proxy into your local network.
+
+### Redirect protection
+
+HTTP redirects in raw fetch requests are blocked to prevent SSRF bypass via redirect chains to internal addresses.
+
+### Dependency auditing
+
+CI runs `pnpm audit` on every push. The lockfile (`pnpm-lock.yaml`) is committed for reproducible, auditable builds.
+
+### Credential handling
+
+No credentials are stored or logged by the server. API keys (`FIRECRAWL_API_KEY`, `GITHUB_TOKEN`, `CRAWL4AI_API_TOKEN`) are read from environment variables and used only in outbound requests to their respective services.
+
+### Input validation
+
+Environment variables are validated at startup — `RERANK_RECENCY_WEIGHT` warns on NaN, negative, or >1.0 values. Numeric tool parameters use `z.coerce.number()` with range constraints.
 
 ## License
 

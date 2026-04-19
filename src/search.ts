@@ -1,14 +1,18 @@
-import { SEARXNG_URL, CACHE_TTL_SECONDS, EXPAND_QUERIES_DEFAULT } from "./config.js";
-import type { SearxResult, SearxResponse } from "./types.js";
 import { cacheGet, cacheSet, searchCacheKey } from "./cache.js";
+import {
+  CACHE_TTL_SECONDS,
+  EXPAND_QUERIES_DEFAULT,
+  SEARXNG_URL,
+} from "./config.js";
 import { applyDomainFilters } from "./domains.js";
 import { expandQuery } from "./ollama.js";
+import type { SearxResponse, SearxResult } from "./types.js";
 
 export async function searxSearchSingle(
   query: string,
   category: string,
   fetchCount: number,
-  timeRange?: string
+  timeRange?: string,
 ): Promise<SearxResult[]> {
   const params = new URLSearchParams({
     q: query,
@@ -21,7 +25,8 @@ export async function searxSearchSingle(
   const res = await fetch(`${SEARXNG_URL}/search?${params}`, {
     signal: AbortSignal.timeout(10000),
   });
-  if (!res.ok) throw new Error(`SearXNG error: ${res.status} ${res.statusText}`);
+  if (!res.ok)
+    throw new Error(`SearXNG error: ${res.status} ${res.statusText}`);
 
   const data = (await res.json()) as SearxResponse;
   return data.results.slice(0, fetchCount);
@@ -33,7 +38,7 @@ export async function searxSearch(
   numResults: number,
   timeRange?: string,
   domainProfile?: string,
-  expand?: boolean
+  expand?: boolean,
 ): Promise<SearxResult[]> {
   const shouldExpand = expand ?? EXPAND_QUERIES_DEFAULT;
 
@@ -61,19 +66,27 @@ export async function searxSearch(
     ]);
 
     const variantResults = await Promise.allSettled(
-      variants.map((v) => searxSearchSingle(v, category, fetchCount, timeRange))
+      variants.map((v) =>
+        searxSearchSingle(v, category, fetchCount, timeRange),
+      ),
     );
 
     // Merge: original results first, then variant results; deduplicate by URL
     const seen = new Set<string>();
     const merged: SearxResult[] = [];
     for (const r of originalResults) {
-      if (!seen.has(r.url)) { seen.add(r.url); merged.push(r); }
+      if (!seen.has(r.url)) {
+        seen.add(r.url);
+        merged.push(r);
+      }
     }
     for (const settled of variantResults) {
       if (settled.status === "fulfilled") {
         for (const r of settled.value) {
-          if (!seen.has(r.url)) { seen.add(r.url); merged.push(r); }
+          if (!seen.has(r.url)) {
+            seen.add(r.url);
+            merged.push(r);
+          }
         }
       }
     }
