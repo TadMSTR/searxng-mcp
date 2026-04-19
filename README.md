@@ -8,6 +8,8 @@ An MCP server for private web search via a self-hosted [SearXNG](https://github.
 
 Designed for use with Claude Code and LibreChat agents that need web search without sending queries to a third-party search API.
 
+Built with [Claude Code](https://claude.ai/code) using the multi-agent workflow from [homelab-agent](https://github.com/TadMSTR/homelab-agent) — the same platform that uses searxng-mcp in production for AI-assisted research.
+
 ## Tools
 
 | Tool | Description | Key Parameters |
