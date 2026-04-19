@@ -1,8 +1,3 @@
----
-tier: showcase
-promoted: null
----
-
 # AGENTS.md — searxng-mcp
 
 MCP server for private web search via a self-hosted SearXNG instance. Reranks results with a local ML model, fetches full-page content via a three-tier cascade (Firecrawl → Crawl4AI → raw HTTP), and optionally expands queries and synthesizes summaries via Ollama.
