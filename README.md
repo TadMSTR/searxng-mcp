@@ -1,5 +1,9 @@
 # searxng-mcp
 
+[![Built with Claude Code](https://img.shields.io/badge/Built_with-Claude_Code-6B57FF?logo=claude&logoColor=white)](https://claude.ai/code)
+[![CI](https://github.com/TadMSTR/searxng-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/TadMSTR/searxng-mcp/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+
 An MCP server for private web search via a self-hosted [SearXNG](https://github.com/searxng/searxng) instance. Results are reranked by a local ML model, full-page content is fetched via Firecrawl, and an optional Ollama instance provides query expansion and LLM-synthesized summaries.
 
 Designed for use with Claude Code and LibreChat agents that need web search without sending queries to a third-party search API.
@@ -55,7 +59,7 @@ stdio (compatible with Claude Code MCP plugin and LibreChat `stdio` config).
 
 ## Prerequisites
 
-- Node.js 22+
+- Node.js 20+
 - pnpm (or npm)
 - A running [SearXNG](https://github.com/searxng/searxng) instance
 - A running [Firecrawl](https://github.com/mendableai/firecrawl) instance
