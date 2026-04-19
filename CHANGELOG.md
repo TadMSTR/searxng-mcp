@@ -6,6 +6,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [3.2.1] - 2026-04-19
+
+### Added
+- GitHub Actions CI workflow — Node.js 20/22 matrix, type-check, Biome lint, Vitest tests, `pnpm audit --prod` (SHA-pinned actions)
+- GitHub Actions release workflow — tag-triggered, builds + tests + `pnpm pack`, creates GitHub Release with tarball attached
+- Biome linter (`biome.json`) — single-binary TypeScript linter and formatter; `pnpm lint` / `pnpm lint:fix` scripts
+- Security section in README — consolidates SSRF/URL safety, redirect protection (v3.1.0 feature, previously undocumented in README), dependency auditing, credential handling, input validation
+
+### Changed
+- `package.json` — added `packageManager` (pnpm@10.30.3), `engines` (node >=20), `files` (clean tarball scope) fields
+- README — Claude Code, CI, and License badges in header; Node.js prerequisite updated from 22+ to 20+; provenance note linking to homelab-agent
+- AGENTS.md — full rewrite to reflect current 5-tool / 9-module architecture (was stale: 3 tools, single-file structure)
+
+### Fixed
+- `src/domains.ts`, `src/reranker.ts`, `src/config.ts`, `src/fetch.ts` — `Number.isNaN` instead of global `isNaN`, template literals, literal key access, unused variable prefix
+
 ## [3.2.0] - 2026-04-07
 
 ### Added
