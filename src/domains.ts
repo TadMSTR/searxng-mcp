@@ -3,7 +3,6 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { DomainConfig, SearxResult } from "./types.js";
 
-const _BOOST_FACTOR = 1.5;
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const DOMAINS_PATH = resolve(__dirname, "../../domains.json");
 
