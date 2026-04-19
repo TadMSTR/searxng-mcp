@@ -16,6 +16,8 @@
   ],
   "author": "TadMSTR",
   "license": "MIT",
+  "packageManager": "pnpm@10.30.3",
+  "engines": { "node": ">=20" },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.7.0",
     "iovalkey": "^0.3.3",
