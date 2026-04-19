@@ -3,6 +3,7 @@
 [![Built with Claude Code](https://img.shields.io/badge/Built_with-Claude_Code-6B57FF?logo=claude&logoColor=white)](https://claude.ai/code)
 [![CI](https://github.com/TadMSTR/searxng-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/TadMSTR/searxng-mcp/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![npm](https://img.shields.io/npm/v/@tadmstr/searxng-mcp)](https://www.npmjs.com/package/@tadmstr/searxng-mcp)
 
 An MCP server for private web search via a self-hosted [SearXNG](https://github.com/searxng/searxng) instance. Results are reranked by a local ML model, full-page content is fetched via Firecrawl, and an optional Ollama instance provides query expansion and LLM-synthesized summaries.
 
@@ -132,9 +133,25 @@ All service URLs are configurable via environment variables.
 | `CRAWL4AI_URL` | *(unset)* | Crawl4AI instance URL — enables second-tier fetch fallback when Firecrawl fails |
 | `CRAWL4AI_API_TOKEN` | *(unset)* | Optional Bearer token for Crawl4AI instances with API token protection |
 
-## Build
+## Install
+
+### npm (recommended)
 
 ```bash
+npm install -g @tadmstr/searxng-mcp
+```
+
+Or run directly with `npx`:
+
+```bash
+npx @tadmstr/searxng-mcp
+```
+
+### From source
+
+```bash
+git clone https://github.com/TadMSTR/searxng-mcp.git
+cd searxng-mcp
 pnpm install
 pnpm build
 ```
@@ -149,8 +166,8 @@ The recommended approach uses `claude mcp add-json` to register the server with 
 
 ```bash
 claude mcp add-json searxng --scope user '{
-  "command": "node",
-  "args": ["/path/to/searxng-mcp/build/src/index.js"],
+  "command": "npx",
+  "args": ["-y", "@tadmstr/searxng-mcp"],
   "env": {
     "SEARXNG_URL": "http://localhost:8081",
     "FIRECRAWL_URL": "http://localhost:3002",
@@ -173,8 +190,8 @@ This writes to `~/.claude.json`. Do not add searxng to `~/.claude/settings.json`
 {
   "mcpServers": {
     "searxng": {
-      "command": "node",
-      "args": ["/path/to/searxng-mcp/build/src/index.js"],
+      "command": "npx",
+      "args": ["-y", "@tadmstr/searxng-mcp"],
       "env": {
         "SEARXNG_URL": "http://localhost:8081",
         "FIRECRAWL_URL": "http://localhost:3002",
