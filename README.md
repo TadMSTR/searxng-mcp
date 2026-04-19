@@ -213,9 +213,27 @@ mcpServers:
 
 Unauthenticated requests are rate-limited to 60/hour. Set `GITHUB_TOKEN` to raise this to 5,000/hour.
 
-## URL Safety
+## Security
+
+### URL safety
 
 The `fetch_url` and `search_and_fetch` tools enforce a URL allowlist — private/internal IP ranges (`10.x`, `192.168.x`, `172.16-31.x`, `localhost`, `127.x`), IPv6 private ranges (`::1`, `fc00::/7`, `fe80::/10`), and non-HTTP protocols are blocked. This prevents the server from being used as an SSRF proxy into your local network.
+
+### Redirect protection
+
+HTTP redirects in raw fetch requests are blocked to prevent SSRF bypass via redirect chains to internal addresses.
+
+### Dependency auditing
+
+CI runs `pnpm audit` on every push. The lockfile (`pnpm-lock.yaml`) is committed for reproducible, auditable builds.
+
+### Credential handling
+
+No credentials are stored or logged by the server. API keys (`FIRECRAWL_API_KEY`, `GITHUB_TOKEN`, `CRAWL4AI_API_TOKEN`) are read from environment variables and used only in outbound requests to their respective services.
+
+### Input validation
+
+Environment variables are validated at startup — `RERANK_RECENCY_WEIGHT` warns on NaN, negative, or >1.0 values. Numeric tool parameters use `z.coerce.number()` with range constraints.
 
 ## License
 
