@@ -1,8 +1,15 @@
 {
-  "name": "searxng-mcp",
+  "name": "@tadmstr/searxng-mcp",
   "version": "3.2.1",
   "description": "MCP server for SearXNG — private web search for Claude Code",
   "main": "build/src/index.js",
+  "bin": {
+    "searxng-mcp": "build/src/index.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/TadMSTR/searxng-mcp.git"
+  },
   "type": "module",
   "scripts": {
     "build": "tsc && chmod 755 build/src/index.js",
