@@ -1,5 +1,10 @@
 import { OLLAMA_URL } from "./config.js";
-import type { OllamaGenerateResponse, OllamaChatResponse, Citation, SummaryResult } from "./types.js";
+import type {
+  Citation,
+  OllamaChatResponse,
+  OllamaGenerateResponse,
+  SummaryResult,
+} from "./types.js";
 
 export async function expandQuery(query: string): Promise<string[]> {
   if (!OLLAMA_URL) return [];
@@ -42,7 +47,7 @@ export async function expandQuery(query: string): Promise<string[]> {
 
 export async function summarizePages(
   query: string,
-  pages: Array<{ title: string; url: string; text: string }>
+  pages: Array<{ title: string; url: string; text: string }>,
 ): Promise<SummaryResult> {
   if (!OLLAMA_URL) return { summary: "", citations: [] };
   if (pages.length === 0) {
@@ -51,8 +56,9 @@ export async function summarizePages(
 
   const MAX_CHARS_PER_PAGE = 4000;
   const pageBlocks = pages
-    .map((p, i) =>
-      `[Source ${i + 1}] ${p.title}\nURL: ${p.url}\n\n${p.text.slice(0, MAX_CHARS_PER_PAGE)}`
+    .map(
+      (p, i) =>
+        `[Source ${i + 1}] ${p.title}\nURL: ${p.url}\n\n${p.text.slice(0, MAX_CHARS_PER_PAGE)}`,
     )
     .join("\n\n---\n\n");
 
@@ -85,7 +91,9 @@ export async function summarizePages(
     if (!res.ok) throw new Error(`Ollama error: ${res.status}`);
 
     const data = (await res.json()) as OllamaChatResponse;
-    const raw = (data.message.content.match(/\{[\s\S]*\}/) ?? [data.message.content])[0];
+    const raw = (data.message.content.match(/\{[\s\S]*\}/) ?? [
+      data.message.content,
+    ])[0];
     const parsed = JSON.parse(raw) as SummaryResult;
     return {
       summary: parsed.summary ?? "",

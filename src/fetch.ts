@@ -1,7 +1,14 @@
-import { FIRECRAWL_URL, FIRECRAWL_API_KEY, GITHUB_TOKEN, CRAWL4AI_URL, CRAWL4AI_API_TOKEN, FETCH_CACHE_TTL_SECONDS } from "./config.js";
-import type { FirecrawlScrapeResponse, GitHubReadmeResponse } from "./types.js";
 import { cacheGet, cacheSet, fetchCacheKey } from "./cache.js";
+import {
+  CRAWL4AI_API_TOKEN,
+  CRAWL4AI_URL,
+  FETCH_CACHE_TTL_SECONDS,
+  FIRECRAWL_API_KEY,
+  FIRECRAWL_URL,
+  GITHUB_TOKEN,
+} from "./config.js";
 import { getBlockList, urlMatchesDomain } from "./domains.js";
+import type { FirecrawlScrapeResponse, GitHubReadmeResponse } from "./types.js";
 
 export function assertPublicUrl(url: string): void {
   const { protocol } = new URL(url);
@@ -31,30 +38,33 @@ export function assertPublicUrl(url: string): void {
 
 async function githubFetch(
   url: string,
-  maxChars = 8000
+  maxChars = 8000,
 ): Promise<{ title: string; url: string; text: string }> {
   const parsed = new URL(url);
   const parts = parsed.pathname.split("/").filter(Boolean);
   // parts: [owner, repo] or [owner, repo, "blob"|"tree", branch, ...path]
 
   const headers: Record<string, string> = {
-    "Accept": "application/vnd.github+json",
+    Accept: "application/vnd.github+json",
     "X-GitHub-Api-Version": "2022-11-28",
     "User-Agent": "searxng-mcp",
   };
-  if (GITHUB_TOKEN) headers["Authorization"] = `Bearer ${GITHUB_TOKEN}`;
+  if (GITHUB_TOKEN) headers.Authorization = `Bearer ${GITHUB_TOKEN}`;
 
   if (parts.length >= 4 && parts[2] === "blob") {
     // Rewrite blob URL to raw content
     const [owner, repo, , branch, ...filePath] = parts;
     const rawUrl = `https://raw.githubusercontent.com/${owner}/${repo}/${branch}/${filePath.join("/")}`;
     const rawHeaders: Record<string, string> = { "User-Agent": "searxng-mcp" };
-    if (GITHUB_TOKEN) rawHeaders["Authorization"] = `Bearer ${GITHUB_TOKEN}`;
+    if (GITHUB_TOKEN) rawHeaders.Authorization = `Bearer ${GITHUB_TOKEN}`;
     const res = await fetch(rawUrl, {
       headers: rawHeaders,
       signal: AbortSignal.timeout(10000),
     });
-    if (!res.ok) throw new Error(`GitHub raw fetch error: ${res.status} ${res.statusText}`);
+    if (!res.ok)
+      throw new Error(
+        `GitHub raw fetch error: ${res.status} ${res.statusText}`,
+      );
     const text = (await res.text()).slice(0, maxChars);
     const fileName = filePath[filePath.length - 1] ?? url;
     return { title: fileName, url: rawUrl, text };
@@ -67,15 +77,18 @@ async function githubFetch(
     headers,
     signal: AbortSignal.timeout(10000),
   });
-  if (!res.ok) throw new Error(`GitHub API error: ${res.status} ${res.statusText}`);
+  if (!res.ok)
+    throw new Error(`GitHub API error: ${res.status} ${res.statusText}`);
   const data = (await res.json()) as GitHubReadmeResponse;
-  const text = Buffer.from(data.content, "base64").toString("utf-8").slice(0, maxChars);
+  const text = Buffer.from(data.content, "base64")
+    .toString("utf-8")
+    .slice(0, maxChars);
   return { title: `${owner}/${repo} — ${data.name}`, url: data.html_url, text };
 }
 
 async function firecrawlScrape(
   url: string,
-  maxChars = 8000
+  maxChars = 8000,
 ): Promise<{ title: string; url: string; text: string }> {
   const res = await fetch(`${FIRECRAWL_URL}/v1/scrape`, {
     method: "POST",
@@ -107,7 +120,7 @@ async function pollCrawl4aiTask(
   taskId: string,
   url: string,
   maxChars: number,
-  signal: AbortSignal
+  signal: AbortSignal,
 ): Promise<{ title: string; url: string; text: string } | null> {
   const deadline = Date.now() + 40_000;
 
@@ -119,7 +132,7 @@ async function pollCrawl4aiTask(
       const resp = await fetch(`${CRAWL4AI_URL}/task/${taskId}`, { signal });
       if (!resp.ok) return null;
 
-      const data = await resp.json() as Record<string, unknown>;
+      const data = (await resp.json()) as Record<string, unknown>;
       if (data.status === "completed") {
         const result = data.result as Record<string, unknown> | null;
         const md = result?.markdown as Record<string, string> | null;
@@ -137,7 +150,7 @@ async function pollCrawl4aiTask(
 
 async function crawl4aiFetch(
   url: string,
-  maxChars = 8000
+  maxChars = 8000,
 ): Promise<{ title: string; url: string; text: string } | null> {
   if (!CRAWL4AI_URL) return null;
 
@@ -145,8 +158,11 @@ async function crawl4aiFetch(
   const timeout = setTimeout(() => controller.abort(), 45_000);
 
   try {
-    const crawlHeaders: Record<string, string> = { "Content-Type": "application/json" };
-    if (CRAWL4AI_API_TOKEN) crawlHeaders["Authorization"] = `Bearer ${CRAWL4AI_API_TOKEN}`;
+    const crawlHeaders: Record<string, string> = {
+      "Content-Type": "application/json",
+    };
+    if (CRAWL4AI_API_TOKEN)
+      crawlHeaders.Authorization = `Bearer ${CRAWL4AI_API_TOKEN}`;
     const resp = await fetch(`${CRAWL4AI_URL}/crawl`, {
       method: "POST",
       headers: crawlHeaders,
@@ -155,7 +171,7 @@ async function crawl4aiFetch(
     });
 
     if (!resp.ok) return null;
-    const data = await resp.json() as Record<string, unknown>;
+    const data = (await resp.json()) as Record<string, unknown>;
 
     // Synchronous response — results returned directly
     if (Array.isArray(data.results) && data.results.length > 0) {
@@ -169,7 +185,12 @@ async function crawl4aiFetch(
     // Asynchronous response — poll for completion
     if (typeof data.task_id === "string") {
       if (!/^[a-zA-Z0-9_-]{1,64}$/.test(data.task_id)) return null;
-      return await pollCrawl4aiTask(data.task_id, url, maxChars, controller.signal);
+      return await pollCrawl4aiTask(
+        data.task_id,
+        url,
+        maxChars,
+        controller.signal,
+      );
     }
 
     return null;
@@ -182,7 +203,7 @@ async function crawl4aiFetch(
 
 async function rawFetch(
   url: string,
-  maxChars = 8000
+  maxChars = 8000,
 ): Promise<{ title: string; url: string; text: string }> {
   const res = await fetch(url, {
     headers: { "User-Agent": "Mozilla/5.0 (compatible; searxng-mcp/1.0)" },
@@ -191,9 +212,12 @@ async function rawFetch(
   });
 
   if (res.status >= 300 && res.status < 400) {
-    throw new Error(`Redirect blocked: ${res.status} → ${res.headers.get("location")}`);
+    throw new Error(
+      `Redirect blocked: ${res.status} → ${res.headers.get("location")}`,
+    );
   }
-  if (!res.ok) throw new Error(`Raw fetch error: ${res.status} ${res.statusText}`);
+  if (!res.ok)
+    throw new Error(`Raw fetch error: ${res.status} ${res.statusText}`);
 
   const text = (await res.text()).slice(0, maxChars);
   return { title: url, url, text };
@@ -202,7 +226,7 @@ async function rawFetch(
 export async function fetchPage(
   url: string,
   maxChars = 8000,
-  domainProfile?: string
+  domainProfile?: string,
 ): Promise<{ title: string; url: string; text: string }> {
   assertPublicUrl(url);
 
@@ -244,7 +268,7 @@ export async function fetchPage(
     }
 
     // Tier 3: Raw HTTP fetch
-    result = fetched ?? await rawFetch(url, maxChars);
+    result = fetched ?? (await rawFetch(url, maxChars));
   }
 
   await cacheSet(key, JSON.stringify(result), FETCH_CACHE_TTL_SECONDS);

@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, expect, it } from "vitest";
 import { recencyScore } from "../src/reranker.js";
 
 describe("recencyScore", () => {
@@ -40,9 +40,15 @@ describe("recencyScore", () => {
   });
 
   it("scores decrease monotonically with age", () => {
-    const week = recencyScore(new Date(Date.now() - 7 * 86_400_000).toISOString());
-    const month = recencyScore(new Date(Date.now() - 30 * 86_400_000).toISOString());
-    const year = recencyScore(new Date(Date.now() - 365 * 86_400_000).toISOString());
+    const week = recencyScore(
+      new Date(Date.now() - 7 * 86_400_000).toISOString(),
+    );
+    const month = recencyScore(
+      new Date(Date.now() - 30 * 86_400_000).toISOString(),
+    );
+    const year = recencyScore(
+      new Date(Date.now() - 365 * 86_400_000).toISOString(),
+    );
     expect(week).toBeGreaterThan(month);
     expect(month).toBeGreaterThan(year);
     expect(year).toBeGreaterThan(0);

@@ -1,5 +1,5 @@
-import { describe, it, expect } from "vitest";
-import { searchCacheKey, fetchCacheKey } from "../src/cache.js";
+import { describe, expect, it } from "vitest";
+import { fetchCacheKey, searchCacheKey } from "../src/cache.js";
 
 describe("searchCacheKey", () => {
   it("produces a consistent key for the same inputs", () => {

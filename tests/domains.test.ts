@@ -1,30 +1,42 @@
-import { describe, it, expect } from "vitest";
-import { urlMatchesDomain, applyDomainFilters } from "../src/domains.js";
+import { describe, expect, it } from "vitest";
+import { applyDomainFilters, urlMatchesDomain } from "../src/domains.js";
 import type { SearxResult } from "../src/types.js";
 
 describe("urlMatchesDomain", () => {
   it("matches exact domain", () => {
-    expect(urlMatchesDomain("https://example.com/page", "example.com")).toBe(true);
+    expect(urlMatchesDomain("https://example.com/page", "example.com")).toBe(
+      true,
+    );
   });
 
   it("matches www-prefixed URL against bare domain pattern", () => {
-    expect(urlMatchesDomain("https://www.example.com/page", "example.com")).toBe(true);
+    expect(
+      urlMatchesDomain("https://www.example.com/page", "example.com"),
+    ).toBe(true);
   });
 
   it("matches subdomain against parent domain", () => {
-    expect(urlMatchesDomain("https://sub.example.com/page", "example.com")).toBe(true);
+    expect(
+      urlMatchesDomain("https://sub.example.com/page", "example.com"),
+    ).toBe(true);
   });
 
   it("does not match unrelated domain", () => {
-    expect(urlMatchesDomain("https://other.com/page", "example.com")).toBe(false);
+    expect(urlMatchesDomain("https://other.com/page", "example.com")).toBe(
+      false,
+    );
   });
 
   it("matches domain + path prefix pattern", () => {
-    expect(urlMatchesDomain("https://example.com/docs/guide", "example.com/docs")).toBe(true);
+    expect(
+      urlMatchesDomain("https://example.com/docs/guide", "example.com/docs"),
+    ).toBe(true);
   });
 
   it("does not match when path prefix does not match", () => {
-    expect(urlMatchesDomain("https://example.com/blog/post", "example.com/docs")).toBe(false);
+    expect(
+      urlMatchesDomain("https://example.com/blog/post", "example.com/docs"),
+    ).toBe(false);
   });
 
   it("returns false for invalid URL", () => {
@@ -39,7 +51,10 @@ describe("applyDomainFilters", () => {
   });
 
   it("removes blocked domains", () => {
-    const results = [makeResult("https://blocked.com/page"), makeResult("https://allowed.com/page")];
+    const results = [
+      makeResult("https://blocked.com/page"),
+      makeResult("https://allowed.com/page"),
+    ];
     const filtered = applyDomainFilters(results, undefined);
     // No block/boost lists loaded from disk in tests — all results pass through
     expect(filtered).toHaveLength(2);

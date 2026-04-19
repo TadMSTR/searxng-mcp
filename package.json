@@ -7,7 +7,9 @@
   "scripts": {
     "build": "tsc && chmod 755 build/src/index.js",
     "test": "vitest run --typecheck",
-    "test:watch": "vitest --typecheck"
+    "test:watch": "vitest --typecheck",
+    "lint": "biome check src/ tests/",
+    "lint:fix": "biome check --write src/ tests/"
   },
   "keywords": [
     "searxng",
@@ -17,14 +19,22 @@
   "author": "TadMSTR",
   "license": "MIT",
   "packageManager": "pnpm@10.30.3",
-  "engines": { "node": ">=20" },
-  "files": ["build/src/", "README.md", "LICENSE", "CHANGELOG.md"],
+  "engines": {
+    "node": ">=20"
+  },
+  "files": [
+    "build/src/",
+    "README.md",
+    "LICENSE",
+    "CHANGELOG.md"
+  ],
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.7.0",
     "iovalkey": "^0.3.3",
     "zod": "^3.24.2"
   },
   "devDependencies": {
+    "@biomejs/biome": "^2.4.12",
     "@types/node": "^22.13.10",
     "typescript": "^5.8.2",
     "vitest": "^4.1.3"

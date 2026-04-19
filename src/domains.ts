@@ -1,9 +1,9 @@
 import { readFileSync, watchFile } from "node:fs";
-import { resolve, dirname } from "node:path";
+import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { DomainConfig, SearxResult } from "./types.js";
 
-const BOOST_FACTOR = 1.5;
+const _BOOST_FACTOR = 1.5;
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const DOMAINS_PATH = resolve(__dirname, "../../domains.json");
 
@@ -44,11 +44,13 @@ export function urlMatchesDomain(url: string, pattern: string): boolean {
     // Pattern may be "domain.com" or "domain.com/path/prefix"
     if (pattern.includes("/")) {
       const [patDomain, ...patParts] = pattern.split("/");
-      const patPath = "/" + patParts.join("/");
-      return (hostname === patDomain || hostname.endsWith("." + patDomain)) &&
-        pathname.startsWith(patPath);
+      const patPath = `/${patParts.join("/")}`;
+      return (
+        (hostname === patDomain || hostname.endsWith(`.${patDomain}`)) &&
+        pathname.startsWith(patPath)
+      );
     }
-    return hostname === pattern || hostname.endsWith("." + pattern);
+    return hostname === pattern || hostname.endsWith(`.${pattern}`);
   } catch {
     return false;
   }
@@ -56,22 +58,22 @@ export function urlMatchesDomain(url: string, pattern: string): boolean {
 
 export function applyDomainFilters(
   results: SearxResult[],
-  profile?: string
+  profile?: string,
 ): SearxResult[] {
   const blockList = getBlockList(profile);
   const boostList = getBoostList(profile);
 
   // Remove blocked domains
   const filtered = results.filter(
-    (r) => !blockList.some((pat) => urlMatchesDomain(r.url, pat))
+    (r) => !blockList.some((pat) => urlMatchesDomain(r.url, pat)),
   );
 
   // Stable sort: boosted domains float to the top, order within each group preserved
   const boosted = filtered.filter((r) =>
-    boostList.some((pat) => urlMatchesDomain(r.url, pat))
+    boostList.some((pat) => urlMatchesDomain(r.url, pat)),
   );
   const normal = filtered.filter(
-    (r) => !boostList.some((pat) => urlMatchesDomain(r.url, pat))
+    (r) => !boostList.some((pat) => urlMatchesDomain(r.url, pat)),
   );
 
   return [...boosted, ...normal];
