@@ -1,6 +1,6 @@
 {
   "name": "searxng-mcp",
-  "version": "3.2.0",
+  "version": "3.2.1",
   "description": "MCP server for SearXNG — private web search for Claude Code",
   "main": "build/src/index.js",
   "type": "module",
