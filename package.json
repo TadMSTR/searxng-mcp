@@ -18,6 +18,7 @@
   "license": "MIT",
   "packageManager": "pnpm@10.30.3",
   "engines": { "node": ">=20" },
+  "files": ["build/src/", "README.md", "LICENSE", "CHANGELOG.md"],
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.7.0",
     "iovalkey": "^0.3.3",
