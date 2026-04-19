@@ -6,6 +6,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [3.3.0] - 2026-04-19
+
+### Added
+- npm publishing via `@tadmstr/searxng-mcp` — installable with `npx @tadmstr/searxng-mcp`
+- `bin` field in package.json for CLI entry point
+- `repository` field in package.json linking to GitHub
+- Release workflow publishes to npm with `--provenance` attestation on every version tag
+
+### Changed
+- Package name changed from `searxng-mcp` to `@tadmstr/searxng-mcp` (org-scoped)
+- GitHub Actions SHA pins upgraded to current major versions (checkout v6, setup-node v6, upload-artifact v7, download-artifact v8)
+- `@modelcontextprotocol/sdk` updated to 1.29.0; `pnpm.overrides` added for vulnerable transitive deps (`path-to-regexp`, `hono`, `@hono/node-server`)
+
+### Removed
+- Unused `BOOST_FACTOR` constant from `src/domains.ts`
+
 ## [3.2.1] - 2026-04-19
 
 ### Added
