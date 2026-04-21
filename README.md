@@ -126,6 +126,7 @@ All service URLs are configurable via environment variables.
 | `FIRECRAWL_API_KEY` | `placeholder-local` | Firecrawl API key (if required) |
 | `GITHUB_TOKEN` | *(unset)* | GitHub personal access token — increases rate limit from 60 to 5,000 req/hour |
 | `OLLAMA_URL` | *(unset)* | Ollama API base URL — required for `expand` and `search_and_summarize` |
+| `OLLAMA_API_KEY` | *(unset)* | Bearer token for authenticated Ollama proxies — adds `Authorization: Bearer <key>` header when set |
 | `VALKEY_URL` | `redis://localhost:6381` | Redis-compatible URL — enables result caching. Server degrades gracefully if unavailable. |
 | `CACHE_TTL_SECONDS` | `3600` | Search result cache TTL in seconds |
 | `FETCH_CACHE_TTL_SECONDS` | `86400` | Fetched page cache TTL in seconds |

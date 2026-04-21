@@ -6,6 +6,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+- `OLLAMA_API_KEY` env var support — when set, adds `Authorization: Bearer <key>` to Ollama requests in `expandQuery` and `summarizePages`. No behavior change when unset.
+
 ## [3.3.0] - 2026-04-19
 
 ### Added
