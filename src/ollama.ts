@@ -1,4 +1,4 @@
-import { OLLAMA_URL, OLLAMA_API_KEY } from "./config.js";
+import { OLLAMA_API_KEY, OLLAMA_URL } from "./config.js";
 import type {
   Citation,
   OllamaChatResponse,
