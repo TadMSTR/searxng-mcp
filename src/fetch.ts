@@ -31,6 +31,30 @@ import type {
 export const USER_AGENT =
   "searxng-mcp/3.5.0 (+https://github.com/TadMSTR/searxng-mcp; personal research)";
 
+// Hard cap on HTML bytes read into memory per fetch. Anything larger than
+// this is dropped — the metadata extractors aren't useful on multi-megabyte
+// rendered pages anyway, and uncapped reads make the JSDOM constructor a
+// memory-amplification target (IV-14).
+const RAW_HTML_MAX_BYTES = 2 * 1024 * 1024;
+
+async function readBoundedText(res: Response): Promise<string> {
+  const reader = res.body?.getReader();
+  if (!reader) return (await res.text()).slice(0, RAW_HTML_MAX_BYTES);
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  while (total < RAW_HTML_MAX_BYTES) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    chunks.push(value);
+    total += value.byteLength;
+  }
+  // Drop any in-flight remainder if we hit the cap.
+  reader.cancel().catch(() => {});
+  return Buffer.concat(chunks.map((c) => Buffer.from(c)))
+    .toString("utf-8")
+    .slice(0, RAW_HTML_MAX_BYTES);
+}
+
 export class RobotsDisallowedError extends Error {
   constructor(url: string) {
     super(`robots.txt disallows fetch: ${url}`);
@@ -260,6 +284,11 @@ export async function rawFetch(
   url: string,
   maxChars = 8000,
 ): Promise<TierResult> {
+  // Defensive SSRF guard — all current callers go through fetchPage which
+  // also calls this, but rawFetch is exported so the guard protects against
+  // future direct callers (SSRF-08).
+  assertPublicUrl(url);
+
   const res = await fetch(url, {
     headers: { "User-Agent": USER_AGENT },
     redirect: "manual",
@@ -267,14 +296,15 @@ export async function rawFetch(
   });
 
   if (res.status >= 300 && res.status < 400) {
-    throw new Error(
-      `Redirect blocked: ${res.status} → ${res.headers.get("location")}`,
-    );
+    // Don't echo the Location header into the thrown message — a redirect
+    // to an internal address would surface that address to the MCP caller
+    // (OE-02).
+    throw new Error(`Redirect not followed (${res.status})`);
   }
   if (!res.ok)
     throw new Error(`Raw fetch error: ${res.status} ${res.statusText}`);
 
-  const html = await res.text();
+  const html = await readBoundedText(res);
   const dom = new JSDOM(html, { url }); // runScripts not set — script execution disabled
   const reader = new Readability(dom.window.document);
   const article = reader.parse();
@@ -301,7 +331,8 @@ async function fetchRawHtmlForMetadata(url: string): Promise<string | null> {
   // Raw HTTP fetch (no JS rendering) used as the source for JSON-LD and meta
   // tags. Tier 1/2 puppeteer renders inject payment-widget og:title tags and
   // can strip JSON-LD scripts; the unrendered HTML is more reliable for
-  // post-extraction.
+  // post-extraction. Bounded by RAW_HTML_MAX_BYTES so large pages can't
+  // amplify into a JSDOM-memory hazard (IV-14).
   try {
     const res = await fetch(url, {
       headers: { "User-Agent": USER_AGENT },
@@ -309,7 +340,7 @@ async function fetchRawHtmlForMetadata(url: string): Promise<string | null> {
       signal: AbortSignal.timeout(8000),
     });
     if (!res.ok) return null;
-    return await res.text();
+    return await readBoundedText(res);
   } catch {
     return null;
   }
