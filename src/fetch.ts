@@ -9,6 +9,11 @@ import {
   FIRECRAWL_URL,
   GITHUB_TOKEN,
 } from "./config.js";
+import {
+  recordPostExtractSample,
+  recordTierAttempt,
+  type TierName,
+} from "./domain-db.js";
 import { getBlockList, urlMatchesDomain } from "./domains.js";
 import { events } from "./events.js";
 import { postExtract } from "./extractors/post-extract.js";
@@ -319,6 +324,16 @@ function applyPostExtract(
     baselineText: fetched.text,
     maxChars: 8000,
   });
+
+  // Sample what we saw in the metadata HTML for the domain DB. Cheap regex
+  // checks — full extraction is already done inside postExtract.
+  const jsonLdPresent = enriched.source === "json_ld";
+  const ogTitlePresent =
+    /<meta[^>]+(property|name)\s*=\s*["']og:title["']/i.test(html);
+  recordPostExtractSample(url, { jsonLdPresent, ogTitlePresent }).catch(
+    () => {},
+  );
+
   return {
     ...fetched,
     title: enriched.title,
@@ -327,7 +342,7 @@ function applyPostExtract(
 }
 
 async function runTier<T extends TierResult | null>(
-  tier: "tier1_firecrawl" | "tier2_crawl4ai" | "tier3_rawfetch",
+  tier: TierName,
   url: string,
   fn: () => Promise<T>,
 ): Promise<T> {
@@ -338,22 +353,21 @@ async function runTier<T extends TierResult | null>(
     if (out) {
       incCounter("fetch", { tier, outcome: "hit" });
       recordHistogram("fetch", latency_ms / 1000, { tier, outcome: "hit" });
+      recordTierAttempt(url, tier, "hit").catch(() => {});
     } else {
       incCounter("fetch", { tier, outcome: "miss" });
       recordHistogram("fetch", latency_ms / 1000, { tier, outcome: "miss" });
       events.fetchTierMiss({ url, tier, reason: "empty_result", latency_ms });
+      recordTierAttempt(url, tier, "miss", "empty_result").catch(() => {});
     }
     return out;
   } catch (err) {
     const latency_ms = Date.now() - t0;
+    const reason = err instanceof Error ? err.message : "error";
     incCounter("fetch", { tier, outcome: "error" });
     recordHistogram("fetch", latency_ms / 1000, { tier, outcome: "error" });
-    events.fetchTierMiss({
-      url,
-      tier,
-      reason: err instanceof Error ? err.message : "error",
-      latency_ms,
-    });
+    events.fetchTierMiss({ url, tier, reason, latency_ms });
+    recordTierAttempt(url, tier, "error", reason).catch(() => {});
     return null as T;
   }
 }

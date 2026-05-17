@@ -1,4 +1,5 @@
 import { cacheGet, cacheSet } from "./cache.js";
+import { recordLlmsFullProbe } from "./domain-db.js";
 import { getLlmsTxtAllowlist } from "./domains.js";
 
 const PROBE_PRESENT_TTL_SECONDS = 24 * 60 * 60;
@@ -99,6 +100,11 @@ async function getLlmsFullTxt(origin: string): Promise<CachedLlmsFull> {
       expiresAt: Date.now() + PROBE_PRESENT_TTL_MS,
     });
   }
+  recordLlmsFullProbe(
+    origin,
+    fresh.status === "present",
+    fresh.body?.length,
+  ).catch(() => {});
   return fresh;
 }
 

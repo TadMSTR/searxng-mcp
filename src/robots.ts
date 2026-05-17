@@ -1,5 +1,6 @@
 import robotsParserModule from "robots-parser";
 import { cacheGet, cacheSet } from "./cache.js";
+import { recordRobotsProbe } from "./domain-db.js";
 
 interface RobotsParserResult {
   isAllowed(url: string, userAgent?: string): boolean | undefined;
@@ -92,14 +93,17 @@ export async function checkRobots(
   const origin = parsedUrl.origin;
   const robots = await getRobotsForOrigin(origin);
   if (!robots.body) {
+    recordRobotsProbe(origin, false, true).catch(() => {});
     return { allowed: true, reason: "no_robots_txt" };
   }
   try {
     const parser = robotsParser(`${origin}/robots.txt`, robots.body);
     const allowed = parser.isAllowed(url, userAgent);
     if (allowed === false) {
+      recordRobotsProbe(origin, true, false).catch(() => {});
       return { allowed: false, reason: "disallowed" };
     }
+    recordRobotsProbe(origin, true, true).catch(() => {});
     return { allowed: true };
   } catch {
     return { allowed: true, reason: "fetch_failed" };

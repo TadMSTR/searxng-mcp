@@ -16,7 +16,8 @@
     "test": "vitest run --typecheck",
     "test:watch": "vitest --typecheck",
     "lint": "biome check src/ tests/",
-    "lint:fix": "biome check --write src/ tests/"
+    "lint:fix": "biome check --write src/ tests/",
+    "dump-domain": "node build/src/cli/dump-domain.js"
   },
   "keywords": [
     "searxng",

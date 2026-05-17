@@ -56,6 +56,25 @@ MCP client (stdio)
 
 SearXNG and Firecrawl are required. Crawl4AI, Valkey, Ollama, and the reranker are optional — the server degrades gracefully when any of these are unavailable.
 
+### Domain capability database
+
+Every fetch records what searxng-mcp learns about the target domain to Valkey under `domain:<hostname>` (90-day TTL, schema_version 1). Captured per record:
+
+- `tier_stats_30d.{tier1,tier2,tier3}.{attempts, ok, fail, last_fail_reason}` — fetch success rate per tier
+- `capabilities.robots_txt.{present, fetched, allows_us}` — robots.txt presence and whether it permits us
+- `capabilities.llms_full_txt.{present, size_bytes, last_checked}` — whether the domain serves `/llms-full.txt`
+- `capabilities.json_ld_article.{sampled, present, last_sampled_at}` — how often Article-schema JSON-LD is found
+- `capabilities.og_title.{sampled, present, last_sampled_at}` — same for `<meta property="og:title">`
+- `preferred_strategy` — currently set to `llms_full_txt` when a present probe lands; future phases will use this to skip the tier cascade
+
+Inspect a record with the bundled CLI:
+
+```bash
+pnpm dump-domain docs.anthropic.com
+```
+
+Concurrent updates for the same hostname (the tier-attempt, robots-probe, and post-extract-sample recorders that fire in parallel during one fetch) are serialized through an in-process write queue per hostname.
+
 ### llms.txt fast path
 
 For whitelisted documentation domains in `domains.json` (`llms_txt` array), `fetchPage` tries `<origin>/llms-full.txt` first and extracts the section matching the requested URL before invoking any tier. This avoids running puppeteer against well-instrumented docs sites and returns a clean markdown section directly. Cached probe outcomes live in Valkey (`llms:<origin>:full`, 24 h / 7 d for present/absent); the large body is held in-process for the lifetime of the MCP. Default whitelist: `docs.anthropic.com`, `docs.openai.com`, `docs.stripe.com`, `docs.crawl4ai.com`, `docs.firecrawl.dev`, `docs.cursor.com`. Extend by editing `domains.json` — the file is hot-reloaded.
