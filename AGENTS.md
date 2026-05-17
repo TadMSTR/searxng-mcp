@@ -1,6 +1,6 @@
 # AGENTS.md — searxng-mcp
 
-MCP server for private web search via a self-hosted SearXNG instance. Reranks results with a local ML model, fetches full-page content via a three-tier cascade (Firecrawl → Crawl4AI → raw HTTP), and optionally expands queries and synthesizes summaries via Ollama.
+MCP server for private web search via a self-hosted SearXNG instance. Reranks results with a local ML model, fetches full-page content via a three-tier cascade (Firecrawl → Crawl4AI → readability/raw HTTP), and optionally expands queries and synthesizes summaries via Ollama.
 
 ## What it does
 
@@ -8,7 +8,7 @@ Exposes five MCP tools:
 
 - **`search`** — queries SearXNG, reranks results with a local ML model, returns top N structured results
 - **`search_and_fetch`** — same as `search` but also fetches full content of the top result(s) via the fetch cascade
-- **`search_and_summarize`** — search, fetch, then synthesize a summary with citations via Ollama (qwen3:14b)
+- **`search_and_summarize`** — search, fetch, then synthesize a summary with citations via Ollama (default `qwen3:14b`, override with `OLLAMA_SUMMARIZE_MODEL`)
 - **`fetch_url`** — fetch and extract readable markdown from any public URL; GitHub URLs use the GitHub API
 - **`clear_cache`** — purge the Valkey result cache (search, fetch, or both)
 
@@ -19,7 +19,7 @@ src/
   index.ts        # Entry point — creates MCP server, registers tools
   tools.ts        # Tool definitions (schemas + handlers)
   search.ts       # SearXNG client
-  fetch.ts        # Fetch cascade (Firecrawl → Crawl4AI → raw HTTP) + GitHub API
+  fetch.ts        # Fetch cascade (Firecrawl → Crawl4AI → Readability/raw HTTP) + GitHub API
   reranker.ts     # Jina-compatible reranker client + recency weighting
   ollama.ts       # Ollama client (query expansion + summarization)
   cache.ts        # Valkey/Redis caching layer

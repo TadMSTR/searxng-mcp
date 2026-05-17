@@ -16,6 +16,10 @@ export const FETCH_CACHE_TTL_SECONDS = parseInt(
 );
 export const OLLAMA_URL = process.env.OLLAMA_URL ?? "";
 export const OLLAMA_API_KEY = process.env.OLLAMA_API_KEY ?? "";
+export const OLLAMA_EXPAND_MODEL =
+  process.env.OLLAMA_EXPAND_MODEL ?? "qwen3:4b";
+export const OLLAMA_SUMMARIZE_MODEL =
+  process.env.OLLAMA_SUMMARIZE_MODEL ?? "qwen3:14b";
 export const EXPAND_QUERIES_DEFAULT = process.env.EXPAND_QUERIES === "true";
 export const CRAWL4AI_URL = process.env.CRAWL4AI_URL ?? null;
 export const CRAWL4AI_API_TOKEN = process.env.CRAWL4AI_API_TOKEN;

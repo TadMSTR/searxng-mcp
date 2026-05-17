@@ -1,4 +1,9 @@
-import { OLLAMA_API_KEY, OLLAMA_URL } from "./config.js";
+import {
+  OLLAMA_API_KEY,
+  OLLAMA_EXPAND_MODEL,
+  OLLAMA_SUMMARIZE_MODEL,
+  OLLAMA_URL,
+} from "./config.js";
 import type {
   Citation,
   OllamaChatResponse,
@@ -26,7 +31,7 @@ export async function expandQuery(query: string): Promise<string[]> {
         ...(OLLAMA_API_KEY && { Authorization: `Bearer ${OLLAMA_API_KEY}` }),
       },
       body: JSON.stringify({
-        model: "qwen3:4b",
+        model: OLLAMA_EXPAND_MODEL,
         prompt,
         stream: false,
         options: { think: false },
@@ -73,7 +78,7 @@ export async function summarizePages(
         ...(OLLAMA_API_KEY && { Authorization: `Bearer ${OLLAMA_API_KEY}` }),
       },
       body: JSON.stringify({
-        model: "qwen3:14b",
+        model: OLLAMA_SUMMARIZE_MODEL,
         messages: [
           {
             role: "system",
