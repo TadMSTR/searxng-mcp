@@ -6,7 +6,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
-## [3.5.0] - 2026-MM-DD
+## [3.5.0] - 2026-05-17
 
 ### Added
 - **Adblock sidecar** — new `docker/puppeteer-adblock/` directory ships a Dockerfile + `init-adblock.js` that layers `@ghostery/adblocker-puppeteer` (EasyList + EasyPrivacy by default) on top of the upstream `trieve/puppeteer-service-ts:v0.0.6` puppeteer service used by Firecrawl. Base image pinned by SHA256 digest (security check DC-01). The init script is loaded via `NODE_OPTIONS=--require` and monkey-patches `puppeteer.launch()` to wrap every new page with the blocker — no fork of the upstream `api.ts` needed. Configurable via `ADBLOCK_DISABLE=true`, `ADBLOCK_FILTERS_URL=<csv>`, and `ADBLOCK_REFRESH_HOURS=<n>`. Filter lists rebuild on the configured cadence (default 168 h). The firecrawl-simple `docker-compose.yml` already points the `firecrawl-puppeteer` service at this build context — `docker compose up -d --build firecrawl-puppeteer` rebuilds and rolls.
@@ -25,6 +25,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 - Tier handlers internally return an optional `html` field used by the post-extraction pipeline. The persisted cache payload remains `{ title, url, text }` (HTML is not cached).
+
+### Security
+- `rawFetch` now enforces `assertPublicUrl()` internally as a defensive guard — all current callers go through `fetchPage` which guards, but the export was a footgun (audit finding L1 / SSRF-08).
+- Redirect-block error message no longer echoes the `Location` header back to the MCP caller — a misconfigured redirect to an internal address would have surfaced the target URL (audit finding L2 / OE-02).
+- HTML body reads in `rawFetch` and the new `fetchRawHtmlForMetadata` are now bounded at 2 MB via a streaming reader, matching the existing `robots.ts` cap. Prevents JSDOM-amplified memory hazards on large pages (audit finding L3 / IV-14).
+- `NATS_CREDS` env var now actually authenticates via `credsAuthenticator(readFileSync(...))` instead of the previous no-op assignment. Both `node:fs` and `credsAuthenticator` stay inside the existing lazy-import block (audit finding L4).
 
 ## [3.4.0] - 2026-05-17
 
