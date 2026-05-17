@@ -21,14 +21,21 @@ export async function initEvents(): Promise<void> {
   subjectPrefix = process.env.NATS_SUBJECT_PREFIX ?? "searxng";
 
   try {
-    const { connect } = await import("nats");
+    const { connect, credsAuthenticator } = await import("nats");
     const opts: Record<string, unknown> = {
       servers: url,
       name: "searxng-mcp",
       reconnect: true,
       maxReconnectAttempts: -1,
     };
-    if (process.env.NATS_CREDS) opts.authenticator = undefined; // creds file path handled by client config when provided
+    if (process.env.NATS_CREDS) {
+      // Lazy-load fs alongside nats so the module stays free of top-level
+      // node:fs imports when NATS isn't in use.
+      const { readFileSync } = await import("node:fs");
+      opts.authenticator = credsAuthenticator(
+        readFileSync(process.env.NATS_CREDS),
+      );
+    }
     nc = await connect(opts);
   } catch (err) {
     if (!warnedOnce) {
