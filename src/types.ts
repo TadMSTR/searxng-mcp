@@ -5,10 +5,13 @@ export interface DomainProfile {
   block?: string[];
 }
 
+export type TierSlot = "tier1" | "tier2" | "tier3";
+
 export interface DomainConfig {
   boost: string[];
   block: string[];
   llms_txt?: string[];
+  tier_skip?: Record<string, TierSlot[]>;
   profiles: Record<string, DomainProfile>;
 }
 

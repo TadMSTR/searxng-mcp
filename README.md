@@ -56,6 +56,23 @@ MCP client (stdio)
 
 SearXNG and Firecrawl are required. Crawl4AI, Valkey, Ollama, and the reranker are optional — the server degrades gracefully when any of these are unavailable.
 
+### Data-driven tier routing
+
+Before invoking the fetch cascade, searxng-mcp reads the domain's `tier_stats_30d` (see [domain capability database](#domain-capability-database)) and skips any tier with success rate below 30% over at least 10 attempts. Cold-start domains (<10 attempts) keep the default cascade. Each skip emits a `searxng.fetch.tier.skipped` NATS event with `reason: low_success_rate` and increments `searxng_fetch_total{outcome=skipped}`.
+
+**Operator override.** Add a `tier_skip` map to `domains.json` to force-skip tiers regardless of stats:
+
+```json
+{
+  "tier_skip": {
+    "example-bot-blocked.com": ["tier1"],
+    "another-site.example": ["tier1", "tier2"]
+  }
+}
+```
+
+`tier_skip` keys can be bare domains (`example.com` matches the domain and all subdomains) or domain + path prefix (`example.com/api/`). The file is hot-reloaded — no restart needed. Manual overrides emit `reason: operator_override`.
+
 ### Domain capability database
 
 Every fetch records what searxng-mcp learns about the target domain to Valkey under `domain:<hostname>` (90-day TTL, schema_version 1). Captured per record:

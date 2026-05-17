@@ -1,7 +1,7 @@
 import { readFileSync, watchFile } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { DomainConfig, SearxResult } from "./types.js";
+import type { DomainConfig, SearxResult, TierSlot } from "./types.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const DOMAINS_PATH = resolve(__dirname, "../../domains.json");
@@ -23,6 +23,19 @@ export function loadDomainConfig(): void {
 
 export function getLlmsTxtAllowlist(): string[] {
   return domainConfig.llms_txt ?? [];
+}
+
+export function getOperatorTierSkips(url: string): TierSlot[] {
+  const overrides = domainConfig.tier_skip;
+  if (!overrides) return [];
+  const skips = new Set<TierSlot>();
+  for (const [pattern, tiers] of Object.entries(overrides)) {
+    if (!Array.isArray(tiers)) continue;
+    if (urlMatchesDomain(url, pattern)) {
+      for (const t of tiers) skips.add(t);
+    }
+  }
+  return Array.from(skips);
 }
 
 loadDomainConfig();

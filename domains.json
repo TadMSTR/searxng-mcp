@@ -20,6 +20,7 @@
     "docs.firecrawl.dev",
     "docs.cursor.com"
   ],
+  "tier_skip": {},
   "profiles": {
     "homelab": {
       "boost": [
