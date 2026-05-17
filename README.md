@@ -17,7 +17,7 @@ Built with [Claude Code](https://claude.ai/code) using the multi-agent workflow 
 |------|-------------|----------------|
 | `search` | Search via SearXNG with local reranking. Fetches a wider result pool, reranks by relevance, returns top N. | `query`, `num_results` (1–20), `category`, `time_range`, `domain_profile`, `expand` |
 | `search_and_fetch` | Search, rerank, then fetch full content of the top result(s) using the fetch cascade (Firecrawl → Crawl4AI → raw HTTP). | `query`, `category`, `time_range`, `fetch_count` (1–3), `domain_profile`, `expand` |
-| `search_and_summarize` | Search, fetch top results, then synthesize a summary with citations via Ollama (qwen3:14b). Falls back to raw fetched content if Ollama is unavailable. | `query`, `fetch_count` (1–5), `category`, `time_range`, `domain_profile`, `expand` |
+| `search_and_summarize` | Search, fetch top results, then synthesize a summary with citations via Ollama (`OLLAMA_SUMMARIZE_MODEL`). Falls back to raw fetched content if Ollama is unavailable. | `query`, `fetch_count` (1–5), `category`, `time_range`, `domain_profile`, `expand` |
 | `fetch_url` | Fetch and extract readable markdown from any public URL. GitHub URLs use the GitHub API; all others use the fetch cascade (Firecrawl → Crawl4AI → raw HTTP). Truncated to 8,000 characters. | `url`, `domain_profile` |
 | `clear_cache` | Purge the search cache, fetch cache, or both. Useful when researching fast-moving topics where cached results may be stale. | `target` (`search`, `fetch`, `all`) |
 
@@ -31,7 +31,7 @@ Built with [Claude Code](https://claude.ai/code) using the multi-agent workflow 
 
 **`domain_profile`** — apply a named domain filter profile: `homelab` (surfaces self-hosted/Linux docs) or `dev` (surfaces Stack Overflow, MDN, npm). Omit for default filters.
 
-**`expand`** — when `true`, rewrites the query via Ollama (qwen3:4b) before searching to improve recall. Requires `OLLAMA_URL`. Defaults to the `EXPAND_QUERIES` env var value.
+**`expand`** — when `true`, rewrites the query via Ollama (`OLLAMA_EXPAND_MODEL`) before searching to improve recall. Requires `OLLAMA_URL`. Defaults to the `EXPAND_QUERIES` env var value.
 
 ## Architecture
 
@@ -48,8 +48,8 @@ MCP client (stdio)
       ├── fetch content ────┬→ GitHub API (github.com)    → markdown
       │                     ├→ Firecrawl ($FIRECRAWL_URL) → page markdown (tier 1)
       │                     ├→ Crawl4AI ($CRAWL4AI_URL)  → page markdown (tier 2, optional)
-      │                     └→ Raw HTTP fetch             → page text (tier 3 fallback)
-      └── summarize (opt.) →  Ollama ($OLLAMA_URL)        → synthesized summary (qwen3:14b)
+      │                     └→ Raw HTTP + Readability     → page markdown (tier 3 fallback)
+      └── summarize (opt.) →  Ollama ($OLLAMA_URL)        → synthesized summary ($OLLAMA_SUMMARIZE_MODEL)
 ```
 
 ![Fetch routing](assets/fetch-routing.drawio.svg)
@@ -98,6 +98,8 @@ docker run -d -p 11235:11235 unclecode/crawl4ai:0.8.6
 ```
 
 If your instance requires API token authentication, set `CRAWL4AI_API_TOKEN`.
+
+On the `search_and_summarize` path, Crawl4AI requests use `fit_markdown` for noise-filtered content extraction. Other callers (`search_and_fetch`, `fetch_url`) use `raw_markdown`.
 
 ### Valkey / Redis
 
