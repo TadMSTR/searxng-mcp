@@ -56,6 +56,19 @@ MCP client (stdio)
 
 SearXNG and Firecrawl are required. Crawl4AI, Valkey, Ollama, and the reranker are optional — the server degrades gracefully when any of these are unavailable.
 
+### Fetch quality
+
+After any tier returns content with raw HTML, a post-extraction pass improves title and body quality:
+
+- **JSON-LD Article extraction** — Schema.org `Article` / `NewsArticle` / `BlogPosting` / `TechArticle` blocks supply cleaner `headline` and `articleBody` than tier-1 chrome scraping (size-capped at 1 MB per script tag).
+- **Title cascade** — falls back through `og:title` → `twitter:title` → `<title>` (with publisher-suffix stripping) → first `<h1>` → URL.
+- **Tier-2 Readability comparison** — when Crawl4AI returns markdown, JSDOM+Readability also runs over its raw HTML and is preferred when its text is longer (or unconditionally when Crawl4AI returns less than 500 chars).
+
+### Politeness
+
+- **Honest User-Agent** — outbound requests identify as `searxng-mcp/<version> (+https://github.com/TadMSTR/searxng-mcp; personal research)`.
+- **robots.txt compliance** — `/robots.txt` is fetched once per origin and cached for 24 hours in Valkey under `robots:<origin>`. Disallowed paths are skipped before any tier runs and logged as `skipped_robots url=… reason=…`.
+
 ## Transport
 
 stdio (compatible with Claude Code MCP plugin and LibreChat `stdio` config).

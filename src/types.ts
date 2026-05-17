@@ -28,6 +28,7 @@ export interface FirecrawlScrapeResponse {
   success: boolean;
   data?: {
     markdown?: string;
+    html?: string;
     metadata?: {
       title?: string;
       sourceURL?: string;

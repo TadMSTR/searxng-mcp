@@ -6,6 +6,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [3.5.0] - 2026-MM-DD
+
+### Added
+- JSON-LD Article post-extraction — when a tier-1/2/3 fetch returns raw HTML containing a Schema.org `Article`, `NewsArticle`, `BlogPosting`, or `TechArticle` block, `headline` and `articleBody` are extracted and used in preference to chrome-only text. Walks `@graph` arrays; size-capped JSON parse (1 MB) with try/catch.
+- Title cascade — new `extractTitle()` helper applies `og:title` → `twitter:title` → `<title>` (with publisher-suffix stripping) → first `<h1>` → URL fallback when post-extraction runs.
+- Tier-2 Readability comparison — when Crawl4AI returns content, JSDOM+Readability now also runs over `result.html`; preferred when its text is longer than Crawl4AI's markdown (or unconditionally when Crawl4AI returns <500 chars).
+- robots.txt compliance — pre-fetch check using the `robots-parser` package; per-origin result cached 24 h in Valkey under `robots:<origin>`. Disallowed fetches throw `RobotsDisallowedError` and log `skipped_robots url=… reason=…`.
+- Honest `User-Agent` — `searxng-mcp/3.5.0 (+https://github.com/TadMSTR/searxng-mcp; personal research)` now sent on tier-3 raw fetches and GitHub API/raw requests.
+- Firecrawl scrape requests now ask for both `markdown` and `html` so the JSON-LD/title post-extraction pass runs on tier-1 results too.
+
+### Changed
+- Tier handlers internally return an optional `html` field used by the post-extraction pipeline. The persisted cache payload remains `{ title, url, text }` (HTML is not cached).
+
 ## [3.4.0] - 2026-05-17
 
 ### Added

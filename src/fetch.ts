@@ -10,7 +10,27 @@ import {
   GITHUB_TOKEN,
 } from "./config.js";
 import { getBlockList, urlMatchesDomain } from "./domains.js";
+import { postExtract } from "./extractors/post-extract.js";
+import { preferReadability, runReadability } from "./extractors/readability.js";
+import { checkRobots } from "./robots.js";
 import type { FirecrawlScrapeResponse, GitHubReadmeResponse } from "./types.js";
+
+export const USER_AGENT =
+  "searxng-mcp/3.5.0 (+https://github.com/TadMSTR/searxng-mcp; personal research)";
+
+export class RobotsDisallowedError extends Error {
+  constructor(url: string) {
+    super(`robots.txt disallows fetch: ${url}`);
+    this.name = "RobotsDisallowedError";
+  }
+}
+
+interface TierResult {
+  title: string;
+  url: string;
+  text: string;
+  html?: string;
+}
 
 export function assertPublicUrl(url: string): void {
   const { protocol } = new URL(url);
@@ -49,7 +69,7 @@ async function githubFetch(
   const headers: Record<string, string> = {
     Accept: "application/vnd.github+json",
     "X-GitHub-Api-Version": "2022-11-28",
-    "User-Agent": "searxng-mcp",
+    "User-Agent": USER_AGENT,
   };
   if (GITHUB_TOKEN) headers.Authorization = `Bearer ${GITHUB_TOKEN}`;
 
@@ -57,7 +77,7 @@ async function githubFetch(
     // Rewrite blob URL to raw content
     const [owner, repo, , branch, ...filePath] = parts;
     const rawUrl = `https://raw.githubusercontent.com/${owner}/${repo}/${branch}/${filePath.join("/")}`;
-    const rawHeaders: Record<string, string> = { "User-Agent": "searxng-mcp" };
+    const rawHeaders: Record<string, string> = { "User-Agent": USER_AGENT };
     if (GITHUB_TOKEN) rawHeaders.Authorization = `Bearer ${GITHUB_TOKEN}`;
     const res = await fetch(rawUrl, {
       headers: rawHeaders,
@@ -91,14 +111,14 @@ async function githubFetch(
 async function firecrawlScrape(
   url: string,
   maxChars = 8000,
-): Promise<{ title: string; url: string; text: string }> {
+): Promise<TierResult> {
   const res = await fetch(`${FIRECRAWL_URL}/v1/scrape`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
       Authorization: `Bearer ${FIRECRAWL_API_KEY}`,
     },
-    body: JSON.stringify({ url, formats: ["markdown"] }),
+    body: JSON.stringify({ url, formats: ["markdown", "html"] }),
     signal: AbortSignal.timeout(15000),
   });
 
@@ -114,8 +134,9 @@ async function firecrawlScrape(
 
   const title = data.data.metadata?.title ?? url;
   const text = (data.data.markdown ?? "").slice(0, maxChars);
+  const html = data.data.html;
 
-  return { title, url: data.data.metadata?.sourceURL ?? url, text };
+  return { title, url: data.data.metadata?.sourceURL ?? url, text, html };
 }
 
 async function pollCrawl4aiTask(
@@ -124,7 +145,7 @@ async function pollCrawl4aiTask(
   maxChars: number,
   signal: AbortSignal,
   preferFit = false,
-): Promise<{ title: string; url: string; text: string } | null> {
+): Promise<TierResult | null> {
   const deadline = Date.now() + 40_000;
 
   while (Date.now() < deadline) {
@@ -145,7 +166,11 @@ async function pollCrawl4aiTask(
         const text = (mdRaw ?? "").slice(0, maxChars);
         const metadata = result?.metadata as Record<string, string> | null;
         const title = metadata?.title || url;
-        return text ? { title, url, text } : null;
+        const html =
+          typeof result?.html === "string"
+            ? (result.html as string)
+            : undefined;
+        return text ? { title, url, text, html } : null;
       }
       if (data.status === "failed") return null;
     } catch {
@@ -160,7 +185,7 @@ async function crawl4aiFetch(
   url: string,
   maxChars = 8000,
   preferFit = false,
-): Promise<{ title: string; url: string; text: string } | null> {
+): Promise<TierResult | null> {
   if (!CRAWL4AI_URL) return null;
 
   const controller = new AbortController();
@@ -193,7 +218,9 @@ async function crawl4aiFetch(
       if (!text) return null;
       const metadata = result.metadata as Record<string, string> | null;
       const title = metadata?.title || url;
-      return { title, url, text };
+      const html =
+        typeof result.html === "string" ? (result.html as string) : undefined;
+      return { title, url, text, html };
     }
 
     // Asynchronous response — poll for completion
@@ -219,9 +246,9 @@ async function crawl4aiFetch(
 export async function rawFetch(
   url: string,
   maxChars = 8000,
-): Promise<{ title: string; url: string; text: string }> {
+): Promise<TierResult> {
   const res = await fetch(url, {
-    headers: { "User-Agent": "Mozilla/5.0 (compatible; searxng-mcp/1.0)" },
+    headers: { "User-Agent": USER_AGENT },
     redirect: "manual",
     signal: AbortSignal.timeout(15000),
   });
@@ -241,7 +268,59 @@ export async function rawFetch(
 
   const text = (article?.textContent ?? html).slice(0, maxChars);
   const title = article?.title ?? url;
-  return { title, url, text };
+  return { title, url, text, html };
+}
+
+function applyTier2Readability(fetched: TierResult, url: string): TierResult {
+  if (!fetched.html) return fetched;
+  const readable = runReadability(fetched.html, url);
+  if (preferReadability(readable, fetched) && readable) {
+    return {
+      ...fetched,
+      title: readable.title ?? fetched.title,
+      text: readable.text,
+    };
+  }
+  return fetched;
+}
+
+async function fetchRawHtmlForMetadata(url: string): Promise<string | null> {
+  // Raw HTTP fetch (no JS rendering) used as the source for JSON-LD and meta
+  // tags. Tier 1/2 puppeteer renders inject payment-widget og:title tags and
+  // can strip JSON-LD scripts; the unrendered HTML is more reliable for
+  // post-extraction.
+  try {
+    const res = await fetch(url, {
+      headers: { "User-Agent": USER_AGENT },
+      redirect: "follow",
+      signal: AbortSignal.timeout(8000),
+    });
+    if (!res.ok) return null;
+    return await res.text();
+  } catch {
+    return null;
+  }
+}
+
+function applyPostExtract(
+  fetched: TierResult,
+  url: string,
+  metadataHtml: string | null,
+): TierResult {
+  const html = metadataHtml ?? fetched.html ?? null;
+  if (!html) return fetched;
+  const enriched = postExtract({
+    url,
+    html,
+    baselineTitle: fetched.title,
+    baselineText: fetched.text,
+    maxChars: 8000,
+  });
+  return {
+    ...fetched,
+    title: enriched.title,
+    text: enriched.text,
+  };
 }
 
 export async function fetchPage(
@@ -276,12 +355,27 @@ export async function fetchPage(
 
   const { hostname } = new URL(url);
 
-  let result: { title: string; url: string; text: string };
+  let result: TierResult;
   if (hostname === "github.com") {
     result = await githubFetch(url, maxChars);
   } else {
+    // robots.txt gate — skips fetch on disallow (cached 24h per origin)
+    const robots = await checkRobots(url, "searxng-mcp");
+    if (!robots.allowed) {
+      console.error(
+        `[searxng-mcp] fetch skipped_robots url=${url} reason=${robots.reason ?? "disallowed"}`,
+      );
+      throw new RobotsDisallowedError(url);
+    }
+
+    // Run the tier cascade and the raw-HTML metadata fetch in parallel — the
+    // raw HTML is used for post-extraction (JSON-LD, og:title cascade) since
+    // puppeteer-rendered HTML from tier 1/2 can include injected payment-
+    // widget meta tags and stripped JSON-LD scripts.
+    const metadataHtmlPromise = fetchRawHtmlForMetadata(url);
+
     // Tier 1: Firecrawl
-    let fetched: { title: string; url: string; text: string } | null = null;
+    let fetched: TierResult | null = null;
     try {
       fetched = await firecrawlScrape(url, 8000);
       if (!fetched?.text) fetched = null; // treat empty content as failure (bot-block, challenge pages)
@@ -296,6 +390,7 @@ export async function fetchPage(
     if (!fetched) {
       fetched = await crawl4aiFetch(url, 8000, preferFit);
       if (fetched) {
+        fetched = applyTier2Readability(fetched, url);
         console.error(`[searxng-mcp] fetch tier2 hit url=${url}`);
       } else {
         console.error(`[searxng-mcp] fetch tier2 miss url=${url}`);
@@ -305,11 +400,16 @@ export async function fetchPage(
     // Tier 3: Raw HTTP fetch
     if (!fetched) {
       console.error(`[searxng-mcp] fetch tier3 fallback url=${url}`);
+      fetched = await rawFetch(url, 8000);
     }
-    result = fetched ?? (await rawFetch(url, 8000));
+
+    const metadataHtml = await metadataHtmlPromise;
+    result = applyPostExtract(fetched, url, metadataHtml);
   }
 
-  await cacheSet(key, JSON.stringify(result), FETCH_CACHE_TTL_SECONDS);
+  // Strip html from cache payload — only the resolved title/text/url are persisted
+  const persisted = { title: result.title, url: result.url, text: result.text };
+  await cacheSet(key, JSON.stringify(persisted), FETCH_CACHE_TTL_SECONDS);
 
-  return { ...result, text: result.text.slice(0, maxChars) };
+  return { ...persisted, text: persisted.text.slice(0, maxChars) };
 }
