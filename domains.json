@@ -21,6 +21,7 @@
     "docs.cursor.com"
   ],
   "tier_skip": {},
+  "adblock_skip": [],
   "profiles": {
     "homelab": {
       "boost": [

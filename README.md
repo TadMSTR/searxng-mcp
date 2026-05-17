@@ -56,6 +56,26 @@ MCP client (stdio)
 
 SearXNG and Firecrawl are required. Crawl4AI, Valkey, Ollama, and the reranker are optional — the server degrades gracefully when any of these are unavailable.
 
+### Adblock at tier 1
+
+The `firecrawl-puppeteer` service used by Firecrawl runs a custom image (`docker/puppeteer-adblock/`) that layers `@ghostery/adblocker-puppeteer` over the upstream `trieve/puppeteer-service-ts`. EasyList + EasyPrivacy are loaded at startup and refreshed every 168 hours; the blocker is applied to every page Firecrawl creates. Speeds up fetches of ad-heavy sites and shrinks rendered DOM size.
+
+Env vars:
+
+| Var | Default | Description |
+|-----|---------|-------------|
+| `ADBLOCK_DISABLE` | _unset_ | Set to `true` to skip filter loading entirely. |
+| `ADBLOCK_FILTERS_URL` | EasyList + EasyPrivacy | Comma-separated list of filter list URLs. |
+| `ADBLOCK_REFRESH_HOURS` | `168` | Cadence at which the blocker rebuilds from the configured URLs. |
+
+The base image is pinned by SHA256 digest. To deploy a change, rebuild and restart the service:
+
+```bash
+docker compose -f ~/docker/firecrawl-simple/docker-compose.yml up -d --build firecrawl-puppeteer
+```
+
+**Per-domain bypass:** `domains.json` reserves an `adblock_skip` slot for future operator overrides. Wiring isn't implemented yet — it would require Firecrawl to forward a custom header through to the puppeteer-service, which isn't part of its current API. Tracked as scope-creep item I.
+
 ### Data-driven tier routing
 
 Before invoking the fetch cascade, searxng-mcp reads the domain's `tier_stats_30d` (see [domain capability database](#domain-capability-database)) and skips any tier with success rate below 30% over at least 10 attempts. Cold-start domains (<10 attempts) keep the default cascade. Each skip emits a `searxng.fetch.tier.skipped` NATS event with `reason: low_success_rate` and increments `searxng_fetch_total{outcome=skipped}`.

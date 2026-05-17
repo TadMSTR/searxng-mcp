@@ -16,9 +16,14 @@ export function loadDomainConfig(): void {
     domainConfig.block ??= [];
     domainConfig.profiles ??= {};
     domainConfig.llms_txt ??= [];
+    domainConfig.adblock_skip ??= [];
   } catch {
     // File missing or malformed — use empty config, no filtering applied
   }
+}
+
+export function getAdblockSkipList(): string[] {
+  return domainConfig.adblock_skip ?? [];
 }
 
 export function getLlmsTxtAllowlist(): string[] {

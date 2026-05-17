@@ -12,6 +12,11 @@ export interface DomainConfig {
   block: string[];
   llms_txt?: string[];
   tier_skip?: Record<string, TierSlot[]>;
+  // Per-domain adblock bypass. v1 only carries the schema slot — Firecrawl
+  // does not forward custom headers to the puppeteer-service, so the
+  // X-Disable-Adblock signaling described in the build plan can't be wired
+  // yet. Tracked in scope-creep.md.
+  adblock_skip?: string[];
   profiles: Record<string, DomainProfile>;
 }
 
