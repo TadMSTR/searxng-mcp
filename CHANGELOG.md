@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [3.4.0] - 2026-05-17
+
 ### Added
 - `OLLAMA_API_KEY` env var support — when set, adds `Authorization: Bearer <key>` to Ollama requests in `expandQuery` and `summarizePages`. No behavior change when unset.
 - `OLLAMA_EXPAND_MODEL` env var (default `qwen3:4b`) — overrides the model used by `expandQuery` without a rebuild.
@@ -18,6 +20,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Fixed
 - Fetch cache truncation bug: `search_and_summarize` (which fetches at 4000 chars) could cache a truncated result that later `fetch_url` calls received. Pages are now always fetched and cached at 8000 chars; the caller's `maxChars` is applied on read.
 - Valkey error handler now calls `client.disconnect()` before nulling the reference, preventing stale TCP connection accumulation on repeated Valkey drops.
+- Tighten `pnpm.overrides` to resolve transitive CVEs in `@modelcontextprotocol/sdk` deps (`fast-uri`, `hono`, `ip-address`).
 
 ### Changed
 - `cacheClear` now uses `SCAN` instead of `KEYS` for pattern-based cache invalidation — non-blocking on large keyspaces.
