@@ -1,5 +1,5 @@
-import { describe, expect, it } from "vitest";
-import { assertPublicUrl } from "../src/fetch.js";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { assertPublicUrl, rawFetch } from "../src/fetch.js";
 
 describe("assertPublicUrl", () => {
   it("accepts a normal public HTTPS URL", () => {
@@ -95,6 +95,62 @@ describe("assertPublicUrl", () => {
   it("throws on non-http protocol", () => {
     expect(() => assertPublicUrl("ftp://example.com/page")).toThrow(
       "Only http/https URLs are supported",
+    );
+  });
+});
+
+describe("rawFetch", () => {
+  beforeEach(() => {
+    vi.stubGlobal("fetch", vi.fn());
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("returns readable prose when Readability parses successfully", async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(
+      new Response(
+        `<html><head><title>Test Article</title></head><body><article><p>Article content here with enough text to parse.</p></article></body></html>`,
+        { status: 200 },
+      ),
+    );
+    const result = await rawFetch("https://example.com/article");
+    expect(result.url).toBe("https://example.com/article");
+    expect(result.title).toBe("Test Article");
+    expect(result.text).not.toMatch(/<[^>]+>/); // no HTML tags — Readability extracted prose
+    expect(result.text).toContain("Article content");
+  });
+
+  it("falls back to raw HTML when Readability returns null", async () => {
+    // A minimal page Readability won't parse as an article (no content body)
+    const html = `<html><body><div class="app" id="root"></div></body></html>`;
+    vi.mocked(fetch).mockResolvedValueOnce(new Response(html, { status: 200 }));
+    const result = await rawFetch("https://example.com/spa");
+    expect(result.url).toBe("https://example.com/spa");
+    // Falls back to raw html slice
+    expect(result.text.length).toBeGreaterThan(0);
+    expect(result.text).toContain("html");
+  });
+
+  it("throws on redirect", async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(
+      new Response(null, {
+        status: 302,
+        headers: { location: "https://example.com/other" },
+      }),
+    );
+    await expect(rawFetch("https://example.com/page")).rejects.toThrow(
+      "Redirect blocked",
+    );
+  });
+
+  it("throws on non-ok response", async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(
+      new Response(null, { status: 404, statusText: "Not Found" }),
+    );
+    await expect(rawFetch("https://example.com/missing")).rejects.toThrow(
+      "Raw fetch error: 404",
     );
   });
 });

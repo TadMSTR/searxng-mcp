@@ -234,7 +234,7 @@ export function registerTools(server: McpServer): void {
       // Fetch top N pages; 4000 chars each (summarizer doesn't need the full 8000)
       const toFetch = ranked.slice(0, fetch_count);
       const fetched = await Promise.allSettled(
-        toFetch.map((r) => fetchPage(r.url, 4000, domain_profile)),
+        toFetch.map((r) => fetchPage(r.url, 4000, domain_profile, true)),
       );
 
       const successfulPages = fetched

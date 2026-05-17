@@ -1,3 +1,5 @@
+import { Readability } from "@mozilla/readability";
+import { JSDOM } from "jsdom";
 import { cacheGet, cacheSet, fetchCacheKey } from "./cache.js";
 import {
   CRAWL4AI_API_TOKEN,
@@ -121,6 +123,7 @@ async function pollCrawl4aiTask(
   url: string,
   maxChars: number,
   signal: AbortSignal,
+  preferFit = false,
 ): Promise<{ title: string; url: string; text: string } | null> {
   const deadline = Date.now() + 40_000;
 
@@ -136,8 +139,13 @@ async function pollCrawl4aiTask(
       if (data.status === "completed") {
         const result = data.result as Record<string, unknown> | null;
         const md = result?.markdown as Record<string, string> | null;
-        const text = (md?.raw_markdown ?? "").slice(0, maxChars);
-        return text ? { title: url, url, text } : null;
+        const mdRaw = preferFit
+          ? md?.fit_markdown || md?.raw_markdown
+          : md?.raw_markdown || md?.fit_markdown;
+        const text = (mdRaw ?? "").slice(0, maxChars);
+        const metadata = result?.metadata as Record<string, string> | null;
+        const title = metadata?.title || url;
+        return text ? { title, url, text } : null;
       }
       if (data.status === "failed") return null;
     } catch {
@@ -151,6 +159,7 @@ async function pollCrawl4aiTask(
 async function crawl4aiFetch(
   url: string,
   maxChars = 8000,
+  preferFit = false,
 ): Promise<{ title: string; url: string; text: string } | null> {
   if (!CRAWL4AI_URL) return null;
 
@@ -177,9 +186,14 @@ async function crawl4aiFetch(
     if (Array.isArray(data.results) && data.results.length > 0) {
       const result = data.results[0] as Record<string, unknown>;
       const md = result.markdown as Record<string, string> | null;
-      const text = (md?.raw_markdown ?? "").slice(0, maxChars);
+      const mdRaw = preferFit
+        ? md?.fit_markdown || md?.raw_markdown
+        : md?.raw_markdown || md?.fit_markdown;
+      const text = (mdRaw ?? "").slice(0, maxChars);
       if (!text) return null;
-      return { title: url, url, text };
+      const metadata = result.metadata as Record<string, string> | null;
+      const title = metadata?.title || url;
+      return { title, url, text };
     }
 
     // Asynchronous response — poll for completion
@@ -190,6 +204,7 @@ async function crawl4aiFetch(
         url,
         maxChars,
         controller.signal,
+        preferFit,
       );
     }
 
@@ -201,7 +216,7 @@ async function crawl4aiFetch(
   }
 }
 
-async function rawFetch(
+export async function rawFetch(
   url: string,
   maxChars = 8000,
 ): Promise<{ title: string; url: string; text: string }> {
@@ -219,14 +234,21 @@ async function rawFetch(
   if (!res.ok)
     throw new Error(`Raw fetch error: ${res.status} ${res.statusText}`);
 
-  const text = (await res.text()).slice(0, maxChars);
-  return { title: url, url, text };
+  const html = await res.text();
+  const dom = new JSDOM(html, { url }); // runScripts not set — script execution disabled
+  const reader = new Readability(dom.window.document);
+  const article = reader.parse();
+
+  const text = (article?.textContent ?? html).slice(0, maxChars);
+  const title = article?.title ?? url;
+  return { title, url, text };
 }
 
 export async function fetchPage(
   url: string,
   maxChars = 8000,
   domainProfile?: string,
+  preferFit = false,
 ): Promise<{ title: string; url: string; text: string }> {
   assertPublicUrl(url);
 
@@ -236,12 +258,17 @@ export async function fetchPage(
     throw new Error(`Domain is blocked by domain filter configuration`);
   }
 
-  // Check fetch cache
+  // Check fetch cache — always stored at 8000 chars, sliced to maxChars on read
   const key = fetchCacheKey(url);
   const cached = await cacheGet(key);
   if (cached) {
     try {
-      return JSON.parse(cached) as { title: string; url: string; text: string };
+      const r = JSON.parse(cached) as {
+        title: string;
+        url: string;
+        text: string;
+      };
+      return { ...r, text: r.text.slice(0, maxChars) };
     } catch {
       // Corrupted cache entry — fall through to live fetch
     }
@@ -256,22 +283,33 @@ export async function fetchPage(
     // Tier 1: Firecrawl
     let fetched: { title: string; url: string; text: string } | null = null;
     try {
-      fetched = await firecrawlScrape(url, maxChars);
+      fetched = await firecrawlScrape(url, 8000);
       if (!fetched?.text) fetched = null; // treat empty content as failure (bot-block, challenge pages)
     } catch {
       fetched = null;
     }
+    if (!fetched) {
+      console.error(`[searxng-mcp] fetch tier1 miss url=${url}`);
+    }
 
     // Tier 2: Crawl4AI (skipped if CRAWL4AI_URL not set)
     if (!fetched) {
-      fetched = await crawl4aiFetch(url, maxChars);
+      fetched = await crawl4aiFetch(url, 8000, preferFit);
+      if (fetched) {
+        console.error(`[searxng-mcp] fetch tier2 hit url=${url}`);
+      } else {
+        console.error(`[searxng-mcp] fetch tier2 miss url=${url}`);
+      }
     }
 
     // Tier 3: Raw HTTP fetch
-    result = fetched ?? (await rawFetch(url, maxChars));
+    if (!fetched) {
+      console.error(`[searxng-mcp] fetch tier3 fallback url=${url}`);
+    }
+    result = fetched ?? (await rawFetch(url, 8000));
   }
 
   await cacheSet(key, JSON.stringify(result), FETCH_CACHE_TTL_SECONDS);
 
-  return result;
+  return { ...result, text: result.text.slice(0, maxChars) };
 }

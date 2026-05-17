@@ -12,7 +12,7 @@ export async function getValkey(): Promise<Valkey | null> {
       enableReadyCheck: false,
     });
     client.on("error", () => {
-      // Silently disconnect on error — caching is best-effort
+      client.disconnect();
       valkey = null;
     });
     await client.connect();
@@ -64,7 +64,19 @@ export async function cacheClear(pattern: string): Promise<number> {
   try {
     const client = await getValkey();
     if (!client) return 0;
-    const keys = await client.keys(pattern);
+    let cursor = "0";
+    const keys: string[] = [];
+    do {
+      const [nextCursor, batch] = await client.scan(
+        cursor,
+        "MATCH",
+        pattern,
+        "COUNT",
+        100,
+      );
+      cursor = nextCursor;
+      keys.push(...batch);
+    } while (cursor !== "0");
     if (keys.length === 0) return 0;
     await client.del(keys);
     return keys.length;

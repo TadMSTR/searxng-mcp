@@ -8,6 +8,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 - `OLLAMA_API_KEY` env var support — when set, adds `Authorization: Bearer <key>` to Ollama requests in `expandQuery` and `summarizePages`. No behavior change when unset.
+- `OLLAMA_EXPAND_MODEL` env var (default `qwen3:4b`) — overrides the model used by `expandQuery` without a rebuild.
+- `OLLAMA_SUMMARIZE_MODEL` env var (default `qwen3:14b`) — overrides the model used by `summarizePages` without a rebuild. To use in scoped-mcp, add these to the env block of the relevant manifest.
+- Tier-success logging to PM2 error log — each `fetchPage` call now logs `tier1 miss`, `tier2 hit/miss`, or `tier3 fallback` lines (stderr, `key=value` format) for fetch utilization analysis.
+- `@mozilla/readability` + `jsdom` for clean article extraction in tier-3 (`rawFetch`). Non-article pages (SPAs, search results) fall back to raw HTML slice as before.
+- Crawl4AI `fit_markdown` support — `search_and_summarize` now requests noise-filtered content from Crawl4AI; other callers continue to use `raw_markdown`.
+- Crawl4AI title extraction — result title is now pulled from `metadata.title` instead of defaulting to the URL.
+
+### Fixed
+- Fetch cache truncation bug: `search_and_summarize` (which fetches at 4000 chars) could cache a truncated result that later `fetch_url` calls received. Pages are now always fetched and cached at 8000 chars; the caller's `maxChars` is applied on read.
+- Valkey error handler now calls `client.disconnect()` before nulling the reference, preventing stale TCP connection accumulation on repeated Valkey drops.
+
+### Changed
+- `cacheClear` now uses `SCAN` instead of `KEYS` for pattern-based cache invalidation — non-blocking on large keyspaces.
 
 ## [3.3.0] - 2026-04-19
 
