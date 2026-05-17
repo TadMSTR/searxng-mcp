@@ -56,6 +56,106 @@ MCP client (stdio)
 
 SearXNG and Firecrawl are required. Crawl4AI, Valkey, Ollama, and the reranker are optional — the server degrades gracefully when any of these are unavailable.
 
+### Adblock at tier 1
+
+The `firecrawl-puppeteer` service used by Firecrawl runs a custom image (`docker/puppeteer-adblock/`) that layers `@ghostery/adblocker-puppeteer` over the upstream `trieve/puppeteer-service-ts`. EasyList + EasyPrivacy are loaded at startup and refreshed every 168 hours; the blocker is applied to every page Firecrawl creates. Speeds up fetches of ad-heavy sites and shrinks rendered DOM size.
+
+Env vars:
+
+| Var | Default | Description |
+|-----|---------|-------------|
+| `ADBLOCK_DISABLE` | _unset_ | Set to `true` to skip filter loading entirely. |
+| `ADBLOCK_FILTERS_URL` | EasyList + EasyPrivacy | Comma-separated list of filter list URLs. |
+| `ADBLOCK_REFRESH_HOURS` | `168` | Cadence at which the blocker rebuilds from the configured URLs. |
+
+The base image is pinned by SHA256 digest. To deploy a change, rebuild and restart the service:
+
+```bash
+docker compose -f ~/docker/firecrawl-simple/docker-compose.yml up -d --build firecrawl-puppeteer
+```
+
+**Per-domain bypass:** `domains.json` reserves an `adblock_skip` slot for future operator overrides. Wiring isn't implemented yet — it would require Firecrawl to forward a custom header through to the puppeteer-service, which isn't part of its current API. Tracked as scope-creep item I.
+
+### Data-driven tier routing
+
+Before invoking the fetch cascade, searxng-mcp reads the domain's `tier_stats_30d` (see [domain capability database](#domain-capability-database)) and skips any tier with success rate below 30% over at least 10 attempts. Cold-start domains (<10 attempts) keep the default cascade. Each skip emits a `searxng.fetch.tier.skipped` NATS event with `reason: low_success_rate` and increments `searxng_fetch_total{outcome=skipped}`.
+
+**Operator override.** Add a `tier_skip` map to `domains.json` to force-skip tiers regardless of stats:
+
+```json
+{
+  "tier_skip": {
+    "example-bot-blocked.com": ["tier1"],
+    "another-site.example": ["tier1", "tier2"]
+  }
+}
+```
+
+`tier_skip` keys can be bare domains (`example.com` matches the domain and all subdomains) or domain + path prefix (`example.com/api/`). The file is hot-reloaded — no restart needed. Manual overrides emit `reason: operator_override`.
+
+### Domain capability database
+
+Every fetch records what searxng-mcp learns about the target domain to Valkey under `domain:<hostname>` (90-day TTL, schema_version 1). Captured per record:
+
+- `tier_stats_30d.{tier1,tier2,tier3}.{attempts, ok, fail, last_fail_reason}` — fetch success rate per tier
+- `capabilities.robots_txt.{present, fetched, allows_us}` — robots.txt presence and whether it permits us
+- `capabilities.llms_full_txt.{present, size_bytes, last_checked}` — whether the domain serves `/llms-full.txt`
+- `capabilities.json_ld_article.{sampled, present, last_sampled_at}` — how often Article-schema JSON-LD is found
+- `capabilities.og_title.{sampled, present, last_sampled_at}` — same for `<meta property="og:title">`
+- `preferred_strategy` — currently set to `llms_full_txt` when a present probe lands; future phases will use this to skip the tier cascade
+
+Inspect a record with the bundled CLI:
+
+```bash
+pnpm dump-domain docs.anthropic.com
+```
+
+Concurrent updates for the same hostname (the tier-attempt, robots-probe, and post-extract-sample recorders that fire in parallel during one fetch) are serialized through an in-process write queue per hostname.
+
+### llms.txt fast path
+
+For whitelisted documentation domains in `domains.json` (`llms_txt` array), `fetchPage` tries `<origin>/llms-full.txt` first and extracts the section matching the requested URL before invoking any tier. This avoids running puppeteer against well-instrumented docs sites and returns a clean markdown section directly. Cached probe outcomes live in Valkey (`llms:<origin>:full`, 24 h / 7 d for present/absent); the large body is held in-process for the lifetime of the MCP. Default whitelist: `docs.anthropic.com`, `docs.openai.com`, `docs.stripe.com`, `docs.crawl4ai.com`, `docs.firecrawl.dev`, `docs.cursor.com`. Extend by editing `domains.json` — the file is hot-reloaded.
+
+### Fetch quality
+
+After any tier returns content with raw HTML, a post-extraction pass improves title and body quality:
+
+- **JSON-LD Article extraction** — Schema.org `Article` / `NewsArticle` / `BlogPosting` / `TechArticle` blocks supply cleaner `headline` and `articleBody` than tier-1 chrome scraping (size-capped at 1 MB per script tag).
+- **Title cascade** — falls back through `og:title` → `twitter:title` → `<title>` (with publisher-suffix stripping) → first `<h1>` → URL.
+- **Tier-2 Readability comparison** — when Crawl4AI returns markdown, JSDOM+Readability also runs over its raw HTML and is preferred when its text is longer (or unconditionally when Crawl4AI returns less than 500 chars).
+
+### Observability (opt-in)
+
+Tracing, metrics, and event publishing are entirely opt-in — with none of the env vars below set, the server has zero observability overhead and never loads the OpenTelemetry or NATS packages at runtime.
+
+**OpenTelemetry (traces + metrics)** — set `OTEL_EXPORTER_OTLP_ENDPOINT` to your collector's HTTP endpoint and the server emits:
+
+- Spans (per request): `tool.<name>` → `expand_query`? → `searxng_request` → `rerank` → `fetch` (×N) → `tier1_firecrawl` | `tier2_crawl4ai` | `tier3_rawfetch` → `post_extract`; plus `summarize_llm` for `search_and_summarize`.
+- Counters: `searxng_search_total{profile, expand}`, `searxng_fetch_total{tier, outcome}`, `searxng_cache_total{namespace, outcome}`, `searxng_errors_total{stage, error_type}`.
+- Histograms: `searxng_search_duration_seconds{profile}`, `searxng_fetch_duration_seconds{tier, outcome}`.
+
+Standard OTEL env vars apply (`OTEL_SERVICE_NAME` defaults to `searxng-mcp`).
+
+**NATS events** — set `NATS_URL` (e.g. `nats://localhost:4222`) and the server publishes a structured event on every search, fetch, cache hit/miss, robots skip, and error. Subjects:
+
+| Subject | When |
+|---------|------|
+| `searxng.search.requested` | Search tool invoked |
+| `searxng.search.completed` | Search returned (with sources, latency, rerank applied) |
+| `searxng.fetch.requested` | `fetchPage` called |
+| `searxng.fetch.tier.miss` | A tier returned empty or threw |
+| `searxng.fetch.tier.skipped` | robots.txt disallowed |
+| `searxng.fetch.completed` | Fetch resolved (with `tier_served`, `text_len`, latency) |
+| `searxng.cache.hit` / `.miss` | On every Valkey lookup |
+| `searxng.error` | Stage-tagged errors |
+
+Each envelope includes `request_id` and (when OTel is enabled) `trace_id` so subscribers can join the two streams. Subject prefix overridable via `NATS_SUBJECT_PREFIX`. Search queries flow through `search.*` events — downstream consumers are responsible for any PII scrubbing.
+
+### Politeness
+
+- **Honest User-Agent** — outbound requests identify as `searxng-mcp/<version> (+https://github.com/TadMSTR/searxng-mcp; personal research)`.
+- **robots.txt compliance** — `/robots.txt` is fetched once per origin and cached for 24 hours in Valkey under `robots:<origin>`. Disallowed paths are skipped before any tier runs and logged as `skipped_robots url=… reason=…`.
+
 ## Transport
 
 stdio (compatible with Claude Code MCP plugin and LibreChat `stdio` config).

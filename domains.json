@@ -12,6 +12,16 @@
     "pinterest.com",
     "quora.com"
   ],
+  "llms_txt": [
+    "docs.anthropic.com",
+    "docs.openai.com",
+    "docs.stripe.com",
+    "docs.crawl4ai.com",
+    "docs.firecrawl.dev",
+    "docs.cursor.com"
+  ],
+  "tier_skip": {},
+  "adblock_skip": [],
   "profiles": {
     "homelab": {
       "boost": [

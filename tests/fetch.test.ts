@@ -108,6 +108,16 @@ describe("rawFetch", () => {
     vi.unstubAllGlobals();
   });
 
+  it("refuses internal/private addresses (SSRF-08 defensive guard)", async () => {
+    // The export shouldn't be a footgun — even if a caller bypasses fetchPage,
+    // the SSRF guard fires.
+    await expect(rawFetch("http://10.0.0.1/admin")).rejects.toThrow(
+      /Internal\/private addresses are not allowed/,
+    );
+    // fetch should never be called when assertPublicUrl throws first.
+    expect(vi.mocked(fetch)).not.toHaveBeenCalled();
+  });
+
   it("returns readable prose when Readability parses successfully", async () => {
     vi.mocked(fetch).mockResolvedValueOnce(
       new Response(
@@ -140,9 +150,12 @@ describe("rawFetch", () => {
         headers: { location: "https://example.com/other" },
       }),
     );
-    await expect(rawFetch("https://example.com/page")).rejects.toThrow(
-      "Redirect blocked",
-    );
+    const err = await rawFetch("https://example.com/page").catch((e) => e);
+    expect(err).toBeInstanceOf(Error);
+    expect(err.message).toMatch(/Redirect not followed/);
+    // Sanitized error message must not echo the Location header back to the
+    // caller — would surface internal addresses on a misconfigured redirect (OE-02).
+    expect(err.message).not.toContain("example.com/other");
   });
 
   it("throws on non-ok response", async () => {

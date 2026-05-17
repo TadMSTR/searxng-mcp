@@ -5,6 +5,7 @@ import {
   SEARXNG_URL,
 } from "./config.js";
 import { applyDomainFilters } from "./domains.js";
+import { withSpan } from "./observability.js";
 import { expandQuery } from "./ollama.js";
 import type { SearxResponse, SearxResult } from "./types.js";
 
@@ -14,22 +15,28 @@ export async function searxSearchSingle(
   fetchCount: number,
   timeRange?: string,
 ): Promise<SearxResult[]> {
-  const params = new URLSearchParams({
-    q: query,
-    format: "json",
-    categories: category,
-    pageno: "1",
-  });
-  if (timeRange) params.set("time_range", timeRange);
+  return withSpan(
+    "searxng_request",
+    { "search.category": category, "search.time_range": timeRange },
+    async () => {
+      const params = new URLSearchParams({
+        q: query,
+        format: "json",
+        categories: category,
+        pageno: "1",
+      });
+      if (timeRange) params.set("time_range", timeRange);
 
-  const res = await fetch(`${SEARXNG_URL}/search?${params}`, {
-    signal: AbortSignal.timeout(10000),
-  });
-  if (!res.ok)
-    throw new Error(`SearXNG error: ${res.status} ${res.statusText}`);
+      const res = await fetch(`${SEARXNG_URL}/search?${params}`, {
+        signal: AbortSignal.timeout(10000),
+      });
+      if (!res.ok)
+        throw new Error(`SearXNG error: ${res.status} ${res.statusText}`);
 
-  const data = (await res.json()) as SearxResponse;
-  return data.results.slice(0, fetchCount);
+      const data = (await res.json()) as SearxResponse;
+      return data.results.slice(0, fetchCount);
+    },
+  );
 }
 
 export async function searxSearch(
@@ -61,7 +68,9 @@ export async function searxSearch(
   if (shouldExpand) {
     // Run original query + expanded variants in parallel, merge, deduplicate by URL
     const [variants, originalResults] = await Promise.all([
-      expandQuery(query),
+      withSpan("expand_query", { "query.expand": true }, () =>
+        expandQuery(query),
+      ),
       searxSearchSingle(query, category, fetchCount, timeRange),
     ]);
 
