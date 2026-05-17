@@ -8,6 +8,7 @@ export interface DomainProfile {
 export interface DomainConfig {
   boost: string[];
   block: string[];
+  llms_txt?: string[];
   profiles: Record<string, DomainProfile>;
 }
 

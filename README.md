@@ -56,6 +56,10 @@ MCP client (stdio)
 
 SearXNG and Firecrawl are required. Crawl4AI, Valkey, Ollama, and the reranker are optional — the server degrades gracefully when any of these are unavailable.
 
+### llms.txt fast path
+
+For whitelisted documentation domains in `domains.json` (`llms_txt` array), `fetchPage` tries `<origin>/llms-full.txt` first and extracts the section matching the requested URL before invoking any tier. This avoids running puppeteer against well-instrumented docs sites and returns a clean markdown section directly. Cached probe outcomes live in Valkey (`llms:<origin>:full`, 24 h / 7 d for present/absent); the large body is held in-process for the lifetime of the MCP. Default whitelist: `docs.anthropic.com`, `docs.openai.com`, `docs.stripe.com`, `docs.crawl4ai.com`, `docs.firecrawl.dev`, `docs.cursor.com`. Extend by editing `domains.json` — the file is hot-reloaded.
+
 ### Fetch quality
 
 After any tier returns content with raw HTML, a post-extraction pass improves title and body quality:

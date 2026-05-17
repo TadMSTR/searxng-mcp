@@ -15,9 +15,14 @@ export function loadDomainConfig(): void {
     domainConfig.boost ??= [];
     domainConfig.block ??= [];
     domainConfig.profiles ??= {};
+    domainConfig.llms_txt ??= [];
   } catch {
     // File missing or malformed — use empty config, no filtering applied
   }
+}
+
+export function getLlmsTxtAllowlist(): string[] {
+  return domainConfig.llms_txt ?? [];
 }
 
 loadDomainConfig();

@@ -13,6 +13,7 @@ import { getBlockList, urlMatchesDomain } from "./domains.js";
 import { events } from "./events.js";
 import { postExtract } from "./extractors/post-extract.js";
 import { preferReadability, runReadability } from "./extractors/readability.js";
+import { tryLlmsTxtFetch } from "./llms-txt.js";
 import { incCounter, recordHistogram, withSpan } from "./observability.js";
 import { checkRobots } from "./robots.js";
 import type { FirecrawlScrapeResponse, GitHubReadmeResponse } from "./types.js";
@@ -410,6 +411,30 @@ export async function fetchPage(
     if (hostname === "github.com") {
       result = await githubFetch(url, maxChars);
     } else {
+      // llms.txt fast path — for whitelisted docs domains, try fetching the
+      // section from a pre-cached llms-full.txt before invoking any tier.
+      const llms = await withSpan("llms_full_txt", { "fetch.url": url }, () =>
+        tryLlmsTxtFetch(url, 8000),
+      );
+      if (llms) {
+        incCounter("fetch", { tier: "llms_full_txt", outcome: "hit" });
+        const persisted = {
+          title: llms.title,
+          url: llms.url,
+          text: llms.text,
+        };
+        await cacheSet(key, JSON.stringify(persisted), FETCH_CACHE_TTL_SECONDS);
+        events.fetchCompleted({
+          url,
+          tier_served: "llms_full_txt",
+          title: llms.title,
+          text_len: llms.text.length,
+          latency_ms: Date.now() - t_total,
+          source: "llms_full_txt",
+        });
+        return { ...persisted, text: persisted.text.slice(0, maxChars) };
+      }
+
       // robots.txt gate — skips fetch on disallow (cached 24h per origin)
       const robots = await checkRobots(url, "searxng-mcp");
       if (!robots.allowed) {
