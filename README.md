@@ -64,6 +64,33 @@ After any tier returns content with raw HTML, a post-extraction pass improves ti
 - **Title cascade** — falls back through `og:title` → `twitter:title` → `<title>` (with publisher-suffix stripping) → first `<h1>` → URL.
 - **Tier-2 Readability comparison** — when Crawl4AI returns markdown, JSDOM+Readability also runs over its raw HTML and is preferred when its text is longer (or unconditionally when Crawl4AI returns less than 500 chars).
 
+### Observability (opt-in)
+
+Tracing, metrics, and event publishing are entirely opt-in — with none of the env vars below set, the server has zero observability overhead and never loads the OpenTelemetry or NATS packages at runtime.
+
+**OpenTelemetry (traces + metrics)** — set `OTEL_EXPORTER_OTLP_ENDPOINT` to your collector's HTTP endpoint and the server emits:
+
+- Spans (per request): `tool.<name>` → `expand_query`? → `searxng_request` → `rerank` → `fetch` (×N) → `tier1_firecrawl` | `tier2_crawl4ai` | `tier3_rawfetch` → `post_extract`; plus `summarize_llm` for `search_and_summarize`.
+- Counters: `searxng_search_total{profile, expand}`, `searxng_fetch_total{tier, outcome}`, `searxng_cache_total{namespace, outcome}`, `searxng_errors_total{stage, error_type}`.
+- Histograms: `searxng_search_duration_seconds{profile}`, `searxng_fetch_duration_seconds{tier, outcome}`.
+
+Standard OTEL env vars apply (`OTEL_SERVICE_NAME` defaults to `searxng-mcp`).
+
+**NATS events** — set `NATS_URL` (e.g. `nats://localhost:4222`) and the server publishes a structured event on every search, fetch, cache hit/miss, robots skip, and error. Subjects:
+
+| Subject | When |
+|---------|------|
+| `searxng.search.requested` | Search tool invoked |
+| `searxng.search.completed` | Search returned (with sources, latency, rerank applied) |
+| `searxng.fetch.requested` | `fetchPage` called |
+| `searxng.fetch.tier.miss` | A tier returned empty or threw |
+| `searxng.fetch.tier.skipped` | robots.txt disallowed |
+| `searxng.fetch.completed` | Fetch resolved (with `tier_served`, `text_len`, latency) |
+| `searxng.cache.hit` / `.miss` | On every Valkey lookup |
+| `searxng.error` | Stage-tagged errors |
+
+Each envelope includes `request_id` and (when OTel is enabled) `trace_id` so subscribers can join the two streams. Subject prefix overridable via `NATS_SUBJECT_PREFIX`. Search queries flow through `search.*` events — downstream consumers are responsible for any PII scrubbing.
+
 ### Politeness
 
 - **Honest User-Agent** — outbound requests identify as `searxng-mcp/<version> (+https://github.com/TadMSTR/searxng-mcp; personal research)`.

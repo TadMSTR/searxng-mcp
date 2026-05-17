@@ -1,4 +1,5 @@
 import { RERANK_RECENCY_WEIGHT, RERANKER_URL } from "./config.js";
+import { withSpan } from "./observability.js";
 import type { RerankResponse, SearxResult } from "./types.js";
 
 /** Exponential decay recency score. Returns 0 for missing/unparseable dates. */
@@ -59,11 +60,17 @@ export async function rerankWithFallback(
   topN: number,
   timeRange?: string,
 ): Promise<SearxResult[]> {
-  const applyRecency = !timeRange; // skip when caller already filtered by date
-  try {
-    return await rerank(query, results, topN, applyRecency);
-  } catch {
-    // Reranker unavailable — fall back to SearXNG order
-    return results.slice(0, topN);
-  }
+  return withSpan(
+    "rerank",
+    { "rerank.candidates": results.length, "rerank.top_n": topN },
+    async () => {
+      const applyRecency = !timeRange; // skip when caller already filtered by date
+      try {
+        return await rerank(query, results, topN, applyRecency);
+      } catch {
+        // Reranker unavailable — fall back to SearXNG order
+        return results.slice(0, topN);
+      }
+    },
+  );
 }

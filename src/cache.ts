@@ -1,6 +1,13 @@
 import { createHash } from "node:crypto";
 import { Redis as Valkey } from "iovalkey";
 import { VALKEY_URL } from "./config.js";
+import { events } from "./events.js";
+import { incCounter } from "./observability.js";
+
+function namespaceOf(key: string): string {
+  const colon = key.indexOf(":");
+  return colon > 0 ? key.slice(0, colon) : key;
+}
 
 let valkey: Valkey | null = null;
 
@@ -37,11 +44,24 @@ export function fetchCacheKey(url: string): string {
 }
 
 export async function cacheGet(key: string): Promise<string | null> {
+  const namespace = namespaceOf(key);
   try {
     const client = await getValkey();
-    if (!client) return null;
-    return await client.get(key);
+    if (!client) {
+      incCounter("cache", { namespace, outcome: "unavailable" });
+      return null;
+    }
+    const value = await client.get(key);
+    if (value !== null) {
+      incCounter("cache", { namespace, outcome: "hit" });
+      events.cacheHit({ key_type: "get", namespace });
+    } else {
+      incCounter("cache", { namespace, outcome: "miss" });
+      events.cacheMiss({ key_type: "get", namespace });
+    }
+    return value;
   } catch {
+    incCounter("cache", { namespace, outcome: "error" });
     return null;
   }
 }

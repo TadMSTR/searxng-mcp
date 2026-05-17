@@ -10,8 +10,10 @@ import {
   GITHUB_TOKEN,
 } from "./config.js";
 import { getBlockList, urlMatchesDomain } from "./domains.js";
+import { events } from "./events.js";
 import { postExtract } from "./extractors/post-extract.js";
 import { preferReadability, runReadability } from "./extractors/readability.js";
+import { incCounter, recordHistogram, withSpan } from "./observability.js";
 import { checkRobots } from "./robots.js";
 import type { FirecrawlScrapeResponse, GitHubReadmeResponse } from "./types.js";
 
@@ -323,93 +325,174 @@ function applyPostExtract(
   };
 }
 
+async function runTier<T extends TierResult | null>(
+  tier: "tier1_firecrawl" | "tier2_crawl4ai" | "tier3_rawfetch",
+  url: string,
+  fn: () => Promise<T>,
+): Promise<T> {
+  const t0 = Date.now();
+  try {
+    const out = await withSpan(tier, { "fetch.url": url }, () => fn());
+    const latency_ms = Date.now() - t0;
+    if (out) {
+      incCounter("fetch", { tier, outcome: "hit" });
+      recordHistogram("fetch", latency_ms / 1000, { tier, outcome: "hit" });
+    } else {
+      incCounter("fetch", { tier, outcome: "miss" });
+      recordHistogram("fetch", latency_ms / 1000, { tier, outcome: "miss" });
+      events.fetchTierMiss({ url, tier, reason: "empty_result", latency_ms });
+    }
+    return out;
+  } catch (err) {
+    const latency_ms = Date.now() - t0;
+    incCounter("fetch", { tier, outcome: "error" });
+    recordHistogram("fetch", latency_ms / 1000, { tier, outcome: "error" });
+    events.fetchTierMiss({
+      url,
+      tier,
+      reason: err instanceof Error ? err.message : "error",
+      latency_ms,
+    });
+    return null as T;
+  }
+}
+
 export async function fetchPage(
   url: string,
   maxChars = 8000,
   domainProfile?: string,
   preferFit = false,
 ): Promise<{ title: string; url: string; text: string }> {
-  assertPublicUrl(url);
+  return withSpan("fetch", { "fetch.url": url }, async () => {
+    const t_total = Date.now();
+    assertPublicUrl(url);
+    events.fetchRequested({ url, max_chars: maxChars, prefer_fit: preferFit });
 
-  // Refuse to fetch blocked domains
-  const blockList = getBlockList(domainProfile);
-  if (blockList.some((pat) => urlMatchesDomain(url, pat))) {
-    throw new Error(`Domain is blocked by domain filter configuration`);
-  }
-
-  // Check fetch cache — always stored at 8000 chars, sliced to maxChars on read
-  const key = fetchCacheKey(url);
-  const cached = await cacheGet(key);
-  if (cached) {
-    try {
-      const r = JSON.parse(cached) as {
-        title: string;
-        url: string;
-        text: string;
-      };
-      return { ...r, text: r.text.slice(0, maxChars) };
-    } catch {
-      // Corrupted cache entry — fall through to live fetch
-    }
-  }
-
-  const { hostname } = new URL(url);
-
-  let result: TierResult;
-  if (hostname === "github.com") {
-    result = await githubFetch(url, maxChars);
-  } else {
-    // robots.txt gate — skips fetch on disallow (cached 24h per origin)
-    const robots = await checkRobots(url, "searxng-mcp");
-    if (!robots.allowed) {
-      console.error(
-        `[searxng-mcp] fetch skipped_robots url=${url} reason=${robots.reason ?? "disallowed"}`,
-      );
-      throw new RobotsDisallowedError(url);
+    // Refuse to fetch blocked domains
+    const blockList = getBlockList(domainProfile);
+    if (blockList.some((pat) => urlMatchesDomain(url, pat))) {
+      events.error({
+        stage: "fetch",
+        url,
+        error_type: "blocked_domain",
+        message: "Domain is blocked by domain filter configuration",
+      });
+      throw new Error(`Domain is blocked by domain filter configuration`);
     }
 
-    // Run the tier cascade and the raw-HTML metadata fetch in parallel — the
-    // raw HTML is used for post-extraction (JSON-LD, og:title cascade) since
-    // puppeteer-rendered HTML from tier 1/2 can include injected payment-
-    // widget meta tags and stripped JSON-LD scripts.
-    const metadataHtmlPromise = fetchRawHtmlForMetadata(url);
-
-    // Tier 1: Firecrawl
-    let fetched: TierResult | null = null;
-    try {
-      fetched = await firecrawlScrape(url, 8000);
-      if (!fetched?.text) fetched = null; // treat empty content as failure (bot-block, challenge pages)
-    } catch {
-      fetched = null;
-    }
-    if (!fetched) {
-      console.error(`[searxng-mcp] fetch tier1 miss url=${url}`);
-    }
-
-    // Tier 2: Crawl4AI (skipped if CRAWL4AI_URL not set)
-    if (!fetched) {
-      fetched = await crawl4aiFetch(url, 8000, preferFit);
-      if (fetched) {
-        fetched = applyTier2Readability(fetched, url);
-        console.error(`[searxng-mcp] fetch tier2 hit url=${url}`);
-      } else {
-        console.error(`[searxng-mcp] fetch tier2 miss url=${url}`);
+    // Check fetch cache — always stored at 8000 chars, sliced to maxChars on read
+    const key = fetchCacheKey(url);
+    const cached = await cacheGet(key);
+    if (cached) {
+      try {
+        const r = JSON.parse(cached) as {
+          title: string;
+          url: string;
+          text: string;
+        };
+        events.fetchCompleted({
+          url,
+          tier_served: "cache",
+          title: r.title,
+          text_len: r.text.length,
+          latency_ms: Date.now() - t_total,
+        });
+        return { ...r, text: r.text.slice(0, maxChars) };
+      } catch {
+        // Corrupted cache entry — fall through to live fetch
       }
     }
 
-    // Tier 3: Raw HTTP fetch
-    if (!fetched) {
-      console.error(`[searxng-mcp] fetch tier3 fallback url=${url}`);
-      fetched = await rawFetch(url, 8000);
+    const { hostname } = new URL(url);
+
+    let result: TierResult;
+    let tierServed = "github";
+    if (hostname === "github.com") {
+      result = await githubFetch(url, maxChars);
+    } else {
+      // robots.txt gate — skips fetch on disallow (cached 24h per origin)
+      const robots = await checkRobots(url, "searxng-mcp");
+      if (!robots.allowed) {
+        console.error(
+          `[searxng-mcp] fetch skipped_robots url=${url} reason=${robots.reason ?? "disallowed"}`,
+        );
+        incCounter("fetch", { tier: "robots", outcome: "skipped_robots" });
+        events.fetchTierSkipped({
+          url,
+          tier: "robots",
+          reason: robots.reason ?? "disallowed",
+        });
+        throw new RobotsDisallowedError(url);
+      }
+
+      // Run tier cascade and side-channel raw-HTML metadata fetch in parallel.
+      const metadataHtmlPromise = fetchRawHtmlForMetadata(url);
+
+      let fetched: TierResult | null = null;
+      fetched = await runTier("tier1_firecrawl", url, async () => {
+        const r = await firecrawlScrape(url, 8000);
+        return r?.text ? r : null;
+      });
+      if (fetched) {
+        tierServed = "tier1_firecrawl";
+      } else {
+        console.error(`[searxng-mcp] fetch tier1 miss url=${url}`);
+      }
+
+      if (!fetched) {
+        fetched = await runTier("tier2_crawl4ai", url, () =>
+          crawl4aiFetch(url, 8000, preferFit),
+        );
+        if (fetched) {
+          fetched = applyTier2Readability(fetched, url);
+          tierServed = "tier2_crawl4ai";
+          console.error(`[searxng-mcp] fetch tier2 hit url=${url}`);
+        } else {
+          console.error(`[searxng-mcp] fetch tier2 miss url=${url}`);
+        }
+      }
+
+      if (!fetched) {
+        console.error(`[searxng-mcp] fetch tier3 fallback url=${url}`);
+        fetched = await runTier("tier3_rawfetch", url, () =>
+          rawFetch(url, 8000),
+        );
+        if (fetched) tierServed = "tier3_rawfetch";
+      }
+
+      if (!fetched) {
+        events.error({
+          stage: "fetch",
+          url,
+          error_type: "all_tiers_failed",
+          message: "All fetch tiers failed",
+        });
+        throw new Error("All fetch tiers failed");
+      }
+
+      const tierFetched: TierResult = fetched;
+      const metadataHtml = await metadataHtmlPromise;
+      result = await withSpan("post_extract", { "fetch.url": url }, () =>
+        applyPostExtract(tierFetched, url, metadataHtml),
+      );
     }
 
-    const metadataHtml = await metadataHtmlPromise;
-    result = applyPostExtract(fetched, url, metadataHtml);
-  }
+    // Strip html from cache payload — only the resolved title/text/url are persisted
+    const persisted = {
+      title: result.title,
+      url: result.url,
+      text: result.text,
+    };
+    await cacheSet(key, JSON.stringify(persisted), FETCH_CACHE_TTL_SECONDS);
 
-  // Strip html from cache payload — only the resolved title/text/url are persisted
-  const persisted = { title: result.title, url: result.url, text: result.text };
-  await cacheSet(key, JSON.stringify(persisted), FETCH_CACHE_TTL_SECONDS);
+    events.fetchCompleted({
+      url,
+      tier_served: tierServed,
+      title: result.title,
+      text_len: result.text.length,
+      latency_ms: Date.now() - t_total,
+    });
 
-  return { ...persisted, text: persisted.text.slice(0, maxChars) };
+    return { ...persisted, text: persisted.text.slice(0, maxChars) };
+  });
 }
