@@ -95,9 +95,9 @@ Before invoking the fetch cascade, searxng-mcp reads the domain's `tier_stats_30
 
 ### Domain capability database
 
-Every fetch records what searxng-mcp learns about the target domain to Valkey under `domain:<hostname>` (90-day TTL, schema_version 1). Captured per record:
+Every fetch records what searxng-mcp learns about the target domain to Valkey under `domain:<hostname>` (90-day TTL, schema_version 2). Captured per record:
 
-- `tier_stats_30d.{tier1,tier2,tier3}.{attempts, ok, fail, last_fail_reason}` — fetch success rate per tier
+- `tier_stats_30d.{tier1,tier2,tier3}.{attempts, ok, fail, last_fail_reason, window_start_ms}` — fetch success rate per tier over a rolling 30-day window; counters reset when the window expires
 - `capabilities.robots_txt.{present, fetched, allows_us}` — robots.txt presence and whether it permits us
 - `capabilities.llms_full_txt.{present, size_bytes, last_checked}` — whether the domain serves `/llms-full.txt`
 - `capabilities.json_ld_article.{sampled, present, last_sampled_at}` — how often Article-schema JSON-LD is found
