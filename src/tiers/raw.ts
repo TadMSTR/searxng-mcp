@@ -49,7 +49,10 @@ export async function fetchRawHtmlForMetadata(
   // can strip JSON-LD scripts; the unrendered HTML is more reliable for
   // post-extraction. Bounded by RAW_HTML_MAX_BYTES so large pages can't
   // amplify into a JSDOM-memory hazard (IV-14).
+  // Defensive SSRF guard — function is exported, so protect against future
+  // direct callers with an internal URL (SSRF-08 parity with rawFetch).
   try {
+    assertPublicUrl(url);
     const res = await fetch(url, {
       headers: { "User-Agent": USER_AGENT },
       redirect: "follow",
