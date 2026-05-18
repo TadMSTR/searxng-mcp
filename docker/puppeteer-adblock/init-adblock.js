@@ -22,6 +22,8 @@ if (process.env.ADBLOCK_DISABLE === "true") {
 }
 
 function install() {
+  if (process.env._ADBLOCK_LOADED) return;
+  process.env._ADBLOCK_LOADED = "1";
 
 const FILTER_URLS = (
   process.env.ADBLOCK_FILTERS_URL ||
