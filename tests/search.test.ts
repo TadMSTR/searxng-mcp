@@ -89,6 +89,28 @@ describe("searxSearch", () => {
     expect(calledUrl).toContain("time_range=week");
   });
 
+  it("passes language param to SearXNG URL when provided", async () => {
+    mockFetch.mockResolvedValue(mockSearxResponse([]));
+    await searxSearch(
+      "query",
+      "general",
+      5,
+      undefined,
+      undefined,
+      undefined,
+      "de",
+    );
+    const calledUrl = mockFetch.mock.calls[0][0] as string;
+    expect(calledUrl).toContain("language=de");
+  });
+
+  it("omits language param from SearXNG URL when not provided", async () => {
+    mockFetch.mockResolvedValue(mockSearxResponse([]));
+    await searxSearch("query", "general", 5);
+    const calledUrl = mockFetch.mock.calls[0][0] as string;
+    expect(calledUrl).not.toContain("language=");
+  });
+
   it("runs expand path: fetches original + variants, deduplicates by URL", async () => {
     mockFetch.mockResolvedValue(
       mockSearxResponse([
