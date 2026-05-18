@@ -19,7 +19,14 @@ src/
   index.ts        # Entry point — creates MCP server, registers tools
   tools.ts        # Tool definitions (schemas + handlers)
   search.ts       # SearXNG client
-  fetch.ts        # Fetch cascade (Firecrawl → Crawl4AI → Readability/raw HTTP) + GitHub API
+  fetch.ts        # Fetch orchestrator: robots gate, tier cascade, caching, post-extract
+  fetch-utils.ts  # Shared primitives: USER_AGENT, assertPublicUrl, readBoundedText, TierResult
+  tiers/          # Tier handlers (one file per tier)
+    firecrawl.ts  # Tier 1: Firecrawl JS-rendering scrape
+    crawl4ai.ts   # Tier 2: Crawl4AI headless fetch + Readability comparison
+    raw.ts        # Tier 3: raw HTTP + Readability; fetchRawHtmlForMetadata for post-extract
+    github.ts     # GitHub blob/README API fetch
+    index.ts      # Barrel re-export
   reranker.ts     # Jina-compatible reranker client + recency weighting
   ollama.ts       # Ollama client (query expansion + summarization)
   cache.ts        # Valkey/Redis caching layer
@@ -27,7 +34,7 @@ src/
   config.ts       # Environment variable configuration
   types.ts        # Shared type definitions
 tests/
-  *.test.ts       # Vitest unit tests (50 tests across 5 files)
+  *.test.ts       # Vitest unit tests (149 tests across 16 files)
 ```
 
 ## Dependencies
