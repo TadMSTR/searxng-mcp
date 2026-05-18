@@ -1,14 +1,5 @@
-import { Readability } from "@mozilla/readability";
-import { JSDOM } from "jsdom";
 import { cacheGet, cacheSet, fetchCacheKey } from "./cache.js";
-import {
-  CRAWL4AI_API_TOKEN,
-  CRAWL4AI_URL,
-  FETCH_CACHE_TTL_SECONDS,
-  FIRECRAWL_API_KEY,
-  FIRECRAWL_URL,
-  GITHUB_TOKEN,
-} from "./config.js";
+import { FETCH_CACHE_TTL_SECONDS } from "./config.js";
 import {
   recordPostExtractSample,
   recordTierAttempt,
@@ -17,43 +8,23 @@ import {
 import { getBlockList, urlMatchesDomain } from "./domains.js";
 import { events } from "./events.js";
 import { postExtract } from "./extractors/post-extract.js";
-import { preferReadability, runReadability } from "./extractors/readability.js";
+import { assertPublicUrl, type TierResult } from "./fetch-utils.js";
 import { tryLlmsTxtFetch } from "./llms-txt.js";
 import { incCounter, recordHistogram, withSpan } from "./observability.js";
 import { checkRobots } from "./robots.js";
 import { computeTierSkips, type SkipReason, TIER_NAME } from "./routing.js";
-import type {
-  FirecrawlScrapeResponse,
-  GitHubReadmeResponse,
-  TierSlot,
-} from "./types.js";
+import {
+  applyTier2Readability,
+  crawl4aiFetch,
+  fetchRawHtmlForMetadata,
+  firecrawlScrape,
+  githubFetch,
+  rawFetch,
+} from "./tiers/index.js";
+import type { TierSlot } from "./types.js";
 
-export const USER_AGENT =
-  "searxng-mcp/3.5.0 (+https://github.com/TadMSTR/searxng-mcp; personal research)";
-
-// Hard cap on HTML bytes read into memory per fetch. Anything larger than
-// this is dropped — the metadata extractors aren't useful on multi-megabyte
-// rendered pages anyway, and uncapped reads make the JSDOM constructor a
-// memory-amplification target (IV-14).
-const RAW_HTML_MAX_BYTES = 2 * 1024 * 1024;
-
-async function readBoundedText(res: Response): Promise<string> {
-  const reader = res.body?.getReader();
-  if (!reader) return (await res.text()).slice(0, RAW_HTML_MAX_BYTES);
-  const chunks: Uint8Array[] = [];
-  let total = 0;
-  while (total < RAW_HTML_MAX_BYTES) {
-    const { value, done } = await reader.read();
-    if (done) break;
-    chunks.push(value);
-    total += value.byteLength;
-  }
-  // Drop any in-flight remainder if we hit the cap.
-  reader.cancel().catch(() => {});
-  return Buffer.concat(chunks.map((c) => Buffer.from(c)))
-    .toString("utf-8")
-    .slice(0, RAW_HTML_MAX_BYTES);
-}
+// Re-export for callers that import assertPublicUrl from this module.
+export { assertPublicUrl } from "./fetch-utils.js";
 
 export class RobotsDisallowedError extends Error {
   constructor(url: string) {
@@ -62,289 +33,8 @@ export class RobotsDisallowedError extends Error {
   }
 }
 
-interface TierResult {
-  title: string;
-  url: string;
-  text: string;
-  html?: string;
-}
-
-export function assertPublicUrl(url: string): void {
-  const { protocol } = new URL(url);
-  // Strip IPv6 brackets so patterns like /^::1$/ match [::1] addresses correctly
-  const hostname = new URL(url).hostname.replace(/^\[|\]$/g, "");
-  if (!/^https?:$/.test(protocol)) {
-    throw new Error(`Only http/https URLs are supported`);
-  }
-  const blocked = [
-    /^localhost$/i,
-    /^127\./,
-    /^0\.0\.0\.0$/,
-    /^10\./,
-    /^192\.168\./,
-    /^172\.(1[6-9]|2[0-9]|3[01])\./,
-    /^host\.docker\.internal$/i,
-    /^fc[0-9a-f]{2}:/i,
-    /^fe[89ab][0-9a-f]:/i,
-    /^::1$/,
-    /^0:0:0:0:0:0:0:1$/,
-    /^fd[0-9a-f]{2}:/i,
-  ];
-  if (blocked.some((r) => r.test(hostname))) {
-    throw new Error(`Internal/private addresses are not allowed`);
-  }
-}
-
-async function githubFetch(
-  url: string,
-  maxChars = 8000,
-): Promise<{ title: string; url: string; text: string }> {
-  const parsed = new URL(url);
-  const parts = parsed.pathname.split("/").filter(Boolean);
-  // parts: [owner, repo] or [owner, repo, "blob"|"tree", branch, ...path]
-
-  const headers: Record<string, string> = {
-    Accept: "application/vnd.github+json",
-    "X-GitHub-Api-Version": "2022-11-28",
-    "User-Agent": USER_AGENT,
-  };
-  if (GITHUB_TOKEN) headers.Authorization = `Bearer ${GITHUB_TOKEN}`;
-
-  if (parts.length >= 4 && parts[2] === "blob") {
-    // Rewrite blob URL to raw content
-    const [owner, repo, , branch, ...filePath] = parts;
-    const rawUrl = `https://raw.githubusercontent.com/${owner}/${repo}/${branch}/${filePath.join("/")}`;
-    const rawHeaders: Record<string, string> = { "User-Agent": USER_AGENT };
-    if (GITHUB_TOKEN) rawHeaders.Authorization = `Bearer ${GITHUB_TOKEN}`;
-    const res = await fetch(rawUrl, {
-      headers: rawHeaders,
-      signal: AbortSignal.timeout(10000),
-    });
-    if (!res.ok)
-      throw new Error(
-        `GitHub raw fetch error: ${res.status} ${res.statusText}`,
-      );
-    const text = (await res.text()).slice(0, maxChars);
-    const fileName = filePath[filePath.length - 1] ?? url;
-    return { title: fileName, url: rawUrl, text };
-  }
-
-  // Repo root or tree — fetch README via GitHub API
-  const [owner, repo] = parts;
-  const apiUrl = `https://api.github.com/repos/${owner}/${repo}/readme`;
-  const res = await fetch(apiUrl, {
-    headers,
-    signal: AbortSignal.timeout(10000),
-  });
-  if (!res.ok)
-    throw new Error(`GitHub API error: ${res.status} ${res.statusText}`);
-  const data = (await res.json()) as GitHubReadmeResponse;
-  const text = Buffer.from(data.content, "base64")
-    .toString("utf-8")
-    .slice(0, maxChars);
-  return { title: `${owner}/${repo} — ${data.name}`, url: data.html_url, text };
-}
-
-async function firecrawlScrape(
-  url: string,
-  maxChars = 8000,
-): Promise<TierResult> {
-  const res = await fetch(`${FIRECRAWL_URL}/v1/scrape`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${FIRECRAWL_API_KEY}`,
-    },
-    body: JSON.stringify({ url, formats: ["markdown", "html"] }),
-    signal: AbortSignal.timeout(15000),
-  });
-
-  if (!res.ok) {
-    throw new Error(`Firecrawl error: ${res.status} ${res.statusText}`);
-  }
-
-  const data = (await res.json()) as FirecrawlScrapeResponse;
-
-  if (!data.success || !data.data) {
-    throw new Error(data.error ?? "Firecrawl returned no data");
-  }
-
-  const title = data.data.metadata?.title ?? url;
-  const text = (data.data.markdown ?? "").slice(0, maxChars);
-  const html = data.data.html;
-
-  return { title, url: data.data.metadata?.sourceURL ?? url, text, html };
-}
-
-async function pollCrawl4aiTask(
-  taskId: string,
-  url: string,
-  maxChars: number,
-  signal: AbortSignal,
-  preferFit = false,
-): Promise<TierResult | null> {
-  const deadline = Date.now() + 40_000;
-
-  while (Date.now() < deadline) {
-    await new Promise((r) => setTimeout(r, 2000));
-    if (signal.aborted) return null;
-
-    try {
-      const resp = await fetch(`${CRAWL4AI_URL}/task/${taskId}`, { signal });
-      if (!resp.ok) return null;
-
-      const data = (await resp.json()) as Record<string, unknown>;
-      if (data.status === "completed") {
-        const result = data.result as Record<string, unknown> | null;
-        const md = result?.markdown as Record<string, string> | null;
-        const mdRaw = preferFit
-          ? md?.fit_markdown || md?.raw_markdown
-          : md?.raw_markdown || md?.fit_markdown;
-        const text = (mdRaw ?? "").slice(0, maxChars);
-        const metadata = result?.metadata as Record<string, string> | null;
-        const title = metadata?.title || url;
-        const html =
-          typeof result?.html === "string"
-            ? (result.html as string)
-            : undefined;
-        return text ? { title, url, text, html } : null;
-      }
-      if (data.status === "failed") return null;
-    } catch {
-      return null;
-    }
-  }
-
-  return null;
-}
-
-async function crawl4aiFetch(
-  url: string,
-  maxChars = 8000,
-  preferFit = false,
-): Promise<TierResult | null> {
-  if (!CRAWL4AI_URL) return null;
-
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 45_000);
-
-  try {
-    const crawlHeaders: Record<string, string> = {
-      "Content-Type": "application/json",
-    };
-    if (CRAWL4AI_API_TOKEN)
-      crawlHeaders.Authorization = `Bearer ${CRAWL4AI_API_TOKEN}`;
-    const resp = await fetch(`${CRAWL4AI_URL}/crawl`, {
-      method: "POST",
-      headers: crawlHeaders,
-      body: JSON.stringify({ urls: [url] }),
-      signal: controller.signal,
-    });
-
-    if (!resp.ok) return null;
-    const data = (await resp.json()) as Record<string, unknown>;
-
-    // Synchronous response — results returned directly
-    if (Array.isArray(data.results) && data.results.length > 0) {
-      const result = data.results[0] as Record<string, unknown>;
-      const md = result.markdown as Record<string, string> | null;
-      const mdRaw = preferFit
-        ? md?.fit_markdown || md?.raw_markdown
-        : md?.raw_markdown || md?.fit_markdown;
-      const text = (mdRaw ?? "").slice(0, maxChars);
-      if (!text) return null;
-      const metadata = result.metadata as Record<string, string> | null;
-      const title = metadata?.title || url;
-      const html =
-        typeof result.html === "string" ? (result.html as string) : undefined;
-      return { title, url, text, html };
-    }
-
-    // Asynchronous response — poll for completion
-    if (typeof data.task_id === "string") {
-      if (!/^[a-zA-Z0-9_-]{1,64}$/.test(data.task_id)) return null;
-      return await pollCrawl4aiTask(
-        data.task_id,
-        url,
-        maxChars,
-        controller.signal,
-        preferFit,
-      );
-    }
-
-    return null;
-  } catch {
-    return null;
-  } finally {
-    clearTimeout(timeout);
-  }
-}
-
-export async function rawFetch(
-  url: string,
-  maxChars = 8000,
-): Promise<TierResult> {
-  // Defensive SSRF guard — all current callers go through fetchPage which
-  // also calls this, but rawFetch is exported so the guard protects against
-  // future direct callers (SSRF-08).
-  assertPublicUrl(url);
-
-  const res = await fetch(url, {
-    headers: { "User-Agent": USER_AGENT },
-    redirect: "manual",
-    signal: AbortSignal.timeout(15000),
-  });
-
-  if (res.status >= 300 && res.status < 400) {
-    // Don't echo the Location header into the thrown message — a redirect
-    // to an internal address would surface that address to the MCP caller
-    // (OE-02).
-    throw new Error(`Redirect not followed (${res.status})`);
-  }
-  if (!res.ok)
-    throw new Error(`Raw fetch error: ${res.status} ${res.statusText}`);
-
-  const html = await readBoundedText(res);
-  const dom = new JSDOM(html, { url }); // runScripts not set — script execution disabled
-  const reader = new Readability(dom.window.document);
-  const article = reader.parse();
-
-  const text = (article?.textContent ?? html).slice(0, maxChars);
-  const title = article?.title ?? url;
-  return { title, url, text, html };
-}
-
-function applyTier2Readability(fetched: TierResult, url: string): TierResult {
-  if (!fetched.html) return fetched;
-  const readable = runReadability(fetched.html, url);
-  if (preferReadability(readable, fetched) && readable) {
-    return {
-      ...fetched,
-      title: readable.title ?? fetched.title,
-      text: readable.text,
-    };
-  }
-  return fetched;
-}
-
-async function fetchRawHtmlForMetadata(url: string): Promise<string | null> {
-  // Raw HTTP fetch (no JS rendering) used as the source for JSON-LD and meta
-  // tags. Tier 1/2 puppeteer renders inject payment-widget og:title tags and
-  // can strip JSON-LD scripts; the unrendered HTML is more reliable for
-  // post-extraction. Bounded by RAW_HTML_MAX_BYTES so large pages can't
-  // amplify into a JSDOM-memory hazard (IV-14).
-  try {
-    const res = await fetch(url, {
-      headers: { "User-Agent": USER_AGENT },
-      redirect: "follow",
-      signal: AbortSignal.timeout(8000),
-    });
-    if (!res.ok) return null;
-    return await readBoundedText(res);
-  } catch {
-    return null;
-  }
-}
+// Re-export rawFetch for external callers (e.g. tests).
+export { rawFetch } from "./tiers/index.js";
 
 function applyPostExtract(
   fetched: TierResult,

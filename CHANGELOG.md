@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [3.6.0] - 2026-05-18
+
+### Changed
+- NATS client migrated from `nats` v2 (deprecated) to `@nats-io/nats-core` + `@nats-io/transport-node` v3. No behavior change; addresses install-time deprecation warning. Lazy-import discipline preserved — packages are not loaded unless `NATS_URL` is set.
+- `tier_stats_30d` now actually implements a 30-day window (was cumulative in v3.5.0). Stale failures no longer haunt domains that have since recovered. Schema bumped to v2; v1 records are discarded on read and rebuild from new fetches (typically <24h of normal traffic). `pnpm dump-domain` output now shows per-tier success rate and days until window reset.
+- Refactored `src/fetch.ts` from 601 lines to 296 by extracting tier-specific handlers into `src/tiers/{firecrawl,crawl4ai,raw,github}.ts`. Shared primitives moved to `src/fetch-utils.ts`. Pure code-move; no behavior change. Eases future per-tier modifications.
+
+### Security
+- `fetchRawHtmlForMetadata` now calls `assertPublicUrl()` before fetching — parity with the SSRF-08 guard already present on `rawFetch`. No behavior change for normal usage; protects against future callers with internal URLs.
+
 ## [3.5.0] - 2026-05-17
 
 ### Added
