@@ -111,7 +111,7 @@ export async function handleSearch({
       async () => {
         const raw = await searxSearch(
           query,
-          category,
+          category ?? "general",
           num_results,
           time_range,
           domain_profile,
@@ -127,7 +127,9 @@ export async function handleSearch({
         return {
           ranked,
           rerankApplied: true,
-          result: { content: [{ type: "text", text: formatResults(ranked) }] },
+          result: {
+            content: [{ type: "text" as const, text: formatResults(ranked) }],
+          },
         };
       },
     ),
@@ -163,7 +165,7 @@ export async function handleSearchAndFetch({
       async () => {
         const raw = await searxSearch(
           query,
-          category,
+          category ?? "general",
           5,
           time_range,
           domain_profile,
@@ -174,7 +176,9 @@ export async function handleSearchAndFetch({
           return {
             ranked: [],
             rerankApplied: false,
-            result: { content: [{ type: "text", text: "No results found." }] },
+            result: {
+              content: [{ type: "text" as const, text: "No results found." }],
+            },
           };
         }
         const ranked = await rerankWithFallback(query, raw, 5, time_range);
@@ -201,7 +205,9 @@ export async function handleSearchAndFetch({
           ranked,
           rerankApplied: true,
           result: {
-            content: [{ type: "text", text: searchText + fetchedSections }],
+            content: [
+              { type: "text" as const, text: searchText + fetchedSections },
+            ],
           },
         };
       },
@@ -238,7 +244,7 @@ export async function handleSearchAndSummarize({
       async () => {
         const raw = await searxSearch(
           query,
-          category,
+          category ?? "general",
           fetch_count + 2,
           time_range,
           domain_profile,
@@ -249,7 +255,9 @@ export async function handleSearchAndSummarize({
           return {
             ranked: [],
             rerankApplied: false,
-            result: { content: [{ type: "text", text: "No results found." }] },
+            result: {
+              content: [{ type: "text" as const, text: "No results found." }],
+            },
           };
         }
         const ranked = await rerankWithFallback(
@@ -293,7 +301,9 @@ export async function handleSearchAndSummarize({
             ranked,
             rerankApplied: true,
             result: {
-              content: [{ type: "text", text: searchText + fetchedSections }],
+              content: [
+                { type: "text" as const, text: searchText + fetchedSections },
+              ],
             },
           };
         }
@@ -301,7 +311,7 @@ export async function handleSearchAndSummarize({
         return {
           ranked,
           rerankApplied: true,
-          result: { content: [{ type: "text", text: output }] },
+          result: { content: [{ type: "text" as const, text: output }] },
         };
       },
     ),
@@ -324,7 +334,7 @@ export async function handleFetchUrl({
     const output = [`Title: ${title}`, `URL: ${fetchedUrl}`, "", text].join(
       "\n",
     );
-    return { content: [{ type: "text", text: output }] };
+    return { content: [{ type: "text" as const, text: output }] };
   });
 }
 
@@ -340,7 +350,7 @@ export async function handleClearCache({ target }: { target: string }) {
     return {
       content: [
         {
-          type: "text",
+          type: "text" as const,
           text: `Cleared ${cleared} cache ${cleared === 1 ? "entry" : "entries"}.`,
         },
       ],

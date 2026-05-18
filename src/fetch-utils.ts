@@ -3,7 +3,7 @@
 // from ./tiers/index.js, so tier files cannot import back from ./fetch.js.
 
 export const USER_AGENT =
-  "searxng-mcp/3.6.0 (+https://github.com/TadMSTR/searxng-mcp; personal research)";
+  "searxng-mcp/3.7.0 (+https://github.com/TadMSTR/searxng-mcp; personal research)";
 
 // Hard cap on HTML bytes read into memory per fetch. Anything larger than
 // this is dropped — the metadata extractors aren't useful on multi-megabyte

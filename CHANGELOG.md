@@ -6,6 +6,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [3.7.0] - 2026-05-18
+
+### Added
+- **`language` parameter** on `search`, `search_and_fetch`, and `search_and_summarize` tools. Accepts a BCP-47 language code (e.g. `en`, `de`) or `all`. Omitting it preserves the SearXNG instance default.
+- **PDF routing**: `.pdf` URLs are now detected (`isPdfUrl`) and routed directly to Crawl4AI (tier 2), bypassing Firecrawl which cannot extract PDF text. `rawFetch` also throws a descriptive error if it receives `application/pdf` content instead of silently returning binary noise.
+- **Wayback Machine tier-4** (opt-in): when `WAYBACK_ENABLED=true`, pages that fail all three tiers are looked up in the Wayback Machine CDX API and fetched from the most recent snapshot. Results get an `[Archived]` title prefix. Disabled by default — no outbound archive.org traffic unless opted in.
+- **Test coverage**: added `tests/tools.test.ts`, `tests/ollama.test.ts`, and `tests/tiers/{firecrawl,crawl4ai,raw,wayback}.test.ts`; expanded `tests/search.test.ts`. Coverage up from ~57% to ~80%+ by line count.
+
+### Changed
+- `tools.ts` handler closures extracted into named exported functions (`handleSearch`, `handleSearchAndFetch`, `handleSearchAndSummarize`, `handleFetchUrl`, `handleClearCache`) for testability. `registerTools` behavior unchanged.
+- Adblock sidecar (`docker/puppeteer-adblock/init-adblock.js`) now guards against double-load via `NODE_OPTIONS` inheritance. Eliminates ~1.5s duplicate filter-list fetch on container start. **Requires container rebuild**: `docker compose -f ~/docker/firecrawl-simple/docker-compose.yml up -d --build firecrawl-puppeteer`.
+
 ## [3.6.0] - 2026-05-18
 
 ### Changed

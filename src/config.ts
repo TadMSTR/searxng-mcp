@@ -23,6 +23,7 @@ export const OLLAMA_SUMMARIZE_MODEL =
 export const EXPAND_QUERIES_DEFAULT = process.env.EXPAND_QUERIES === "true";
 export const CRAWL4AI_URL = process.env.CRAWL4AI_URL ?? null;
 export const CRAWL4AI_API_TOKEN = process.env.CRAWL4AI_API_TOKEN;
+export const WAYBACK_ENABLED = process.env.WAYBACK_ENABLED === "true";
 export const RERANK_RECENCY_WEIGHT = (() => {
   const v = parseFloat(process.env.RERANK_RECENCY_WEIGHT ?? "0.15");
   if (Number.isNaN(v) || v < 0) {

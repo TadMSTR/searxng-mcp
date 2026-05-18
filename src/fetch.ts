@@ -1,5 +1,5 @@
 import { cacheGet, cacheSet, fetchCacheKey } from "./cache.js";
-import { FETCH_CACHE_TTL_SECONDS } from "./config.js";
+import { FETCH_CACHE_TTL_SECONDS, WAYBACK_ENABLED } from "./config.js";
 import {
   recordPostExtractSample,
   recordTierAttempt,
@@ -20,6 +20,7 @@ import {
   firecrawlScrape,
   githubFetch,
   rawFetch,
+  waybackFetch,
 } from "./tiers/index.js";
 import type { TierSlot } from "./types.js";
 
@@ -276,6 +277,15 @@ export async function fetchPage(
             rawFetch(url, 8000),
           );
           if (fetched) tierServed = "tier3_rawfetch";
+        }
+      }
+
+      if (!fetched && WAYBACK_ENABLED) {
+        console.error(`[searxng-mcp] fetch tier4 wayback attempt url=${url}`);
+        fetched = await waybackFetch(url, 8000);
+        if (fetched) {
+          tierServed = "tier4_wayback";
+          console.error(`[searxng-mcp] fetch tier4 wayback hit url=${url}`);
         }
       }
 

@@ -85,7 +85,7 @@ describe("handleSearch", () => {
     });
     expect(searxSearch).toHaveBeenCalledWith(
       "test query",
-      undefined,
+      "general",
       5,
       undefined,
       undefined,
@@ -104,7 +104,7 @@ describe("handleSearch", () => {
     });
     expect(searxSearch).toHaveBeenCalledWith(
       "test",
-      undefined,
+      "general",
       3,
       undefined,
       undefined,
