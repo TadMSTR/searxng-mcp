@@ -60,7 +60,7 @@ export async function fetchRawHtmlForMetadata(
     assertPublicUrl(url);
     const res = await fetch(url, {
       headers: { "User-Agent": USER_AGENT },
-      redirect: "follow",
+      redirect: "manual",
       signal: AbortSignal.timeout(8000),
     });
     if (!res.ok) return null;

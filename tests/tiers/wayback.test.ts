@@ -22,23 +22,19 @@ beforeEach(() => {
 
 const URL = "https://example.com/dead-page";
 
-const cdxHit = (snapshotUrl: string) => ({
-  ok: true,
-  json: () =>
-    Promise.resolve({
-      archived_snapshots: {
-        closest: { url: snapshotUrl, available: true, timestamp: "20240101" },
-      },
-    }),
-});
+const cdxHit = (snapshotUrl: string) => {
+  const body = JSON.stringify({
+    archived_snapshots: {
+      closest: { url: snapshotUrl, available: true, timestamp: "20240101" },
+    },
+  });
+  return { ok: true, body: null, text: () => Promise.resolve(body) };
+};
 
-const cdxMiss = () => ({
-  ok: true,
-  json: () =>
-    Promise.resolve({
-      archived_snapshots: {},
-    }),
-});
+const cdxMiss = () => {
+  const body = JSON.stringify({ archived_snapshots: {} });
+  return { ok: true, body: null, text: () => Promise.resolve(body) };
+};
 
 describe("waybackFetch", () => {
   it("fetches snapshot and returns result with [Archived] title prefix", async () => {
