@@ -88,6 +88,273 @@ function formatResults(results: SearxResult[]): string {
     .join("\n\n");
 }
 
+export async function handleSearch({
+  query,
+  num_results,
+  category,
+  time_range,
+  domain_profile,
+  expand,
+  language,
+}: {
+  query: string;
+  num_results: number;
+  category?: string;
+  time_range?: string;
+  domain_profile?: string;
+  expand?: boolean;
+  language?: string;
+}) {
+  return instrumentTool("search", () =>
+    withSearchEvents(
+      { query, profile: domain_profile, expand, time_range, num_results },
+      async () => {
+        const raw = await searxSearch(
+          query,
+          category,
+          num_results,
+          time_range,
+          domain_profile,
+          expand,
+          language,
+        );
+        const ranked = await rerankWithFallback(
+          query,
+          raw,
+          num_results,
+          time_range,
+        );
+        return {
+          ranked,
+          rerankApplied: true,
+          result: { content: [{ type: "text", text: formatResults(ranked) }] },
+        };
+      },
+    ),
+  );
+}
+
+export async function handleSearchAndFetch({
+  query,
+  category,
+  time_range,
+  fetch_count,
+  domain_profile,
+  expand,
+  language,
+}: {
+  query: string;
+  category?: string;
+  time_range?: string;
+  fetch_count: number;
+  domain_profile?: string;
+  expand?: boolean;
+  language?: string;
+}) {
+  return instrumentTool("search_and_fetch", () =>
+    withSearchEvents(
+      {
+        query,
+        profile: domain_profile,
+        expand,
+        time_range,
+        num_results: fetch_count,
+      },
+      async () => {
+        const raw = await searxSearch(
+          query,
+          category,
+          5,
+          time_range,
+          domain_profile,
+          expand,
+          language,
+        );
+        if (raw.length === 0) {
+          return {
+            ranked: [],
+            rerankApplied: false,
+            result: { content: [{ type: "text", text: "No results found." }] },
+          };
+        }
+        const ranked = await rerankWithFallback(query, raw, 5, time_range);
+        const searchText = formatResults(ranked);
+        const maxCharsPerPage = Math.floor(8000 / fetch_count);
+        const toFetch = ranked.slice(0, fetch_count);
+        const fetched = await Promise.allSettled(
+          toFetch.map((r) => fetchPage(r.url, maxCharsPerPage, domain_profile)),
+        );
+        const fetchedSections = fetched
+          .map((result, i) => {
+            if (result.status === "fulfilled") {
+              const { title, text } = result.value;
+              return `\n\n--- Full content: ${title} ---\n${text}`;
+            }
+            const err =
+              result.reason instanceof Error
+                ? result.reason.message
+                : String(result.reason);
+            return `\n\n--- Could not fetch result ${i + 1}: ${err} ---`;
+          })
+          .join("");
+        return {
+          ranked,
+          rerankApplied: true,
+          result: {
+            content: [{ type: "text", text: searchText + fetchedSections }],
+          },
+        };
+      },
+    ),
+  );
+}
+
+export async function handleSearchAndSummarize({
+  query,
+  fetch_count,
+  category,
+  time_range,
+  domain_profile,
+  expand,
+  language,
+}: {
+  query: string;
+  fetch_count: number;
+  category?: string;
+  time_range?: string;
+  domain_profile?: string;
+  expand?: boolean;
+  language?: string;
+}) {
+  return instrumentTool("search_and_summarize", () =>
+    withSearchEvents(
+      {
+        query,
+        profile: domain_profile,
+        expand,
+        time_range,
+        num_results: fetch_count,
+      },
+      async () => {
+        const raw = await searxSearch(
+          query,
+          category,
+          fetch_count + 2,
+          time_range,
+          domain_profile,
+          expand,
+          language,
+        );
+        if (raw.length === 0) {
+          return {
+            ranked: [],
+            rerankApplied: false,
+            result: { content: [{ type: "text", text: "No results found." }] },
+          };
+        }
+        const ranked = await rerankWithFallback(
+          query,
+          raw,
+          fetch_count,
+          time_range,
+        );
+        const searchText = formatResults(ranked);
+        const toFetch = ranked.slice(0, fetch_count);
+        const fetched = await Promise.allSettled(
+          toFetch.map((r) => fetchPage(r.url, 4000, domain_profile, true)),
+        );
+        const successfulPages = fetched
+          .map((r) => (r.status === "fulfilled" ? r.value : null))
+          .filter(
+            (r): r is { title: string; url: string; text: string } =>
+              r !== null,
+          );
+        const summaryResult = await withSpan(
+          "summarize_llm",
+          { "summary.pages": successfulPages.length },
+          () => summarizePages(query, successfulPages),
+        );
+
+        if (!summaryResult.summary) {
+          const fetchedSections = fetched
+            .map((result, i) => {
+              if (result.status === "fulfilled") {
+                const { title, text } = result.value;
+                return `\n\n--- Full content: ${title} ---\n${text}`;
+              }
+              const err =
+                result.reason instanceof Error
+                  ? result.reason.message
+                  : String(result.reason);
+              return `\n\n--- Could not fetch result ${i + 1}: ${err} ---`;
+            })
+            .join("");
+          return {
+            ranked,
+            rerankApplied: true,
+            result: {
+              content: [{ type: "text", text: searchText + fetchedSections }],
+            },
+          };
+        }
+        const output = formatSummaryResult(summaryResult);
+        return {
+          ranked,
+          rerankApplied: true,
+          result: { content: [{ type: "text", text: output }] },
+        };
+      },
+    ),
+  );
+}
+
+export async function handleFetchUrl({
+  url,
+  domain_profile,
+}: {
+  url: string;
+  domain_profile?: string;
+}) {
+  return instrumentTool("fetch_url", async () => {
+    const {
+      title,
+      url: fetchedUrl,
+      text,
+    } = await fetchPage(url, 8000, domain_profile);
+    const output = [`Title: ${title}`, `URL: ${fetchedUrl}`, "", text].join(
+      "\n",
+    );
+    return { content: [{ type: "text", text: output }] };
+  });
+}
+
+export async function handleClearCache({ target }: { target: string }) {
+  return instrumentTool("clear_cache", async () => {
+    let cleared = 0;
+    if (target === "search" || target === "all") {
+      cleared += await cacheClear("search:*");
+    }
+    if (target === "fetch" || target === "all") {
+      cleared += await cacheClear("fetch:*");
+    }
+    return {
+      content: [
+        {
+          type: "text",
+          text: `Cleared ${cleared} cache ${cleared === 1 ? "entry" : "entries"}.`,
+        },
+      ],
+    };
+  });
+}
+
+const LanguageSchema = z
+  .string()
+  .optional()
+  .describe(
+    "BCP-47 language code (e.g. 'en', 'de') or 'all' for all languages. Omit to use the SearXNG instance default.",
+  );
+
 export function registerTools(server: McpServer): void {
   server.tool(
     "search",
@@ -113,50 +380,9 @@ export function registerTools(server: McpServer): void {
         .describe(
           "Use local LLM to generate 2-3 query variants and merge results for a wider search surface (default: off). Adds ~3s latency; most useful for research queries where one phrasing may miss relevant results.",
         ),
+      language: LanguageSchema,
     },
-    async ({
-      query,
-      num_results,
-      category,
-      time_range,
-      domain_profile,
-      expand,
-    }) => {
-      return instrumentTool("search", () =>
-        withSearchEvents(
-          {
-            query,
-            profile: domain_profile,
-            expand,
-            time_range,
-            num_results,
-          },
-          async () => {
-            const raw = await searxSearch(
-              query,
-              category,
-              num_results,
-              time_range,
-              domain_profile,
-              expand,
-            );
-            const ranked = await rerankWithFallback(
-              query,
-              raw,
-              num_results,
-              time_range,
-            );
-            return {
-              ranked,
-              rerankApplied: true,
-              result: {
-                content: [{ type: "text", text: formatResults(ranked) }],
-              },
-            };
-          },
-        ),
-      );
-    },
+    handleSearch,
   );
 
   server.tool(
@@ -185,75 +411,9 @@ export function registerTools(server: McpServer): void {
         .describe(
           "Use local LLM to generate 2-3 query variants and merge results for a wider search surface (default: off). Adds ~3s latency.",
         ),
+      language: LanguageSchema,
     },
-    async ({
-      query,
-      category,
-      time_range,
-      fetch_count,
-      domain_profile,
-      expand,
-    }) => {
-      return instrumentTool("search_and_fetch", () =>
-        withSearchEvents(
-          {
-            query,
-            profile: domain_profile,
-            expand,
-            time_range,
-            num_results: fetch_count,
-          },
-          async () => {
-            const raw = await searxSearch(
-              query,
-              category,
-              5,
-              time_range,
-              domain_profile,
-              expand,
-            );
-            if (raw.length === 0) {
-              return {
-                ranked: [],
-                rerankApplied: false,
-                result: {
-                  content: [{ type: "text", text: "No results found." }],
-                },
-              };
-            }
-            const ranked = await rerankWithFallback(query, raw, 5, time_range);
-            const searchText = formatResults(ranked);
-            const maxCharsPerPage = Math.floor(8000 / fetch_count);
-            const toFetch = ranked.slice(0, fetch_count);
-            const fetched = await Promise.allSettled(
-              toFetch.map((r) =>
-                fetchPage(r.url, maxCharsPerPage, domain_profile),
-              ),
-            );
-            const fetchedSections = fetched
-              .map((result, i) => {
-                if (result.status === "fulfilled") {
-                  const { title, text } = result.value;
-                  return `\n\n--- Full content: ${title} ---\n${text}`;
-                }
-                const err =
-                  result.reason instanceof Error
-                    ? result.reason.message
-                    : String(result.reason);
-                return `\n\n--- Could not fetch result ${i + 1}: ${err} ---`;
-              })
-              .join("");
-            return {
-              ranked,
-              rerankApplied: true,
-              result: {
-                content: [{ type: "text", text: searchText + fetchedSections }],
-              },
-            };
-          },
-        ),
-      );
-    },
+    handleSearchAndFetch,
   );
 
   server.tool(
@@ -263,19 +423,7 @@ export function registerTools(server: McpServer): void {
       url: z.string().url().describe("URL to fetch and extract content from"),
       domain_profile: DomainProfileSchema,
     },
-    async ({ url, domain_profile }) => {
-      return instrumentTool("fetch_url", async () => {
-        const {
-          title,
-          url: fetchedUrl,
-          text,
-        } = await fetchPage(url, 8000, domain_profile);
-        const output = [`Title: ${title}`, `URL: ${fetchedUrl}`, "", text].join(
-          "\n",
-        );
-        return { content: [{ type: "text", text: output }] };
-      });
-    },
+    handleFetchUrl,
   );
 
   server.tool(
@@ -302,99 +450,9 @@ export function registerTools(server: McpServer): void {
         .boolean()
         .optional()
         .describe("Use query expansion before searching (default: off)"),
+      language: LanguageSchema,
     },
-    async ({
-      query,
-      fetch_count,
-      category,
-      time_range,
-      domain_profile,
-      expand,
-    }) => {
-      return instrumentTool("search_and_summarize", () =>
-        withSearchEvents(
-          {
-            query,
-            profile: domain_profile,
-            expand,
-            time_range,
-            num_results: fetch_count,
-          },
-          async () => {
-            const raw = await searxSearch(
-              query,
-              category,
-              fetch_count + 2,
-              time_range,
-              domain_profile,
-              expand,
-            );
-            if (raw.length === 0) {
-              return {
-                ranked: [],
-                rerankApplied: false,
-                result: {
-                  content: [{ type: "text", text: "No results found." }],
-                },
-              };
-            }
-            const ranked = await rerankWithFallback(
-              query,
-              raw,
-              fetch_count,
-              time_range,
-            );
-            const searchText = formatResults(ranked);
-            const toFetch = ranked.slice(0, fetch_count);
-            const fetched = await Promise.allSettled(
-              toFetch.map((r) => fetchPage(r.url, 4000, domain_profile, true)),
-            );
-            const successfulPages = fetched
-              .map((r) => (r.status === "fulfilled" ? r.value : null))
-              .filter(
-                (r): r is { title: string; url: string; text: string } =>
-                  r !== null,
-              );
-            const summaryResult = await withSpan(
-              "summarize_llm",
-              { "summary.pages": successfulPages.length },
-              () => summarizePages(query, successfulPages),
-            );
-
-            if (!summaryResult.summary) {
-              const fetchedSections = fetched
-                .map((result, i) => {
-                  if (result.status === "fulfilled") {
-                    const { title, text } = result.value;
-                    return `\n\n--- Full content: ${title} ---\n${text}`;
-                  }
-                  const err =
-                    result.reason instanceof Error
-                      ? result.reason.message
-                      : String(result.reason);
-                  return `\n\n--- Could not fetch result ${i + 1}: ${err} ---`;
-                })
-                .join("");
-              return {
-                ranked,
-                rerankApplied: true,
-                result: {
-                  content: [
-                    { type: "text", text: searchText + fetchedSections },
-                  ],
-                },
-              };
-            }
-            const output = formatSummaryResult(summaryResult);
-            return {
-              ranked,
-              rerankApplied: true,
-              result: { content: [{ type: "text", text: output }] },
-            };
-          },
-        ),
-      );
-    },
+    handleSearchAndSummarize,
   );
 
   server.tool(
@@ -408,24 +466,6 @@ export function registerTools(server: McpServer): void {
           "Which cache to clear: search results, fetched pages, or all (default all)",
         ),
     },
-    async ({ target }) => {
-      return instrumentTool("clear_cache", async () => {
-        let cleared = 0;
-        if (target === "search" || target === "all") {
-          cleared += await cacheClear("search:*");
-        }
-        if (target === "fetch" || target === "all") {
-          cleared += await cacheClear("fetch:*");
-        }
-        return {
-          content: [
-            {
-              type: "text",
-              text: `Cleared ${cleared} cache ${cleared === 1 ? "entry" : "entries"}.`,
-            },
-          ],
-        };
-      });
-    },
+    handleClearCache,
   );
 }
