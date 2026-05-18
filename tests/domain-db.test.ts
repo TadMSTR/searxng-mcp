@@ -66,22 +66,23 @@ describe("recordTierAttempt", () => {
     await recordTierAttempt("https://example.com/p", "tier1_firecrawl", "hit");
     const written = lastWrittenRecord();
     expect(written.domain).toBe("example.com");
-    expect(written.schema_version).toBe(1);
+    expect(written.schema_version).toBe(2);
     expect(written.tier_stats_30d.tier1.attempts).toBe(1);
     expect(written.tier_stats_30d.tier1.ok).toBe(1);
+    expect(written.tier_stats_30d.tier1.window_start_ms).toBeGreaterThan(0);
   });
 
   it("updates an existing record incrementally", async () => {
     const seed: DomainRecord = {
-      schema_version: 1,
+      schema_version: 2,
       domain: "example.com",
       first_seen: "2026-05-01T00:00:00Z",
       last_fetch: "2026-05-01T00:00:00Z",
       capabilities: {},
       tier_stats_30d: {
-        tier1: { attempts: 2, ok: 1, fail: 1 },
-        tier2: { attempts: 0, ok: 0, fail: 0 },
-        tier3: { attempts: 0, ok: 0, fail: 0 },
+        tier1: { attempts: 2, ok: 1, fail: 1, window_start_ms: Date.now() },
+        tier2: { attempts: 0, ok: 0, fail: 0, window_start_ms: Date.now() },
+        tier3: { attempts: 0, ok: 0, fail: 0, window_start_ms: Date.now() },
       },
     };
     cacheGetMock.mockResolvedValue(JSON.stringify(seed));
@@ -95,6 +96,31 @@ describe("recordTierAttempt", () => {
     expect(written.tier_stats_30d.tier1.attempts).toBe(3);
     expect(written.tier_stats_30d.tier1.fail).toBe(2);
     expect(written.tier_stats_30d.tier1.last_fail_reason).toBe("timeout");
+  });
+
+  it("resets window counters when window_start_ms is older than 30 days", async () => {
+    const oldWindowMs = Date.now() - 31 * 24 * 60 * 60 * 1000;
+    const seed: DomainRecord = {
+      schema_version: 2,
+      domain: "example.com",
+      first_seen: "2026-04-01T00:00:00Z",
+      last_fetch: "2026-04-15T00:00:00Z",
+      capabilities: {},
+      tier_stats_30d: {
+        tier1: { attempts: 50, ok: 5, fail: 45, last_fail_reason: "old_error", window_start_ms: oldWindowMs },
+        tier2: { attempts: 0, ok: 0, fail: 0, window_start_ms: Date.now() },
+        tier3: { attempts: 0, ok: 0, fail: 0, window_start_ms: Date.now() },
+      },
+    };
+    cacheGetMock.mockResolvedValue(JSON.stringify(seed));
+    await recordTierAttempt("https://example.com/p", "tier1_firecrawl", "hit");
+    const written = lastWrittenRecord();
+    // Old window expired — counters reset, then this one attempt recorded
+    expect(written.tier_stats_30d.tier1.attempts).toBe(1);
+    expect(written.tier_stats_30d.tier1.ok).toBe(1);
+    expect(written.tier_stats_30d.tier1.fail).toBe(0);
+    expect(written.tier_stats_30d.tier1.last_fail_reason).toBeUndefined();
+    expect(written.tier_stats_30d.tier1.window_start_ms).toBeGreaterThan(oldWindowMs);
   });
 
   it("does not throw on malformed cache content", async () => {
@@ -230,7 +256,7 @@ describe("shouldSkipJsonLdPostExtract", () => {
 
   it("returns false until 5 samples are recorded with zero hits", async () => {
     const seed: DomainRecord = {
-      schema_version: 1,
+      schema_version: 2,
       domain: "example.com",
       first_seen: "2026-05-01T00:00:00Z",
       last_fetch: "2026-05-01T00:00:00Z",
@@ -242,9 +268,9 @@ describe("shouldSkipJsonLdPostExtract", () => {
         },
       },
       tier_stats_30d: {
-        tier1: { attempts: 0, ok: 0, fail: 0 },
-        tier2: { attempts: 0, ok: 0, fail: 0 },
-        tier3: { attempts: 0, ok: 0, fail: 0 },
+        tier1: { attempts: 0, ok: 0, fail: 0, window_start_ms: Date.now() },
+        tier2: { attempts: 0, ok: 0, fail: 0, window_start_ms: Date.now() },
+        tier3: { attempts: 0, ok: 0, fail: 0, window_start_ms: Date.now() },
       },
     };
     cacheGetMock.mockResolvedValue(JSON.stringify(seed));
@@ -255,7 +281,7 @@ describe("shouldSkipJsonLdPostExtract", () => {
 
   it("returns true after 5+ samples with zero JSON-LD hits", async () => {
     const seed: DomainRecord = {
-      schema_version: 1,
+      schema_version: 2,
       domain: "example.com",
       first_seen: "2026-05-01T00:00:00Z",
       last_fetch: "2026-05-01T00:00:00Z",
@@ -267,9 +293,9 @@ describe("shouldSkipJsonLdPostExtract", () => {
         },
       },
       tier_stats_30d: {
-        tier1: { attempts: 0, ok: 0, fail: 0 },
-        tier2: { attempts: 0, ok: 0, fail: 0 },
-        tier3: { attempts: 0, ok: 0, fail: 0 },
+        tier1: { attempts: 0, ok: 0, fail: 0, window_start_ms: Date.now() },
+        tier2: { attempts: 0, ok: 0, fail: 0, window_start_ms: Date.now() },
+        tier3: { attempts: 0, ok: 0, fail: 0, window_start_ms: Date.now() },
       },
     };
     cacheGetMock.mockResolvedValue(JSON.stringify(seed));
@@ -280,7 +306,7 @@ describe("shouldSkipJsonLdPostExtract", () => {
 
   it("returns false once any JSON-LD hit has been seen, regardless of sample count", async () => {
     const seed: DomainRecord = {
-      schema_version: 1,
+      schema_version: 2,
       domain: "example.com",
       first_seen: "2026-05-01T00:00:00Z",
       last_fetch: "2026-05-01T00:00:00Z",
@@ -292,9 +318,9 @@ describe("shouldSkipJsonLdPostExtract", () => {
         },
       },
       tier_stats_30d: {
-        tier1: { attempts: 0, ok: 0, fail: 0 },
-        tier2: { attempts: 0, ok: 0, fail: 0 },
-        tier3: { attempts: 0, ok: 0, fail: 0 },
+        tier1: { attempts: 0, ok: 0, fail: 0, window_start_ms: Date.now() },
+        tier2: { attempts: 0, ok: 0, fail: 0, window_start_ms: Date.now() },
+        tier3: { attempts: 0, ok: 0, fail: 0, window_start_ms: Date.now() },
       },
     };
     cacheGetMock.mockResolvedValue(JSON.stringify(seed));
@@ -317,6 +343,13 @@ describe("getDomainRecord", () => {
   it("returns null on stale schema_version", async () => {
     cacheGetMock.mockResolvedValue(
       JSON.stringify({ schema_version: 0, domain: "example.com" }),
+    );
+    expect(await getDomainRecord("https://example.com")).toBeNull();
+  });
+
+  it("returns null on schema_version 1 (v1 records discarded after v2 bump)", async () => {
+    cacheGetMock.mockResolvedValue(
+      JSON.stringify({ schema_version: 1, domain: "example.com" }),
     );
     expect(await getDomainRecord("https://example.com")).toBeNull();
   });

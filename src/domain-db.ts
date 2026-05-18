@@ -10,7 +10,8 @@
 import { cacheGet, cacheSet } from "./cache.js";
 
 const DOMAIN_RECORD_TTL_SECONDS = 90 * 24 * 60 * 60;
-const SCHEMA_VERSION = 1;
+const SCHEMA_VERSION = 2;
+const WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
 
 export type TierName = "tier1_firecrawl" | "tier2_crawl4ai" | "tier3_rawfetch";
 export type PreferredStrategy = "llms_full_txt" | "tier1" | "tier2" | "tier3";
@@ -20,6 +21,7 @@ export interface TierStat {
   ok: number;
   fail: number;
   last_fail_reason?: string;
+  window_start_ms: number;
 }
 
 export interface DomainCapabilities {
@@ -66,7 +68,7 @@ export interface DomainRecord {
 }
 
 function emptyStat(): TierStat {
-  return { attempts: 0, ok: 0, fail: 0 };
+  return { attempts: 0, ok: 0, fail: 0, window_start_ms: Date.now() };
 }
 
 function newRecord(domain: string, now: string): DomainRecord {
@@ -184,6 +186,13 @@ export async function recordTierAttempt(
   const slot = TIER_KEY[tier];
   await updateRecord(url, (record) => {
     const stat = record.tier_stats_30d[slot];
+    if (Date.now() - stat.window_start_ms > WINDOW_MS) {
+      stat.attempts = 0;
+      stat.ok = 0;
+      stat.fail = 0;
+      stat.window_start_ms = Date.now();
+      delete stat.last_fail_reason;
+    }
     stat.attempts += 1;
     if (outcome === "hit") {
       stat.ok += 1;

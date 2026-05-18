@@ -17,17 +17,23 @@ import { computeTierSkips } from "../src/routing.js";
 const cacheGetMock = vi.mocked(cacheGet);
 const getOpSkipMock = vi.mocked(getOperatorTierSkips);
 
+const NOW = Date.now();
+
+function stat(attempts: number, ok: number, fail: number) {
+  return { attempts, ok, fail, window_start_ms: NOW };
+}
+
 function record(overrides: Partial<DomainRecord>): DomainRecord {
   return {
-    schema_version: 1,
+    schema_version: 2,
     domain: "example.com",
     first_seen: "2026-05-01T00:00:00Z",
     last_fetch: "2026-05-01T00:00:00Z",
     capabilities: {},
     tier_stats_30d: {
-      tier1: { attempts: 0, ok: 0, fail: 0 },
-      tier2: { attempts: 0, ok: 0, fail: 0 },
-      tier3: { attempts: 0, ok: 0, fail: 0 },
+      tier1: stat(0, 0, 0),
+      tier2: stat(0, 0, 0),
+      tier3: stat(0, 0, 0),
     },
     ...overrides,
   };
@@ -47,9 +53,9 @@ describe("computeTierSkips", () => {
       JSON.stringify(
         record({
           tier_stats_30d: {
-            tier1: { attempts: 5, ok: 0, fail: 5 },
-            tier2: { attempts: 0, ok: 0, fail: 0 },
-            tier3: { attempts: 0, ok: 0, fail: 0 },
+            tier1: stat(5, 0, 5),
+            tier2: stat(0, 0, 0),
+            tier3: stat(0, 0, 0),
           },
         }),
       ),
@@ -63,9 +69,9 @@ describe("computeTierSkips", () => {
       JSON.stringify(
         record({
           tier_stats_30d: {
-            tier1: { attempts: 20, ok: 4, fail: 16 },
-            tier2: { attempts: 0, ok: 0, fail: 0 },
-            tier3: { attempts: 0, ok: 0, fail: 0 },
+            tier1: stat(20, 4, 16),
+            tier2: stat(0, 0, 0),
+            tier3: stat(0, 0, 0),
           },
         }),
       ),
@@ -79,9 +85,9 @@ describe("computeTierSkips", () => {
       JSON.stringify(
         record({
           tier_stats_30d: {
-            tier1: { attempts: 20, ok: 6, fail: 14 },
-            tier2: { attempts: 0, ok: 0, fail: 0 },
-            tier3: { attempts: 0, ok: 0, fail: 0 },
+            tier1: stat(20, 6, 14),
+            tier2: stat(0, 0, 0),
+            tier3: stat(0, 0, 0),
           },
         }),
       ),
@@ -95,9 +101,9 @@ describe("computeTierSkips", () => {
       JSON.stringify(
         record({
           tier_stats_30d: {
-            tier1: { attempts: 50, ok: 1, fail: 49 },
-            tier2: { attempts: 50, ok: 5, fail: 45 },
-            tier3: { attempts: 0, ok: 0, fail: 0 },
+            tier1: stat(50, 1, 49),
+            tier2: stat(50, 5, 45),
+            tier3: stat(0, 0, 0),
           },
         }),
       ),
@@ -121,9 +127,9 @@ describe("computeTierSkips", () => {
       JSON.stringify(
         record({
           tier_stats_30d: {
-            tier1: { attempts: 20, ok: 1, fail: 19 },
-            tier2: { attempts: 0, ok: 0, fail: 0 },
-            tier3: { attempts: 0, ok: 0, fail: 0 },
+            tier1: stat(20, 1, 19),
+            tier2: stat(0, 0, 0),
+            tier3: stat(0, 0, 0),
           },
         }),
       ),
@@ -138,9 +144,9 @@ describe("computeTierSkips", () => {
       JSON.stringify(
         record({
           tier_stats_30d: {
-            tier1: { attempts: 20, ok: 1, fail: 19 },
-            tier2: { attempts: 0, ok: 0, fail: 0 },
-            tier3: { attempts: 0, ok: 0, fail: 0 },
+            tier1: stat(20, 1, 19),
+            tier2: stat(0, 0, 0),
+            tier3: stat(0, 0, 0),
           },
         }),
       ),
