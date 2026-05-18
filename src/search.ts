@@ -14,6 +14,7 @@ export async function searxSearchSingle(
   category: string,
   fetchCount: number,
   timeRange?: string,
+  language?: string,
 ): Promise<SearxResult[]> {
   return withSpan(
     "searxng_request",
@@ -26,6 +27,7 @@ export async function searxSearchSingle(
         pageno: "1",
       });
       if (timeRange) params.set("time_range", timeRange);
+      if (language) params.set("language", language);
 
       const res = await fetch(`${SEARXNG_URL}/search?${params}`, {
         signal: AbortSignal.timeout(10000),
@@ -46,6 +48,7 @@ export async function searxSearch(
   timeRange?: string,
   domainProfile?: string,
   expand?: boolean,
+  language?: string,
 ): Promise<SearxResult[]> {
   const shouldExpand = expand ?? EXPAND_QUERIES_DEFAULT;
 
@@ -71,12 +74,12 @@ export async function searxSearch(
       withSpan("expand_query", { "query.expand": true }, () =>
         expandQuery(query),
       ),
-      searxSearchSingle(query, category, fetchCount, timeRange),
+      searxSearchSingle(query, category, fetchCount, timeRange, language),
     ]);
 
     const variantResults = await Promise.allSettled(
       variants.map((v) =>
-        searxSearchSingle(v, category, fetchCount, timeRange),
+        searxSearchSingle(v, category, fetchCount, timeRange, language),
       ),
     );
 
@@ -107,7 +110,13 @@ export async function searxSearch(
   }
 
   // Non-expanded path
-  const raw = await searxSearchSingle(query, category, fetchCount, timeRange);
+  const raw = await searxSearchSingle(
+    query,
+    category,
+    fetchCount,
+    timeRange,
+    language,
+  );
 
   // Cache pre-filter results so domain config changes apply retroactively on cache hits
   await cacheSet(key, JSON.stringify(raw), CACHE_TTL_SECONDS);

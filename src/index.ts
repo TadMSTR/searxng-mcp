@@ -10,7 +10,7 @@ await initEvents();
 
 const server = new McpServer({
   name: "searxng-mcp",
-  version: "3.5.0",
+  version: "3.7.0",
 });
 
 registerTools(server);

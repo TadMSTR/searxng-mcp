@@ -1,5 +1,5 @@
 import { cacheGet, cacheSet, fetchCacheKey } from "./cache.js";
-import { FETCH_CACHE_TTL_SECONDS } from "./config.js";
+import { FETCH_CACHE_TTL_SECONDS, WAYBACK_ENABLED } from "./config.js";
 import {
   recordPostExtractSample,
   recordTierAttempt,
@@ -8,7 +8,7 @@ import {
 import { getBlockList, urlMatchesDomain } from "./domains.js";
 import { events } from "./events.js";
 import { postExtract } from "./extractors/post-extract.js";
-import { assertPublicUrl, type TierResult } from "./fetch-utils.js";
+import { assertPublicUrl, isPdfUrl, type TierResult } from "./fetch-utils.js";
 import { tryLlmsTxtFetch } from "./llms-txt.js";
 import { incCounter, recordHistogram, withSpan } from "./observability.js";
 import { checkRobots } from "./robots.js";
@@ -20,6 +20,7 @@ import {
   firecrawlScrape,
   githubFetch,
   rawFetch,
+  waybackFetch,
 } from "./tiers/index.js";
 import type { TierSlot } from "./types.js";
 
@@ -206,6 +207,32 @@ export async function fetchPage(
         );
       };
 
+      // PDF fast path — Firecrawl can't extract PDF text; route directly to Crawl4AI.
+      if (isPdfUrl(url)) {
+        const pdfResult = await runTier("tier2_crawl4ai", url, () =>
+          crawl4aiFetch(url, 8000, preferFit),
+        );
+        if (!pdfResult) {
+          throw new Error(
+            "PDF extraction requires Crawl4AI (CRAWL4AI_URL not configured)",
+          );
+        }
+        const persisted = {
+          title: pdfResult.title,
+          url: pdfResult.url,
+          text: pdfResult.text,
+        };
+        await cacheSet(key, JSON.stringify(persisted), FETCH_CACHE_TTL_SECONDS);
+        events.fetchCompleted({
+          url,
+          tier_served: "tier2_crawl4ai",
+          title: pdfResult.title,
+          text_len: pdfResult.text.length,
+          latency_ms: Date.now() - t_total,
+        });
+        return { ...persisted, text: persisted.text.slice(0, maxChars) };
+      }
+
       // Run tier cascade and side-channel raw-HTML metadata fetch in parallel.
       const metadataHtmlPromise = fetchRawHtmlForMetadata(url);
 
@@ -250,6 +277,15 @@ export async function fetchPage(
             rawFetch(url, 8000),
           );
           if (fetched) tierServed = "tier3_rawfetch";
+        }
+      }
+
+      if (!fetched && WAYBACK_ENABLED) {
+        console.error(`[searxng-mcp] fetch tier4 wayback attempt url=${url}`);
+        fetched = await waybackFetch(url, 8000);
+        if (fetched) {
+          tierServed = "tier4_wayback";
+          console.error(`[searxng-mcp] fetch tier4 wayback hit url=${url}`);
         }
       }
 

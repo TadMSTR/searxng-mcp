@@ -22,6 +22,11 @@ export async function rawFetch(
     signal: AbortSignal.timeout(15000),
   });
 
+  if (res.headers.get("content-type")?.includes("application/pdf")) {
+    throw new Error(
+      "PDF content cannot be extracted by raw fetch — use Crawl4AI",
+    );
+  }
   if (res.status >= 300 && res.status < 400) {
     // Don't echo the Location header into the thrown message — a redirect
     // to an internal address would surface that address to the MCP caller
@@ -55,7 +60,7 @@ export async function fetchRawHtmlForMetadata(
     assertPublicUrl(url);
     const res = await fetch(url, {
       headers: { "User-Agent": USER_AGENT },
-      redirect: "follow",
+      redirect: "manual",
       signal: AbortSignal.timeout(8000),
     });
     if (!res.ok) return null;
