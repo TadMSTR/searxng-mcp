@@ -1,6 +1,6 @@
 # AGENTS.md — searxng-mcp
 
-MCP server for private web search via a self-hosted SearXNG instance. Reranks results with a local ML model, fetches full-page content via a three-tier cascade (Firecrawl → Crawl4AI → readability/raw HTTP), and optionally expands queries and synthesizes summaries via Ollama.
+MCP server for private web search via a self-hosted SearXNG instance. Reranks results with a local ML model, fetches full-page content via a four-tier cascade (Firecrawl → Crawl4AI → raw HTTP → Wayback Machine opt-in), and optionally expands queries and synthesizes summaries via Ollama.
 
 ## What it does
 
@@ -25,6 +25,7 @@ src/
     firecrawl.ts  # Tier 1: Firecrawl JS-rendering scrape
     crawl4ai.ts   # Tier 2: Crawl4AI headless fetch + Readability comparison
     raw.ts        # Tier 3: raw HTTP + Readability; fetchRawHtmlForMetadata for post-extract
+    wayback.ts    # Tier 4: Wayback Machine CDX lookup + rawFetch (opt-in, WAYBACK_ENABLED)
     github.ts     # GitHub blob/README API fetch
     index.ts      # Barrel re-export
   reranker.ts     # Jina-compatible reranker client + recency weighting
@@ -34,7 +35,7 @@ src/
   config.ts       # Environment variable configuration
   types.ts        # Shared type definitions
 tests/
-  *.test.ts       # Vitest unit tests (149 tests across 16 files)
+  *.test.ts       # Vitest unit tests (211 tests across 22 files)
 ```
 
 ## Dependencies
@@ -54,6 +55,7 @@ Optional services (server degrades gracefully without these):
 | Crawl4AI | `CRAWL4AI_URL` | Fetch fallback for bot-blocked pages (tier 2) |
 | Valkey/Redis | `VALKEY_URL` | Result caching |
 | Ollama | `OLLAMA_URL` | Query expansion + summarization |
+| Wayback Machine | `WAYBACK_ENABLED=true` | Archived snapshot fallback (tier 4, opt-in) |
 
 ## Build and run
 
