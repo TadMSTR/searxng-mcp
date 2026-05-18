@@ -1,7 +1,7 @@
 // NATS event publishing. Fire-and-forget: with no NATS_URL set, this module
-// no-ops and never requires the `nats` package at runtime (type-only imports
-// below are erased by tsc).
-import type { NatsConnection } from "nats";
+// no-ops and never requires the @nats-io/* packages at runtime (type-only
+// imports below are erased by tsc).
+import type { NatsConnection } from "@nats-io/nats-core";
 import { getRequestId } from "./context.js";
 import { getCurrentTraceId } from "./observability.js";
 
@@ -21,7 +21,8 @@ export async function initEvents(): Promise<void> {
   subjectPrefix = process.env.NATS_SUBJECT_PREFIX ?? "searxng";
 
   try {
-    const { connect, credsAuthenticator } = await import("nats");
+    const { connect } = await import("@nats-io/transport-node");
+    const { credsAuthenticator } = await import("@nats-io/nats-core");
     const opts: Record<string, unknown> = {
       servers: url,
       name: "searxng-mcp",
