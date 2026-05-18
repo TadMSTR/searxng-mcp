@@ -44,6 +44,14 @@ export function assertPublicUrl(url: string): void {
   }
 }
 
+export function isPdfUrl(url: string): boolean {
+  try {
+    return new URL(url).pathname.toLowerCase().endsWith(".pdf");
+  } catch {
+    return false;
+  }
+}
+
 export async function readBoundedText(res: Response): Promise<string> {
   const reader = res.body?.getReader();
   if (!reader) return (await res.text()).slice(0, RAW_HTML_MAX_BYTES);

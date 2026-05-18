@@ -95,4 +95,18 @@ describe("rawFetch", () => {
     const result = await rawFetch(URL, 10);
     expect(result.text.length).toBeLessThanOrEqual(10);
   });
+
+  it("throws descriptive error on PDF content-type", async () => {
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      statusText: "OK",
+      headers: new Headers({ "Content-Type": "application/pdf" }),
+      body: null,
+      text: () => Promise.resolve("%PDF-1.4"),
+    });
+    await expect(rawFetch(URL)).rejects.toThrow(
+      "PDF content cannot be extracted by raw fetch",
+    );
+  });
 });
