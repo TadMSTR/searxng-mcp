@@ -2,7 +2,11 @@
 // Operator CLI: pretty-print the domain capability record for a hostname.
 // Usage: pnpm dump-domain docs.anthropic.com
 
-import { getDomainRecord, normalizeHostname, type TierStat } from "../domain-db.js";
+import {
+  getDomainRecord,
+  normalizeHostname,
+  type TierStat,
+} from "../domain-db.js";
 
 const WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
 
@@ -14,7 +18,9 @@ function tierSummary(label: string, stat: TierStat): string {
   const msLeft = WINDOW_MS - (Date.now() - stat.window_start_ms);
   const daysLeft = Math.max(0, Math.round(msLeft / 86400000));
   const windowInfo = `window resets in ~${daysLeft}d`;
-  const failNote = stat.last_fail_reason ? ` | last fail: ${stat.last_fail_reason}` : "";
+  const failNote = stat.last_fail_reason
+    ? ` | last fail: ${stat.last_fail_reason}`
+    : "";
   return `  ${label}: ${successRate} | ${windowInfo}${failNote}`;
 }
 
