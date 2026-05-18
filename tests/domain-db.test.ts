@@ -107,7 +107,13 @@ describe("recordTierAttempt", () => {
       last_fetch: "2026-04-15T00:00:00Z",
       capabilities: {},
       tier_stats_30d: {
-        tier1: { attempts: 50, ok: 5, fail: 45, last_fail_reason: "old_error", window_start_ms: oldWindowMs },
+        tier1: {
+          attempts: 50,
+          ok: 5,
+          fail: 45,
+          last_fail_reason: "old_error",
+          window_start_ms: oldWindowMs,
+        },
         tier2: { attempts: 0, ok: 0, fail: 0, window_start_ms: Date.now() },
         tier3: { attempts: 0, ok: 0, fail: 0, window_start_ms: Date.now() },
       },
@@ -120,7 +126,9 @@ describe("recordTierAttempt", () => {
     expect(written.tier_stats_30d.tier1.ok).toBe(1);
     expect(written.tier_stats_30d.tier1.fail).toBe(0);
     expect(written.tier_stats_30d.tier1.last_fail_reason).toBeUndefined();
-    expect(written.tier_stats_30d.tier1.window_start_ms).toBeGreaterThan(oldWindowMs);
+    expect(written.tier_stats_30d.tier1.window_start_ms).toBeGreaterThan(
+      oldWindowMs,
+    );
   });
 
   it("does not throw on malformed cache content", async () => {
