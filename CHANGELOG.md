@@ -203,7 +203,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Result reranking using a local ML model with fallback to raw SearXNG ordering when the reranker is unavailable
 - Category filtering: `general`, `news`, `it`, `science`
 
-[Unreleased]: https://github.com/TadMSTR/searxng-mcp/compare/v3.2.0...HEAD
+[Unreleased]: https://github.com/TadMSTR/searxng-mcp/compare/v3.7.0...HEAD
+[3.7.0]: https://github.com/TadMSTR/searxng-mcp/compare/v3.6.0...v3.7.0
+[3.6.0]: https://github.com/TadMSTR/searxng-mcp/compare/v3.5.0...v3.6.0
+[3.5.0]: https://github.com/TadMSTR/searxng-mcp/compare/v3.4.0...v3.5.0
+[3.4.0]: https://github.com/TadMSTR/searxng-mcp/compare/v3.3.0...v3.4.0
+[3.3.0]: https://github.com/TadMSTR/searxng-mcp/compare/v3.2.1...v3.3.0
+[3.2.1]: https://github.com/TadMSTR/searxng-mcp/compare/v3.2.0...v3.2.1
 [3.2.0]: https://github.com/TadMSTR/searxng-mcp/compare/v3.1.0...v3.2.0
 [3.1.0]: https://github.com/TadMSTR/searxng-mcp/compare/v3.0.2...v3.1.0
 [3.0.2]: https://github.com/TadMSTR/searxng-mcp/compare/v3.0.1...v3.0.2

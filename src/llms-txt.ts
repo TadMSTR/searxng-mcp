@@ -9,7 +9,7 @@ const FETCH_TIMEOUT_MS = 30_000;
 const MIN_SIZE_BYTES = 1_024;
 const MAX_SIZE_BYTES = 200 * 1024 * 1024;
 const USER_AGENT =
-  "searxng-mcp/3.5.0 (+https://github.com/TadMSTR/searxng-mcp; personal research)";
+  "searxng-mcp/3.7.0 (+https://github.com/TadMSTR/searxng-mcp; personal research)";
 
 interface CachedLlmsFull {
   status: "present" | "absent";
