@@ -4,3 +4,4 @@ core.*
 *.core
 .env
 run.sh
+package-lock.json
