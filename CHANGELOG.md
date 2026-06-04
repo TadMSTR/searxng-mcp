@@ -6,6 +6,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+- **Kiwix fast path** — when `KIWIX_URL` is set, fetch requests for Wikipedia (`en.wikipedia.org`), Stack Overflow (`stackoverflow.com`), and Arch Wiki (`wiki.archlinux.org`) are intercepted before the Firecrawl/Crawl4AI cascade and served from the local Kiwix ZIM archive. Eliminates the 100% tier-1 failure rate for `en.wikipedia.org`. Feature is fully gated by the `KIWIX_URL` env var — zero overhead when unset.
+
 ## [3.7.0] - 2026-05-18
 
 ### Added
