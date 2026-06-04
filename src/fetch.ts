@@ -9,6 +9,7 @@ import { getBlockList, urlMatchesDomain } from "./domains.js";
 import { events } from "./events.js";
 import { postExtract } from "./extractors/post-extract.js";
 import { assertPublicUrl, isPdfUrl, type TierResult } from "./fetch-utils.js";
+import { isKiwixHost, kiwixFetch } from "./kiwix.js";
 import { tryLlmsTxtFetch } from "./llms-txt.js";
 import { incCounter, recordHistogram, withSpan } from "./observability.js";
 import { checkRobots } from "./robots.js";
@@ -174,6 +175,38 @@ export async function fetchPage(
           source: "llms_full_txt",
         });
         return { ...persisted, text: persisted.text.slice(0, maxChars) };
+      }
+
+      // Kiwix fast path — intercepts Wikipedia, Stack Overflow, Arch Wiki
+      // requests and serves from local Kiwix before the tier cascade.
+      if (isKiwixHost(url)) {
+        const kiwix = await withSpan("kiwix", { "fetch.url": url }, () =>
+          kiwixFetch(url, 8000),
+        );
+        if (kiwix) {
+          incCounter("fetch", { tier: "kiwix", outcome: "hit" });
+          const persisted = {
+            title: kiwix.title,
+            url: kiwix.url,
+            text: kiwix.text,
+          };
+          await cacheSet(
+            key,
+            JSON.stringify(persisted),
+            FETCH_CACHE_TTL_SECONDS,
+          );
+          events.fetchCompleted({
+            url,
+            tier_served: "kiwix",
+            title: kiwix.title,
+            text_len: kiwix.text.length,
+            latency_ms: Date.now() - t_total,
+            source: "kiwix",
+          });
+          return { ...persisted, text: persisted.text.slice(0, maxChars) };
+        }
+        // Kiwix miss (article not in ZIM or Kiwix down) — fall through to cascade
+        incCounter("fetch", { tier: "kiwix", outcome: "miss" });
       }
 
       // robots.txt gate — skips fetch on disallow (cached 24h per origin)
