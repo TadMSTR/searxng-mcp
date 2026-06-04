@@ -13,8 +13,12 @@ import { isKiwixHost, kiwixFetch } from "../src/kiwix.js";
 
 const runReadabilityMock = vi.mocked(runReadability);
 
-const SAMPLE_HTML = "<html><body><article>Btrfs content</article></body></html>";
-const SAMPLE_READABLE = { title: "Btrfs - Wikipedia", text: "Btrfs content here." };
+const SAMPLE_HTML =
+  "<html><body><article>Btrfs content</article></body></html>";
+const SAMPLE_READABLE = {
+  title: "Btrfs - Wikipedia",
+  text: "Btrfs content here.",
+};
 
 describe("isKiwixHost", () => {
   it("returns true for en.wikipedia.org", () => {
@@ -26,7 +30,9 @@ describe("isKiwixHost", () => {
   });
 
   it("returns true for stackoverflow.com", () => {
-    expect(isKiwixHost("https://stackoverflow.com/questions/12345/slug")).toBe(true);
+    expect(isKiwixHost("https://stackoverflow.com/questions/12345/slug")).toBe(
+      true,
+    );
   });
 
   it("returns true for wiki.archlinux.org", () => {
@@ -58,16 +64,16 @@ describe("kiwixFetch", () => {
     const result = await kiwixFetch("https://en.wikipedia.org/wiki/Btrfs");
 
     expect(result).not.toBeNull();
-    expect(result!.url).toBe("https://en.wikipedia.org/wiki/Btrfs");
-    expect(result!.title).toBe("Btrfs - Wikipedia");
-    expect(result!.text).toBe("Btrfs content here.");
-    expect(result!.html).toBe(SAMPLE_HTML);
+    expect(result?.url).toBe("https://en.wikipedia.org/wiki/Btrfs");
+    expect(result?.title).toBe("Btrfs - Wikipedia");
+    expect(result?.text).toBe("Btrfs content here.");
+    expect(result?.html).toBe(SAMPLE_HTML);
   });
 
   it("constructs correct content URL for Wikipedia (/wiki/ path)", async () => {
-    const fetchSpy = vi.spyOn(global, "fetch").mockResolvedValue(
-      new Response(SAMPLE_HTML, { status: 200 }),
-    );
+    const fetchSpy = vi
+      .spyOn(global, "fetch")
+      .mockResolvedValue(new Response(SAMPLE_HTML, { status: 200 }));
     runReadabilityMock.mockReturnValue(SAMPLE_READABLE);
 
     await kiwixFetch("https://en.wikipedia.org/wiki/Btrfs");
@@ -79,9 +85,9 @@ describe("kiwixFetch", () => {
   });
 
   it("constructs correct content URL for Arch Wiki (/title/ path)", async () => {
-    const fetchSpy = vi.spyOn(global, "fetch").mockResolvedValue(
-      new Response(SAMPLE_HTML, { status: 200 }),
-    );
+    const fetchSpy = vi
+      .spyOn(global, "fetch")
+      .mockResolvedValue(new Response(SAMPLE_HTML, { status: 200 }));
     runReadabilityMock.mockReturnValue(SAMPLE_READABLE);
 
     await kiwixFetch("https://wiki.archlinux.org/title/Btrfs");
@@ -97,7 +103,9 @@ describe("kiwixFetch", () => {
       new Response("Not Found", { status: 404 }),
     );
 
-    const result = await kiwixFetch("https://en.wikipedia.org/wiki/NonExistent");
+    const result = await kiwixFetch(
+      "https://en.wikipedia.org/wiki/NonExistent",
+    );
     expect(result).toBeNull();
   });
 
@@ -122,10 +130,13 @@ describe("kiwixFetch", () => {
     vi.spyOn(global, "fetch").mockResolvedValue(
       new Response(SAMPLE_HTML, { status: 200 }),
     );
-    runReadabilityMock.mockReturnValue({ title: "Long", text: "x".repeat(5000) });
+    runReadabilityMock.mockReturnValue({
+      title: "Long",
+      text: "x".repeat(5000),
+    });
 
     const result = await kiwixFetch("https://en.wikipedia.org/wiki/Long", 100);
     expect(result).not.toBeNull();
-    expect(result!.text.length).toBeLessThanOrEqual(100);
+    expect(result?.text.length).toBeLessThanOrEqual(100);
   });
 });
