@@ -1,0 +1,16 @@
+{
+  "name": "adblock-proxy",
+  "version": "1.0.0",
+  "type": "commonjs",
+  "description": "HTTP forward proxy with @ghostery/adblocker for searxng-mcp tiers 2+3",
+  "main": "proxy.js",
+  "scripts": {
+    "start": "node proxy.js"
+  },
+  "dependencies": {
+    "@ghostery/adblocker": "^2.3.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

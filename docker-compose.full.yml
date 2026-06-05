@@ -1,7 +1,13 @@
 # searxng-mcp full stack
 #
 # Wires all optional services: cache, Firecrawl + adblock sidecar, Crawl4AI,
-# Ollama, Kiwix, and NATS. Requires SearXNG running externally (see SEARXNG_URL).
+# adblock-proxy (tiers 2+3), Ollama, Kiwix, and NATS. Requires SearXNG running
+# externally (see SEARXNG_URL).
+#
+# Network isolation (NE-02):
+#   fetch-net    — adblock-proxy + crawl4ai only; proxy unreachable from unrelated services
+#   firecrawl-net — firecrawl-api + firecrawl-redis + firecrawl-puppeteer
+#   (default)    — cache, ollama, reranker, kiwix, nats; isolated from proxy
 #
 # Prerequisites:
 #   - Kiwix: download ZIM files to ./kiwix-data/ before starting kiwix service.
@@ -41,10 +47,14 @@ services:
     depends_on:
       - firecrawl-redis
       - firecrawl-puppeteer
+    networks:
+      - firecrawl-net
 
   firecrawl-redis:
     image: redis:7-alpine
     restart: unless-stopped
+    networks:
+      - firecrawl-net
 
   firecrawl-puppeteer:
     # Custom build: trieve/puppeteer-service-ts + @ghostery/adblocker-puppeteer
@@ -56,6 +66,27 @@ services:
       ADBLOCK_FILTERS_URL: "https://easylist.to/easylist/easylist.txt,https://easylist.to/easylist/easyprivacy.txt"
       ADBLOCK_REFRESH_HOURS: "168"
       # Set ADBLOCK_DISABLE=true to disable adblocking for debugging.
+    networks:
+      - firecrawl-net
+
+  # ── Adblock proxy (tiers 2+3 HTTP proxy filter) ────────────────────────────
+  # Routes Crawl4AI and raw Node fetch through a @ghostery/adblocker HTTP proxy.
+  # Plain-HTTP ad/tracker requests are blocked with an empty 200 response.
+  # HTTPS CONNECT is tunneled without MITM — see docker/adblock-proxy/README.md.
+  # On fetch-net only — unreachable from firecrawl, ollama, reranker, kiwix, nats.
+  # Port 8118 exposed to host so searxng-mcp (PM2/host process) can reach it.
+  adblock-proxy:
+    build:
+      context: ./docker/adblock-proxy
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8118:8118"
+    environment:
+      ADBLOCK_FILTERS_URL: "https://easylist.to/easylist/easylist.txt,https://easylist.to/easylist/easyprivacy.txt"
+      ADBLOCK_REFRESH_HOURS: "168"
+      LOG_BLOCKED: "false"
+    networks:
+      - fetch-net
 
   # ── Crawl4AI (tier-2 fetch fallback) ────────────────────────────────────────
   crawl4ai:
@@ -66,6 +97,8 @@ services:
     environment:
       CRAWL4AI_API_TOKEN: ""  # Set to protect your instance
     shm_size: "1gb"
+    networks:
+      - fetch-net
 
   # ── Ollama (query expansion + summarization) ─────────────────────────────────
   # Required models: qwen3:4b (expand), qwen3:14b (summarize)
@@ -126,6 +159,10 @@ services:
     #   - ./nats.conf:/etc/nats/nats.conf:ro
     # command: ["-c", "/etc/nats/nats.conf"]
 
+networks:
+  fetch-net:
+  firecrawl-net:
+
 volumes:
   ollama-data:
 
@@ -145,6 +182,7 @@ volumes:
 #   EXPAND_QUERIES          false
 #   KIWIX_URL               http://localhost:8292
 #   WAYBACK_ENABLED         false
+#   ADBLOCK_PROXY_URL       http://localhost:8118
 #   NATS_URL                nats://localhost:4222
 #   CACHE_TTL_SECONDS       3600
 #   FETCH_CACHE_TTL_SECONDS 86400

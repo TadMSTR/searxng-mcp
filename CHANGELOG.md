@@ -6,6 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [3.10.0] - 2026-06-05
+
+### Added
+- **HTTP/SSE transport** — set `SEARXNG_MCP_TRANSPORT=http` to run as a shared HTTP server instead of stdio. `SEARXNG_MCP_PORT` (default `3001`) and `SEARXNG_MCP_HOST` (default `127.0.0.1`) control the listen address. Intended for multi-client agent deployments; stdio remains the default for single-client use.
+- **`docker/adblock-proxy/`** — new HTTP forward proxy service using `@ghostery/adblocker` (EasyList + EasyPrivacy). Blocks plain-HTTP ad/tracker requests for tiers 2 and 3. HTTPS CONNECT is tunneled without MITM. Configure with `ADBLOCK_PROXY_URL=http://adblock-proxy:8118`. See `docker/adblock-proxy/README.md` for the two-sidecar architecture overview.
+
+### Changed
+- **Tier cascade refactored** — `Tier` interface (`src/tiers/types.ts`) with `name`, `slot`, and `fetch()`. `getTiers(url)` in `src/routing.ts` returns `{ active, skipped }` in a single call. `fetch.ts` cascade loop replaced with a clean `for…of` over active tiers. No behavior change.
+- **`ADBLOCK_PROXY_URL`** — when set, tier-3 raw Node fetches are routed through an undici `ProxyAgent`; tier-2 Crawl4AI requests include `proxy_config: { server: URL }` in the API request body.
+- **HTTP transport session handling** — stateful mode (`sessionIdGenerator: () => crypto.randomUUID()`) to prevent message ID collisions across concurrent clients.
+
 ## [3.9.0] - 2026-06-05
 
 ### Added

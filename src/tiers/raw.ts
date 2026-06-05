@@ -1,11 +1,17 @@
 import { Readability } from "@mozilla/readability";
 import { JSDOM } from "jsdom";
+import { ProxyAgent } from "undici";
+import { ADBLOCK_PROXY_URL } from "../config.js";
 import {
   assertPublicUrl,
   readBoundedText,
   type TierResult,
   USER_AGENT,
 } from "../fetch-utils.js";
+
+// Create a ProxyAgent once at module init when ADBLOCK_PROXY_URL is configured.
+// Passed as `dispatcher` to undici-backed fetch calls (Node.js 18+ global fetch).
+const proxyAgent = ADBLOCK_PROXY_URL ? new ProxyAgent(ADBLOCK_PROXY_URL) : null;
 
 export async function rawFetch(
   url: string,
@@ -16,11 +22,16 @@ export async function rawFetch(
   // future direct callers (SSRF-08).
   assertPublicUrl(url);
 
-  const res = await fetch(url, {
+  const fetchOptions: Parameters<typeof fetch>[1] & {
+    dispatcher?: ProxyAgent;
+  } = {
     headers: { "User-Agent": USER_AGENT },
     redirect: "manual",
     signal: AbortSignal.timeout(15000),
-  });
+  };
+  if (proxyAgent) fetchOptions.dispatcher = proxyAgent;
+
+  const res = await fetch(url, fetchOptions);
 
   if (res.headers.get("content-type")?.includes("application/pdf")) {
     throw new Error(
