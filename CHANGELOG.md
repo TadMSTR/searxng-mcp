@@ -14,6 +14,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **New env vars:** `CRAWL_MANIFEST_TTL_SECONDS` (default 21600), `CRAWL_MAX_PAGES_DEFAULT` (default 20), `CRAWL_BFS_ENABLED` (default false), `CRAWL_BFS_MAX_DEPTH` (default 3), `FIRECRAWL_CRAWL_POLL_INTERVAL_MS` (default 2000), `FIRECRAWL_CRAWL_MAX_WAIT_MS` (default 120000).
 - **`fast-xml-parser` dependency** — pure-JS XML parser for sitemap parsing (no native bindings).
 
+### Security
+- **`crawlSite()` SSRF guard** — `assertPublicUrl(url)` now called at entry before any strategy dispatch; previously the user-supplied URL could reach Firecrawl (delegation SSRF) or robots.txt fetch (process SSRF) without validation.
+- **Bounded response reads** — `fetchSitemapXml` and BFS raw HTML re-fetch now use `readBoundedText()` (2MB cap) instead of unbounded `res.text()`.
+- **Firecrawl job ID validation** — job ID validated against `/^[a-zA-Z0-9_-]{1,128}$/` before URL path interpolation.
+- **`assertPublicUrl` blocklist expanded** — `169.254.0.0/16` (RFC 3927 link-local / AWS IMDS) and `100.64.0.0/10` (RFC 6598 CGNAT) added.
+
 ## [3.10.0] - 2026-06-05
 
 ### Added
