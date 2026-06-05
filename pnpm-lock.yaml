@@ -52,6 +52,9 @@ importers:
       robots-parser:
         specifier: ^3.0.1
         version: 3.0.1
+      undici:
+        specifier: ^8.3.0
+        version: 8.3.0
       zod:
         specifier: ^3.24.2
         version: 3.25.76
@@ -1319,6 +1322,10 @@ packages:
   undici@7.25.0:
     resolution: {integrity: sha512-xXnp4kTyor2Zq+J1FfPI6Eq3ew5h6Vl0F/8d9XU5zZQf1tX9s2Su1/3PiMmUANFULpmksxkClamIZcaUqryHsQ==}
     engines: {node: '>=20.18.1'}
+
+  undici@8.3.0:
+    resolution: {integrity: sha512-TkUDgb6tl7KOGZ+7e8E3d2FYgUQgF6z5YypqjWmixVQSQERFcVrVg0ySADm2LVLRh5ljAaHTCR5Fmz3Q34rB7Q==}
+    engines: {node: '>=22.19.0'}
 
   unpipe@1.0.0:
     resolution: {integrity: sha512-pjy2bYhSsufwWlKwPc+l3cN7+wuJlK6uz0YdJEOlQDbl6jo/YlPi4mb8agUkVC8BF7V8NuzeyPNqRksA3hztKQ==}
@@ -2727,6 +2734,8 @@ snapshots:
   undici-types@7.25.0: {}
 
   undici@7.25.0: {}
+
+  undici@8.3.0: {}
 
   unpipe@1.0.0: {}
 
