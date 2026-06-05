@@ -9,7 +9,7 @@
 
 services:
   cache:
-    image: docker.dragonflydb.io/dragonflydb/dragonfly:latest
+    image: docker.dragonflydb.io/dragonflydb/dragonfly:latest # SECURITY[accepted]: latest tag — example file; pin for production
     # Alternatives (drop-in compatible):
     #   image: redis:7-alpine
     #   image: valkey/valkey:8-alpine

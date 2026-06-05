@@ -15,7 +15,7 @@
 services:
   # ── Cache backend (Redis-compatible) ────────────────────────────────────────
   cache:
-    image: docker.dragonflydb.io/dragonflydb/dragonfly:latest
+    image: docker.dragonflydb.io/dragonflydb/dragonfly:latest # SECURITY[accepted]: latest tag — example file; pin for production
     # Alternatives (drop-in compatible):
     #   image: redis:7-alpine
     #   image: valkey/valkey:8-alpine
@@ -30,7 +30,7 @@ services:
   # Firecrawl requires its own Redis instance and the playwright-service sidecar.
   # See https://docs.firecrawl.dev/self-hosting for full setup.
   firecrawl-api:
-    image: ghcr.io/mendableai/firecrawl:latest
+    image: ghcr.io/mendableai/firecrawl:latest # SECURITY[accepted]: latest tag — example file; pin for production
     restart: unless-stopped
     environment:
       REDIS_URL: redis://firecrawl-redis:6379
@@ -59,7 +59,7 @@ services:
 
   # ── Crawl4AI (tier-2 fetch fallback) ────────────────────────────────────────
   crawl4ai:
-    image: unclecode/crawl4ai:latest
+    image: unclecode/crawl4ai:latest # SECURITY[accepted]: latest tag — example file; pin for production
     restart: unless-stopped
     ports:
       - "127.0.0.1:11235:11235"
@@ -71,7 +71,7 @@ services:
   # Required models: qwen3:4b (expand), qwen3:14b (summarize)
   # Pull after start: docker exec ollama ollama pull qwen3:4b && docker exec ollama ollama pull qwen3:14b
   ollama:
-    image: ollama/ollama:latest
+    image: ollama/ollama:latest # SECURITY[accepted]: latest tag — example file; pin for production
     restart: unless-stopped
     ports:
       - "127.0.0.1:11434:11434"
@@ -92,7 +92,7 @@ services:
   #   - Infinity with a cross-encoder model: https://github.com/michaelfeil/infinity
   #   - Any OpenAI-compatible reranker API at port 8787
   reranker:
-    image: michaelf34/infinity:latest
+    image: michaelf34/infinity:latest # SECURITY[accepted]: latest tag — example file; pin for production
     restart: unless-stopped
     ports:
       - "127.0.0.1:8787:7997"
@@ -105,7 +105,7 @@ services:
   # ── Kiwix (offline Wikipedia / Stack Overflow / Arch Wiki) ──────────────────
   # Requires ZIM files in ./kiwix-data/ — see https://download.kiwix.org/
   kiwix:
-    image: ghcr.io/kiwix/kiwix-serve:latest
+    image: ghcr.io/kiwix/kiwix-serve:latest # SECURITY[accepted]: latest tag — example file; pin for production
     restart: unless-stopped
     ports:
       - "127.0.0.1:8292:8080"
