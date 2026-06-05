@@ -93,7 +93,7 @@ describe("kiwixFetch", () => {
     await kiwixFetch("https://wiki.archlinux.org/title/Btrfs");
 
     expect(fetchSpy).toHaveBeenCalledWith(
-      "http://localhost:8292/content/archlinux.wiki_en_all/A/Btrfs",
+      "http://localhost:8292/content/archlinux_en_all_maxi/A/Btrfs",
       expect.objectContaining({ signal: expect.any(AbortSignal) }),
     );
   });
