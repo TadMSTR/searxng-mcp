@@ -31,7 +31,7 @@ describe("preferReadability", () => {
   it("prefers Readability when its text is longer than baseline", () => {
     expect(
       preferReadability(
-        { text: "long readable text " + "x".repeat(2000) },
+        { text: `long readable text ${"x".repeat(2000)}` },
         { text: "medium baseline ".repeat(40) },
       ),
     ).toBe(true);

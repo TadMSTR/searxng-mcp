@@ -37,15 +37,15 @@ describe("crawl4aiFetch", () => {
     mockFetch.mockResolvedValueOnce(syncResponse());
     const result = await crawl4aiFetch(URL);
     expect(result).not.toBeNull();
-    expect(result!.title).toBe("Page Title");
-    expect(result!.text).toContain("Some text");
+    expect(result?.title).toBe("Page Title");
+    expect(result?.text).toContain("Some text");
   });
 
   it("truncates text to maxChars", async () => {
     mockFetch.mockResolvedValueOnce(syncResponse("abcdefghij"));
     const result = await crawl4aiFetch(URL, 3);
     expect(result).not.toBeNull();
-    expect(result!.text).toBe("abc");
+    expect(result?.text).toBe("abc");
   });
 
   it("returns null when sync result has empty markdown", async () => {
@@ -97,8 +97,8 @@ describe("pollCrawl4aiTask", () => {
     vi.useRealTimers();
 
     expect(result).not.toBeNull();
-    expect(result!.title).toBe("Polled Page");
-    expect(result!.text).toBe("page content");
+    expect(result?.title).toBe("Polled Page");
+    expect(result?.text).toBe("page content");
   });
 
   it("returns null when status is failed", async () => {

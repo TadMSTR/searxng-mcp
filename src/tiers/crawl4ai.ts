@@ -1,4 +1,8 @@
-import { ADBLOCK_PROXY_URL, CRAWL4AI_API_TOKEN, CRAWL4AI_URL } from "../config.js";
+import {
+  ADBLOCK_PROXY_URL,
+  CRAWL4AI_API_TOKEN,
+  CRAWL4AI_URL,
+} from "../config.js";
 import {
   preferReadability,
   runReadability,

@@ -13,14 +13,13 @@ import { isKiwixHost, kiwixFetch } from "./kiwix.js";
 import { tryLlmsTxtFetch } from "./llms-txt.js";
 import { incCounter, recordHistogram, withSpan } from "./observability.js";
 import { checkRobots } from "./robots.js";
-import { getTiers, type SkipReason, TIER_NAME } from "./routing.js";
+import { getTiers, TIER_NAME } from "./routing.js";
 import {
   fetchRawHtmlForMetadata,
   githubFetch,
   tier2 as pdfTier,
   waybackFetch,
 } from "./tiers/index.js";
-import type { TierSlot } from "./types.js";
 
 // Re-export for callers that import assertPublicUrl from this module.
 export { assertPublicUrl } from "./fetch-utils.js";
@@ -224,10 +223,6 @@ export async function fetchPage(
       // Resolve data-driven + operator skips before kicking off the cascade.
       const { active: activeTiers, skipped: skipDecisions } =
         await getTiers(url);
-      const skipBy = new Map<TierSlot, SkipReason>(
-        skipDecisions.map((d) => [d.tier, d.reason]),
-      );
-
       // Announce all skipped tiers up front (metrics + events + logs).
       for (const { tier: slot, reason } of skipDecisions) {
         const tierName = TIER_NAME[slot];
