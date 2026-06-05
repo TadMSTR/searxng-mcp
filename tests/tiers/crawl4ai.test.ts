@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("../../src/config.js", () => ({
   CRAWL4AI_URL: "http://crawl4ai:8000",
   CRAWL4AI_API_TOKEN: undefined,
+  ADBLOCK_PROXY_URL: null,
 }));
 
 const mockFetch = vi.fn();

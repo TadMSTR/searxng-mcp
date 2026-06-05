@@ -1,4 +1,4 @@
-import { CRAWL4AI_API_TOKEN, CRAWL4AI_URL } from "../config.js";
+import { ADBLOCK_PROXY_URL, CRAWL4AI_API_TOKEN, CRAWL4AI_URL } from "../config.js";
 import {
   preferReadability,
   runReadability,
@@ -66,7 +66,12 @@ export async function crawl4aiFetch(
     const resp = await fetch(`${CRAWL4AI_URL}/crawl`, {
       method: "POST",
       headers: crawlHeaders,
-      body: JSON.stringify({ urls: [url] }),
+      body: JSON.stringify({
+        urls: [url],
+        ...(ADBLOCK_PROXY_URL
+          ? { proxy_config: { server: ADBLOCK_PROXY_URL } }
+          : {}),
+      }),
       signal: controller.signal,
     });
 

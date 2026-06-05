@@ -29,6 +29,7 @@ export const KIWIX_URL = process.env.KIWIX_URL?.replace(/\/$/, "") ?? "";
 export const CRAWL4AI_URL = process.env.CRAWL4AI_URL ?? null;
 export const CRAWL4AI_API_TOKEN = process.env.CRAWL4AI_API_TOKEN;
 export const WAYBACK_ENABLED = process.env.WAYBACK_ENABLED === "true";
+export const ADBLOCK_PROXY_URL = process.env.ADBLOCK_PROXY_URL ?? null;
 export const TRANSPORT = process.env.SEARXNG_MCP_TRANSPORT ?? "stdio"; // "stdio" | "http"
 export const HTTP_PORT = parseInt(process.env.SEARXNG_MCP_PORT ?? "3001", 10);
 export const HTTP_HOST = process.env.SEARXNG_MCP_HOST ?? "127.0.0.1";
