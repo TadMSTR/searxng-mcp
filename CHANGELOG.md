@@ -6,6 +6,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [3.9.0] - 2026-06-05
+
+### Added
+- **Onboarding docs** — `docker-compose.example.yml` (minimal cache-only stack) and `docker-compose.full.yml` (all optional services: Firecrawl, Crawl4AI, Ollama, Reranker, Kiwix, NATS) added for quick setup.
+- **`CONTRIBUTING.md`** — prerequisites, setup, test/lint/typecheck, commit conventions, PR process.
+- **GitHub issue templates** — bug report and feature request templates under `.github/ISSUE_TEMPLATE/`.
+- **Adblock sidecar docs** — `docker/puppeteer-adblock/README.md` documents the patch mechanism, failure modes, build/use instructions, and SHA pin update procedure.
+
+### Changed
+- **`CACHE_URL`** is now the canonical cache backend env var; `VALKEY_URL` and `REDIS_URL` are accepted as backward-compatible aliases. Works with Redis, Valkey, and Dragonfly.
+- **Wayback Machine tier** — fetched content is now prefixed with `> [via Wayback Machine, archived YYYY-MM-DD]` provenance header. Archive date is parsed from the CDX API timestamp.
+- **llms-full.txt cache** — full document body is now stored in Valkey (TTL: `FETCH_CACHE_TTL_SECONDS`) to survive process restarts. In-process L1 cache capped at 10MB.
+- **Domain record writes** — replaced in-process per-hostname Promise queue with atomic WATCH/MULTI/EXEC via `cacheAtomicUpdate`. Correct under multiple process instances sharing the same Valkey backend.
+- **Adblock sidecar** — logs wrapped `puppeteer-service` version on startup.
+
+### Fixed
+- `assertPublicUrl` (`src/fetch-utils.ts`) — added inline comment documenting that `http://` is intentionally permitted.
+- `_clearWriteLocksForTests` test stub removed from production export (`src/domain-db.ts`).
+
+### Security
+- `src/tiers/wayback.ts` — `closest.url` from CDX API now validated to `https://web.archive.org/` origin before fetch (F-01).
+
 ## [3.8.0] - 2026-06-05
 
 ### Added

@@ -53,7 +53,7 @@ Optional services (server degrades gracefully without these):
 |---|---|---|
 | Reranker | `RERANKER_URL` | ML relevance reranking |
 | Crawl4AI | `CRAWL4AI_URL` | Fetch fallback for bot-blocked pages (tier 2) |
-| Valkey/Redis | `VALKEY_URL` | Result caching |
+| Valkey/Redis/Dragonfly | `CACHE_URL` | Result caching (also accepts `VALKEY_URL` or `REDIS_URL`) |
 | Ollama | `OLLAMA_URL` | Query expansion + summarization |
 | Wayback Machine | `WAYBACK_ENABLED=true` | Archived snapshot fallback (tier 4, opt-in) |
 

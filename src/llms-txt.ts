@@ -1,4 +1,5 @@
 import { cacheGet, cacheSet } from "./cache.js";
+import { FETCH_CACHE_TTL_SECONDS } from "./config.js";
 import { recordLlmsFullProbe } from "./domain-db.js";
 import { getLlmsTxtAllowlist } from "./domains.js";
 
@@ -9,7 +10,12 @@ const FETCH_TIMEOUT_MS = 30_000;
 const MIN_SIZE_BYTES = 1_024;
 const MAX_SIZE_BYTES = 200 * 1024 * 1024;
 const USER_AGENT =
-  "searxng-mcp/3.7.0 (+https://github.com/TadMSTR/searxng-mcp; personal research)";
+  "searxng-mcp/3.8.0 (+https://github.com/TadMSTR/searxng-mcp; personal research)";
+
+// 10MB cap across all domains for the in-process L1 body cache.
+// Note: enforced using body.length (UTF-16 char count). For non-ASCII content,
+// actual heap usage may be ~2× this value; llms-full.txt is almost exclusively ASCII.
+const L1_MAX_BYTES = 10 * 1024 * 1024;
 
 interface CachedLlmsFull {
   status: "present" | "absent";
@@ -17,15 +23,38 @@ interface CachedLlmsFull {
   fetched: string;
 }
 
-// In-process cache for the parsed body. Valkey would have to serialize the
-// full file (anthropic's is ~76 MB) on every read — keeping the body in
-// memory for the process lifetime is cheaper and scales fine for the small
-// number of whitelisted docs domains. Valkey still records the present/absent
-// flag so a fresh process can skip the probe on a domain known to be absent.
+// In-process L1 cache: avoids redundant large Valkey reads within a session.
+// Valkey is the authoritative body store; L1 is a hot-read layer only.
 const bodyCache = new Map<string, { body: string; expiresAt: number }>();
+let bodyCacheTotalBytes = 0;
+
+function l1Set(origin: string, body: string, ttlMs: number): void {
+  const existing = bodyCache.get(origin);
+  if (existing) {
+    bodyCacheTotalBytes -= existing.body.length;
+    bodyCache.delete(origin);
+  }
+  // Evict oldest entries until there is room for the new body.
+  while (
+    bodyCacheTotalBytes + body.length > L1_MAX_BYTES &&
+    bodyCache.size > 0
+  ) {
+    const oldest = bodyCache.keys().next().value;
+    if (!oldest) break;
+    const entry = bodyCache.get(oldest);
+    if (entry) bodyCacheTotalBytes -= entry.body.length;
+    bodyCache.delete(oldest);
+  }
+  // Only insert if the body fits (a single very large doc may exceed the cap).
+  if (bodyCacheTotalBytes + body.length <= L1_MAX_BYTES) {
+    bodyCache.set(origin, { body, expiresAt: Date.now() + ttlMs });
+    bodyCacheTotalBytes += body.length;
+  }
+}
 
 export function _clearBodyCacheForTests(): void {
   bodyCache.clear();
+  bodyCacheTotalBytes = 0;
 }
 
 export function isLlmsTxtDomain(url: string, allowlist?: string[]): boolean {
@@ -40,8 +69,12 @@ export function isLlmsTxtDomain(url: string, allowlist?: string[]): boolean {
   return list.some((pat) => hostname === pat || hostname.endsWith(`.${pat}`));
 }
 
-function llmsCacheKey(origin: string): string {
+function llmsProbeCacheKey(origin: string): string {
   return `llms:${origin}:full`;
+}
+
+function llmsBodyCacheKey(origin: string): string {
+  return `llms:${origin}:body`;
 }
 
 async function fetchLlmsFullTxt(origin: string): Promise<CachedLlmsFull> {
@@ -65,41 +98,52 @@ async function fetchLlmsFullTxt(origin: string): Promise<CachedLlmsFull> {
 }
 
 async function getLlmsFullTxt(origin: string): Promise<CachedLlmsFull> {
-  // In-process body cache hit?
+  // L1 hit?
   const local = bodyCache.get(origin);
   if (local && local.expiresAt > Date.now()) {
     return { status: "present", body: local.body, fetched: "" };
   }
 
-  // Valkey only stores the present/absent flag, never the body.
-  const key = llmsCacheKey(origin);
-  const cached = await cacheGet(key);
-  if (cached) {
+  // Valkey body hit? Body is stored separately under llms:<origin>:body.
+  const bodyKey = llmsBodyCacheKey(origin);
+  const cachedBody = await cacheGet(bodyKey);
+  if (cachedBody) {
+    l1Set(origin, cachedBody, PROBE_PRESENT_TTL_MS);
+    return { status: "present", body: cachedBody, fetched: "" };
+  }
+
+  // Probe flag: if we know the domain is absent, skip the network fetch.
+  const flagKey = llmsProbeCacheKey(origin);
+  const cachedFlag = await cacheGet(flagKey);
+  if (cachedFlag) {
     try {
-      const meta = JSON.parse(cached) as CachedLlmsFull;
+      const meta = JSON.parse(cachedFlag) as CachedLlmsFull;
       if (meta.status === "absent") return meta;
-      // status: present but no in-process body — fall through to refetch.
+      // status: present but body evicted from Valkey — fall through to refetch.
     } catch {
       // corrupt cache entry — refetch
     }
   }
 
   const fresh = await fetchLlmsFullTxt(origin);
-  const ttl =
+  const probeTtl =
     fresh.status === "present"
       ? PROBE_PRESENT_TTL_SECONDS
       : PROBE_ABSENT_TTL_SECONDS;
+
+  // Store probe flag (present/absent, no body).
   await cacheSet(
-    key,
+    flagKey,
     JSON.stringify({ status: fresh.status, fetched: fresh.fetched }),
-    ttl,
+    probeTtl,
   );
+
+  // Store body in Valkey and warm L1.
   if (fresh.status === "present" && fresh.body) {
-    bodyCache.set(origin, {
-      body: fresh.body,
-      expiresAt: Date.now() + PROBE_PRESENT_TTL_MS,
-    });
+    await cacheSet(bodyKey, fresh.body, FETCH_CACHE_TTL_SECONDS);
+    l1Set(origin, fresh.body, PROBE_PRESENT_TTL_MS);
   }
+
   recordLlmsFullProbe(
     origin,
     fresh.status === "present",

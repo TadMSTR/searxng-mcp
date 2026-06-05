@@ -3,5 +3,6 @@ build/
 core.*
 *.core
 .env
+*.env
 run.sh
 package-lock.json

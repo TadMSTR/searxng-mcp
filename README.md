@@ -41,7 +41,7 @@ Built with [Claude Code](https://claude.ai/code) using the multi-agent workflow 
 MCP client (stdio)
       │
       ▼
-  searxng-mcp ──────────────→ Valkey ($VALKEY_URL)        → result cache (search 1h, fetch 24h)
+  searxng-mcp ──────────────→ cache ($CACHE_URL)           → result cache (search 1h, fetch 24h)
       │
       ├── expand (optional) →  Ollama ($OLLAMA_URL)        → rewritten query (qwen3:4b)
       ├── search ───────────→ SearXNG ($SEARXNG_URL)      → raw results
@@ -334,7 +334,7 @@ All service URLs are configurable via environment variables.
 | `OLLAMA_API_KEY` | *(unset)* | Bearer token for authenticated Ollama proxies — adds `Authorization: Bearer <key>` header when set |
 | `OLLAMA_EXPAND_MODEL` | `qwen3:4b` | Model used by query expansion (`expand` parameter). Override without rebuilding. |
 | `OLLAMA_SUMMARIZE_MODEL` | `qwen3:14b` | Model used by `search_and_summarize`. Override without rebuilding. |
-| `VALKEY_URL` | `redis://localhost:6381` | Redis-compatible URL — enables result caching. Server degrades gracefully if unavailable. |
+| `CACHE_URL` | `redis://localhost:6381` | Redis-compatible URL — enables result caching. Also accepts `VALKEY_URL` or `REDIS_URL` as aliases. Works with Redis, Valkey, and Dragonfly. Server degrades gracefully if unavailable. |
 | `CACHE_TTL_SECONDS` | `3600` | Search result cache TTL in seconds |
 | `FETCH_CACHE_TTL_SECONDS` | `86400` | Fetched page cache TTL in seconds |
 | `EXPAND_QUERIES` | `false` | Set to `true` to enable query expansion globally |
@@ -383,7 +383,7 @@ claude mcp add-json searxng --scope user '{
     "FIRECRAWL_URL": "http://localhost:3002",
     "RERANKER_URL": "http://localhost:8787",
     "OLLAMA_URL": "http://localhost:11434",
-    "VALKEY_URL": "redis://localhost:6379",
+    "CACHE_URL": "redis://localhost:6379",
     "CACHE_TTL_SECONDS": "3600",
     "FETCH_CACHE_TTL_SECONDS": "86400",
     "EXPAND_QUERIES": "false",
@@ -407,7 +407,7 @@ This writes to `~/.claude.json`. Do not add searxng to `~/.claude/settings.json`
         "FIRECRAWL_URL": "http://localhost:3002",
         "RERANKER_URL": "http://localhost:8787",
         "OLLAMA_URL": "http://localhost:11434",
-        "VALKEY_URL": "redis://localhost:6379",
+        "CACHE_URL": "redis://localhost:6379",
         "CRAWL4AI_URL": "http://localhost:11235"
       }
     }
@@ -429,7 +429,7 @@ mcpServers:
       FIRECRAWL_URL: http://localhost:3002
       RERANKER_URL: http://localhost:8787
       OLLAMA_URL: http://localhost:11434
-      VALKEY_URL: redis://localhost:6379
+      CACHE_URL: redis://localhost:6379
       CRAWL4AI_URL: http://localhost:11235
 ```
 

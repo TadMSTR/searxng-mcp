@@ -22,8 +22,18 @@ if (process.env.ADBLOCK_DISABLE === "true") {
 }
 
 function install() {
-  if (process.env._ADBLOCK_LOADED) return;
+  if (process.env._ADBLOCK_LOADED) {
+    console.warn("[adblock] _ADBLOCK_LOADED already set — skipping install (adblocking may be inactive)");
+    return;
+  }
   process.env._ADBLOCK_LOADED = "1";
+
+  try {
+    const pkg = require("/app/package.json");
+    console.log(`[adblock] wrapping puppeteer-service ${pkg.version}`);
+  } catch {
+    console.log("[adblock] wrapping puppeteer-service (version unknown)");
+  }
 
 const FILTER_URLS = (
   process.env.ADBLOCK_FILTERS_URL ||

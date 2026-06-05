@@ -5,7 +5,11 @@ export const FIRECRAWL_API_KEY =
   process.env.FIRECRAWL_API_KEY ?? "placeholder-local";
 export const RERANKER_URL = process.env.RERANKER_URL ?? "http://localhost:8787";
 export const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
-export const VALKEY_URL = process.env.VALKEY_URL ?? "redis://localhost:6381";
+export const CACHE_URL =
+  process.env.CACHE_URL ??
+  process.env.VALKEY_URL ??
+  process.env.REDIS_URL ??
+  "redis://localhost:6381";
 export const CACHE_TTL_SECONDS = parseInt(
   process.env.CACHE_TTL_SECONDS ?? "3600",
   10,

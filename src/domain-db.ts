@@ -7,7 +7,7 @@
 // Writes are best-effort and fire-and-forget: a failure here must never
 // surface to the caller of fetchPage.
 
-import { cacheGet, cacheSet } from "./cache.js";
+import { cacheAtomicUpdate, cacheGet } from "./cache.js";
 
 const DOMAIN_RECORD_TTL_SECONDS = 90 * 24 * 60 * 60;
 const SCHEMA_VERSION = 2;
@@ -116,59 +116,37 @@ export async function getDomainRecord(
   }
 }
 
-async function writeRecord(record: DomainRecord): Promise<void> {
-  await cacheSet(
-    domainKey(record.domain),
-    JSON.stringify(record),
-    DOMAIN_RECORD_TTL_SECONDS,
-  );
-}
-
-// Per-hostname write queue. Multiple recorders (tier-attempt, robots probe,
-// post-extract sample, llms.txt probe) can run concurrently for the same
-// fetch; without serialization their read-modify-write cycles race and the
-// last writer overwrites the others' changes. Chaining new writes onto the
-// previous promise gives sequential, in-order updates per hostname while
-// keeping different hostnames fully parallel.
-const writeLocks = new Map<string, Promise<void>>();
-
-async function performUpdate(
-  hostname: string,
-  mutate: (r: DomainRecord) => void,
-): Promise<void> {
-  const now = new Date().toISOString();
-  try {
-    const existing = await getDomainRecord(hostname);
-    const record = existing ?? newRecord(hostname, now);
-    mutate(record);
-    record.last_fetch = now;
-    await writeRecord(record);
-  } catch {
-    // best-effort — never throw from a DB hook
-  }
-}
-
+// Atomic read-modify-write: uses WATCH/MULTI/EXEC via cacheAtomicUpdate.
+// Replaces the former in-process per-hostname Promise queue, which only
+// serialized within a single process. WATCH/MULTI/EXEC handles concurrent
+// writers across multiple processes as well.
 function updateRecord(
   hostnameOrUrl: string,
   mutate: (r: DomainRecord) => void,
 ): Promise<void> {
   const hostname = normalizeHostname(hostnameOrUrl);
   if (!hostname) return Promise.resolve();
-  const prev = writeLocks.get(hostname) ?? Promise.resolve();
-  const next = prev.then(() => performUpdate(hostname, mutate));
-  writeLocks.set(
-    hostname,
-    next.finally(() => {
-      // Clear the lock entry once this update settles, but only if no
-      // newer update has chained on (which would have overwritten it).
-      if (writeLocks.get(hostname) === next) writeLocks.delete(hostname);
-    }),
-  );
-  return next;
-}
-
-export function _clearWriteLocksForTests(): void {
-  writeLocks.clear();
+  const key = domainKey(hostname);
+  const now = new Date().toISOString();
+  return cacheAtomicUpdate(key, DOMAIN_RECORD_TTL_SECONDS, (raw) => {
+    let record: DomainRecord;
+    if (raw) {
+      try {
+        const parsed = JSON.parse(raw) as DomainRecord;
+        record =
+          parsed.schema_version === SCHEMA_VERSION
+            ? parsed
+            : newRecord(hostname, now);
+      } catch {
+        record = newRecord(hostname, now);
+      }
+    } else {
+      record = newRecord(hostname, now);
+    }
+    mutate(record);
+    record.last_fetch = now;
+    return JSON.stringify(record);
+  });
 }
 
 const TIER_KEY: Record<TierName, "tier1" | "tier2" | "tier3"> = {

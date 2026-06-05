@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { Redis as Valkey } from "iovalkey";
-import { VALKEY_URL } from "./config.js";
+import { CACHE_URL } from "./config.js";
 import { events } from "./events.js";
 import { incCounter } from "./observability.js";
 
@@ -14,7 +14,7 @@ let valkey: Valkey | null = null;
 export async function getValkey(): Promise<Valkey | null> {
   if (valkey !== null) return valkey;
   try {
-    const client = new Valkey(VALKEY_URL, {
+    const client = new Valkey(CACHE_URL, {
       lazyConnect: true,
       enableReadyCheck: false,
     });
@@ -77,6 +77,36 @@ export async function cacheSet(
     await client.set(key, value, "EX", ttl);
   } catch {
     // Best-effort — never throw
+  }
+}
+
+// Atomic read-modify-write using WATCH/MULTI/EXEC (optimistic locking).
+// `mutateFn` receives the current raw value (or null) and returns the new value.
+// Retries up to `maxRetries` times on concurrent-modification conflicts.
+// Best-effort: returns without throwing on any error or Valkey unavailability.
+export async function cacheAtomicUpdate(
+  key: string,
+  ttl: number,
+  mutateFn: (raw: string | null) => string,
+  maxRetries = 3,
+): Promise<void> {
+  const client = await getValkey();
+  if (!client) return;
+  for (let attempt = 0; attempt < maxRetries; attempt++) {
+    try {
+      await client.watch(key);
+      const raw = await client.get(key);
+      const updated = mutateFn(raw);
+      const pipeline = client.multi();
+      pipeline.set(key, updated, "EX", ttl);
+      const results = await pipeline.exec();
+      if (results !== null) return; // transaction committed
+      // results === null: key modified between WATCH and EXEC — retry
+    } catch {
+      // SECURITY[accepted]: exits retry on first exception (transient errors consume full budget).
+      // Intentional best-effort design — domain-db writes are fire-and-forget. Audit: 2026-06-05/searxng-mcp-polish-2026-06.
+      return; // best-effort — never throw
+    }
   }
 }
 

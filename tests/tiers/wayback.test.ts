@@ -45,8 +45,10 @@ describe("waybackFetch", () => {
     );
     const result = await waybackFetch(URL);
     expect(result).not.toBeNull();
-    expect(result!.title).toBe("[Archived] Archived Page");
-    expect(result!.text).toBe("Archived content here");
+    expect(result?.title).toBe("[Archived] Archived Page");
+    expect(result?.text).toBe(
+      "> [via Wayback Machine, archived 2024-01-01]\n\nArchived content here",
+    );
     expect(rawFetch).toHaveBeenCalledOnce();
   });
 
