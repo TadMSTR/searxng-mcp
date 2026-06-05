@@ -13,6 +13,8 @@ const USER_AGENT =
   "searxng-mcp/3.8.0 (+https://github.com/TadMSTR/searxng-mcp; personal research)";
 
 // 10MB cap across all domains for the in-process L1 body cache.
+// Note: enforced using body.length (UTF-16 char count). For non-ASCII content,
+// actual heap usage may be ~2× this value; llms-full.txt is almost exclusively ASCII.
 const L1_MAX_BYTES = 10 * 1024 * 1024;
 
 interface CachedLlmsFull {

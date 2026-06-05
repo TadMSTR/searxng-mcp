@@ -8,7 +8,6 @@ vi.mock("../src/cache.js", () => ({
 
 import { cacheAtomicUpdate, cacheGet } from "../src/cache.js";
 import {
-  _clearWriteLocksForTests,
   type DomainRecord,
   getDomainRecord,
   normalizeHostname,
@@ -69,7 +68,6 @@ describe("recordTierAttempt", () => {
   beforeEach(() => {
     cacheGetMock.mockReset();
     cacheAtomicUpdateMock.mockReset();
-    _clearWriteLocksForTests();
   });
 
   afterEach(() => vi.restoreAllMocks());
@@ -196,7 +194,6 @@ describe("recordLlmsFullProbe", () => {
   beforeEach(() => {
     cacheGetMock.mockReset();
     cacheAtomicUpdateMock.mockReset();
-    _clearWriteLocksForTests();
   });
 
   it("sets preferred_strategy to llms_full_txt on a present probe", async () => {
@@ -221,7 +218,6 @@ describe("recordRobotsProbe", () => {
   beforeEach(() => {
     cacheGetMock.mockReset();
     cacheAtomicUpdateMock.mockReset();
-    _clearWriteLocksForTests();
   });
 
   it("records a present, allowed result", async () => {
@@ -244,7 +240,6 @@ describe("recordPostExtractSample", () => {
   beforeEach(() => {
     cacheGetMock.mockReset();
     cacheAtomicUpdateMock.mockReset();
-    _clearWriteLocksForTests();
   });
 
   it("increments sampled and present counters", async () => {
@@ -265,7 +260,6 @@ describe("shouldSkipJsonLdPostExtract", () => {
   beforeEach(() => {
     cacheGetMock.mockReset();
     cacheAtomicUpdateMock.mockReset();
-    _clearWriteLocksForTests();
   });
 
   it("returns false when no record exists", async () => {

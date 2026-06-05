@@ -22,7 +22,10 @@ if (process.env.ADBLOCK_DISABLE === "true") {
 }
 
 function install() {
-  if (process.env._ADBLOCK_LOADED) return;
+  if (process.env._ADBLOCK_LOADED) {
+    console.warn("[adblock] _ADBLOCK_LOADED already set — skipping install (adblocking may be inactive)");
+    return;
+  }
   process.env._ADBLOCK_LOADED = "1";
 
   try {

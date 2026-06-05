@@ -27,6 +27,9 @@ export async function waybackFetch(
       >
     )?.closest;
     if (!closest?.url) return null;
+    // Enforce that the CDX response points to archive.org — defensive check in case
+    // of API compromise or unexpected response shape.
+    if (!closest.url.startsWith("https://web.archive.org/")) return null;
 
     const archiveDate = closest.timestamp
       ? `${closest.timestamp.slice(0, 4)}-${closest.timestamp.slice(4, 6)}-${closest.timestamp.slice(6, 8)}`

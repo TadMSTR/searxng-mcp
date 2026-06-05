@@ -149,11 +149,6 @@ function updateRecord(
   });
 }
 
-// No-op stub — retained for test compatibility.
-// The in-process write queue was replaced by Valkey WATCH/MULTI/EXEC; there
-// is no longer any in-process state to clear between tests.
-export function _clearWriteLocksForTests(): void {}
-
 const TIER_KEY: Record<TierName, "tier1" | "tier2" | "tier3"> = {
   tier1_firecrawl: "tier1",
   tier2_crawl4ai: "tier2",

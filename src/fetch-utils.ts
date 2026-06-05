@@ -22,6 +22,9 @@ export function assertPublicUrl(url: string): void {
   const { protocol } = new URL(url);
   // Strip IPv6 brackets so patterns like /^::1$/ match [::1] addresses correctly
   const hostname = new URL(url).hostname.replace(/^\[|\]$/g, "");
+  // http:// is intentionally permitted: Wayback Machine snapshots, some legacy sites,
+  // and local service integrations (Kiwix, Firecrawl) may use non-TLS URLs.
+  // Private/RFC-1918 addresses are blocked below regardless of scheme.
   if (!/^https?:$/.test(protocol)) {
     throw new Error(`Only http/https URLs are supported`);
   }

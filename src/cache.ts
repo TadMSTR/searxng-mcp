@@ -103,6 +103,8 @@ export async function cacheAtomicUpdate(
       if (results !== null) return; // transaction committed
       // results === null: key modified between WATCH and EXEC — retry
     } catch {
+      // SECURITY[accepted]: exits retry on first exception (transient errors consume full budget).
+      // Intentional best-effort design — domain-db writes are fire-and-forget. Audit: 2026-06-05/searxng-mcp-polish-2026-06.
       return; // best-effort — never throw
     }
   }
