@@ -11,6 +11,19 @@ Designed for use with Claude Code and LibreChat agents that need web search with
 
 Built with [Claude Code](https://claude.ai/code) using the multi-agent workflow from [homelab-agent](https://github.com/TadMSTR/homelab-agent) — the same platform that uses searxng-mcp in production for AI-assisted research.
 
+## Quick Start
+
+A running [SearXNG](https://github.com/searxng/searxng) instance is required. A cache backend is strongly recommended.
+
+**Minimal stack** — start a Dragonfly/Valkey cache backend and run searxng-mcp:
+
+```bash
+docker compose -f docker-compose.example.yml up -d
+SEARXNG_URL=http://localhost:8081 CACHE_URL=redis://localhost:6381 npx @tadmstr/searxng-mcp
+```
+
+For a full local topology including Firecrawl, Crawl4AI, Ollama, Kiwix, the adblock proxy, and NATS, see [`docker-compose.full.yml`](docker-compose.full.yml).
+
 ## Tools
 
 | Tool | Description | Key Parameters |
@@ -121,7 +134,16 @@ flowchart TD
 
 SearXNG and Firecrawl are required. Crawl4AI, Valkey, Ollama, Kiwix, and the reranker are optional — the server degrades gracefully when any of these are unavailable.
 
-### Adblock at tier 1
+### Adblocking
+
+searxng-mcp uses two independent adblocking sidecars, one per fetch tier group:
+
+| Sidecar | Tier | Mechanism |
+|---------|------|-----------|
+| `docker/puppeteer-adblock/` | Tier 1 (Firecrawl) | CDP-level interception — full HTTPS filtering, same browser process |
+| `docker/adblock-proxy/` | Tiers 2+3 (Crawl4AI, raw fetch) | HTTP forward proxy — filters plain-HTTP ad domains |
+
+#### Tier 1 — Puppeteer adblock
 
 The `firecrawl-puppeteer` service used by Firecrawl runs a custom image (`docker/puppeteer-adblock/`) that layers `@ghostery/adblocker-puppeteer` over the upstream `trieve/puppeteer-service-ts`. EasyList + EasyPrivacy are loaded at startup and refreshed every 168 hours; the blocker is applied to every page Firecrawl creates. Speeds up fetches of ad-heavy sites and shrinks rendered DOM size.
 
@@ -140,6 +162,12 @@ docker compose -f ~/docker/firecrawl-simple/docker-compose.yml up -d --build fir
 ```
 
 **Per-domain bypass:** `domains.json` reserves an `adblock_skip` slot for future operator overrides. Wiring isn't implemented yet — it would require Firecrawl to forward a custom header through to the puppeteer-service, which isn't part of its current API. Tracked as scope-creep item I.
+
+#### Tier 2+3 — Adblock proxy
+
+Set `ADBLOCK_PROXY_URL` (e.g. `http://adblock-proxy:8118`) to route Crawl4AI and raw Node fetch requests through an HTTP forward proxy that filters ad and tracker requests. HTTPS CONNECT tunnels are passed through unmodified — no MITM, so filtering applies to plain-HTTP ad domains only. The tier-1 puppeteer hook already handles full HTTPS filtering for that tier; the proxy covers what leaks through at tiers 2 and 3.
+
+See [`docker/adblock-proxy/`](docker/adblock-proxy/) for the service definition, configuration options, and deployment instructions (included in `docker-compose.full.yml`).
 
 ### Data-driven tier routing
 
@@ -179,7 +207,7 @@ Concurrent updates for the same hostname (the tier-attempt, robots-probe, and po
 
 ### llms.txt fast path
 
-For whitelisted documentation domains in `domains.json` (`llms_txt` array), `fetchPage` tries `<origin>/llms-full.txt` first and extracts the section matching the requested URL before invoking any tier. This avoids running puppeteer against well-instrumented docs sites and returns a clean markdown section directly. Cached probe outcomes live in Valkey (`llms:<origin>:full`, 24 h / 7 d for present/absent); the large body is held in-process for the lifetime of the MCP. Default whitelist: `docs.anthropic.com`, `docs.openai.com`, `docs.stripe.com`, `docs.crawl4ai.com`, `docs.firecrawl.dev`, `docs.cursor.com`. Extend by editing `domains.json` — the file is hot-reloaded.
+For whitelisted documentation domains in `domains.json` (`llms_txt` array), `fetchPage` tries `<origin>/llms-full.txt` first and extracts the section matching the requested URL before invoking any tier. This avoids running puppeteer against well-instrumented docs sites and returns a clean markdown section directly. Probe outcomes and the full body are cached in Valkey (`llms:<origin>:full`, 24 h / 7 d for present/absent). Default whitelist: `docs.anthropic.com`, `docs.openai.com`, `docs.stripe.com`, `docs.crawl4ai.com`, `docs.firecrawl.dev`, `docs.cursor.com`. Extend by editing `domains.json` — the file is hot-reloaded.
 
 ### Kiwix fast path
 
@@ -201,6 +229,10 @@ request fails or returns empty, the full tier cascade runs as normal. When `KIWI
 unset the feature adds zero overhead — `isKiwixHost()` returns false immediately.
 
 Set `KIWIX_URL` to your kiwix-serve base URL (e.g. `http://localhost:8292`).
+
+### Wayback Machine fallback
+
+When `WAYBACK_ENABLED=true`, a fourth tier queries the Wayback Machine CDX API for an archived snapshot when all three main tiers fail. Returned content is prefixed with a provenance header (`[Archived snapshot – <timestamp> – <original_url>]`) so callers know the content may not reflect the current page state.
 
 ### Fetch quality
 
@@ -244,7 +276,22 @@ Each envelope includes `request_id` and (when OTel is enabled) `trace_id` so sub
 
 ## Transport
 
-stdio (compatible with Claude Code MCP plugin and LibreChat `stdio` config).
+**stdio** (default) — compatible with Claude Code MCP plugin and LibreChat `stdio` config.
+
+**HTTP** — set `SEARXNG_MCP_TRANSPORT=http` to run as a shared HTTP/SSE server suitable for multi-client deployments or Docker-based setups. Binds to `SEARXNG_MCP_HOST:SEARXNG_MCP_PORT` (default `127.0.0.1:3001`):
+
+```bash
+SEARXNG_MCP_TRANSPORT=http SEARXNG_MCP_PORT=3001 npx @tadmstr/searxng-mcp
+```
+
+Register with Claude Code against an HTTP server:
+
+```bash
+claude mcp add-json searxng --scope user '{
+  "type": "http",
+  "url": "http://localhost:3001/mcp"
+}'
+```
 
 ## Prerequisites
 
@@ -467,6 +514,10 @@ No credentials are stored or logged by the server. API keys (`FIRECRAWL_API_KEY`
 ### Input validation
 
 Environment variables are validated at startup — `RERANK_RECENCY_WEIGHT` warns on NaN, negative, or >1.0 values. Numeric tool parameters use `z.coerce.number()` with range constraints.
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for setup instructions, commit conventions, and the PR process.
 
 ## License
 
