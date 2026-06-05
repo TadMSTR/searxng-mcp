@@ -200,7 +200,8 @@ describe("handleClearCache", () => {
     const result = await handleClearCache({ target: "all" });
     expect(cacheClear).toHaveBeenCalledWith("search:*");
     expect(cacheClear).toHaveBeenCalledWith("fetch:*");
-    expect(result.content[0].text).toContain("10 cache entries");
+    expect(cacheClear).toHaveBeenCalledWith("crawl:*");
+    expect(result.content[0].text).toContain("15 cache entries");
   });
 
   it("clears only search cache when target is search", async () => {
