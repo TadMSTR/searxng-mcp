@@ -9,7 +9,7 @@ const KIWIX_HOST_PREFIXES: Record<string, string> = {
   "en.wikipedia.org": "wikipedia_en_all_mini",
   "wikipedia.org": "wikipedia_en_all_mini",
   "stackoverflow.com": "stackoverflow.com_en_all",
-  "wiki.archlinux.org": "archlinux.wiki_en_all",
+  "wiki.archlinux.org": "archlinux_en_all_maxi",
 };
 
 export function isKiwixHost(url: string): boolean {
@@ -35,10 +35,15 @@ export async function kiwixFetch(
     // Path mapping:
     //   Wikipedia:  /wiki/<Title>    → /content/<book>/A/<Title>
     //   Arch Wiki:  /title/<Title>   → /content/<book>/A/<Title>
-    //   Stack Overflow: /questions/<id>/<slug> → /content/<book>/A/Questions/<id>
-    //   (SO path structure in the ZIM differs — strip leading segment and use as-is)
-    const articlePath = parsed.pathname.replace(/^\/(wiki|title)\//, "");
-    const kiwixUrl = `${KIWIX_URL}/content/${bookName}/A/${articlePath}`;
+    //   Stack Overflow: /questions/<id>/<slug> → /content/<book>/questions/<id>/<slug>
+    //   SO ZIM uses direct paths with no /A/ prefix.
+    let kiwixUrl: string;
+    if (parsed.hostname === "stackoverflow.com") {
+      kiwixUrl = `${KIWIX_URL}/content/${bookName}${parsed.pathname}`;
+    } else {
+      const articlePath = parsed.pathname.replace(/^\/(wiki|title)\//, "");
+      kiwixUrl = `${KIWIX_URL}/content/${bookName}/A/${articlePath}`;
+    }
 
     const resp = await fetch(kiwixUrl, { signal: AbortSignal.timeout(5000) });
     if (!resp.ok) return null;
