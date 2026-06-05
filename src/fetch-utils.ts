@@ -41,6 +41,8 @@ export function assertPublicUrl(url: string): void {
     /^::1$/,
     /^0:0:0:0:0:0:0:1$/,
     /^fd[0-9a-f]{2}:/i,
+    /^169\.254\./, // RFC 3927 link-local / AWS IMDS (F-04)
+    /^100\.(6[4-9]|[7-9][0-9]|1[01][0-9]|12[0-7])\./, // RFC 6598 CGNAT (F-04)
   ];
   if (blocked.some((r) => r.test(hostname))) {
     throw new Error(`Internal/private addresses are not allowed`);

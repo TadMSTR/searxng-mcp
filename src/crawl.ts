@@ -12,6 +12,7 @@ import {
   FIRECRAWL_URL,
 } from "./config.js";
 import { assertPublicUrl, fetchPage } from "./fetch.js";
+import { readBoundedText } from "./fetch-utils.js";
 import { incCounter, recordHistogram } from "./observability.js";
 import { checkRobots, getRobotsForOrigin } from "./robots.js";
 
@@ -112,6 +113,8 @@ export async function firecrawlCrawl(
       id?: string;
     };
     if (!startJson.success || !startJson.id) return null;
+    // Validate job ID before interpolating into URL path (F-03)
+    if (!/^[a-zA-Z0-9_-]{1,128}$/.test(startJson.id)) return null;
 
     const poll = await pollFirecrawlJob(startJson.id);
     if (!poll?.data) return null;
@@ -186,7 +189,7 @@ async function fetchSitemapXml(url: string): Promise<string | null> {
       signal: AbortSignal.timeout(10_000),
     });
     if (!res.ok) return null;
-    return await res.text();
+    return await readBoundedText(res); // bounded read — prevents oversized sitemap DoS (F-02)
   } catch {
     return null;
   }
@@ -342,7 +345,7 @@ export async function bfsCrawl(
         headers: { "User-Agent": "searxng-mcp" },
         signal: AbortSignal.timeout(10_000),
       });
-      if (rawRes.ok) rawHtml = await rawRes.text();
+      if (rawRes.ok) rawHtml = await readBoundedText(rawRes); // bounded read — prevents oversized HTML DoS (F-02)
     } catch {
       continue;
     }
@@ -397,6 +400,7 @@ export async function crawlSite(
   includePath?: string,
   excludePath?: string,
 ): Promise<CrawlManifest> {
+  assertPublicUrl(url); // SSRF guard — validate before any strategy dispatch (F-01)
   const t0 = Date.now();
   const cacheKey = crawlManifestCacheKey(
     url,
@@ -410,6 +414,9 @@ export async function crawlSite(
   const cached = await cacheGet(cacheKey);
   if (cached) {
     try {
+      // SECURITY[accepted]: JSON.parse without schema validation. Cache is written only by
+      // crawlSite itself from trusted crawl results. Corrupt entries fall through to a live
+      // crawl via the catch block. Auditor confirmed no action required. Audit: 2026-06-05/searxng-mcp-crawl-2026-06.
       const manifest = JSON.parse(cached) as CrawlManifest;
       incCounter("crawl", {
         strategy: manifest.strategy,
@@ -497,7 +504,7 @@ export function formatCrawlManifest(manifest: CrawlManifest): string {
   const rows = manifest.pages
     .map(
       (p, i) =>
-        `| ${i + 1} | ${p.url} | ${p.title.replace(/\|/g, "\\|")} | ${p.snippet.replace(/\|/g, "\\|")} |`,
+        `| ${i + 1} | ${p.url.replace(/\|/g, "\\|")} | ${p.title.replace(/\|/g, "\\|")} | ${p.snippet.replace(/\|/g, "\\|")} |`,
     )
     .join("\n");
 
