@@ -63,8 +63,8 @@ MCP client (stdio)
       ├── fetch content ────┬→ GitHub API (github.com)    → markdown
       │                     ├→ Kiwix ($KIWIX_URL)         → ZIM content (Wikipedia/SO/Arch Wiki, fast path)
       │                     ├→ Firecrawl ($FIRECRAWL_URL) → page markdown (tier 1)
-      │                     ├→ Crawl4AI ($CRAWL4AI_URL)  → page markdown (tier 2, optional)
-      │                     ├→ Raw HTTP + Readability     → page markdown (tier 3 fallback)
+      │                     ├→ Crawl4AI ($CRAWL4AI_URL)  → page markdown (tier 2, optional; via $ADBLOCK_PROXY_URL if set)
+      │                     ├→ Raw HTTP + Readability     → page markdown (tier 3 fallback; via $ADBLOCK_PROXY_URL if set)
       │                     └→ Wayback Machine (opt-in)  → archived page markdown (tier 4, $WAYBACK_ENABLED)
       └── summarize (opt.) →  Ollama ($OLLAMA_URL)        → synthesized summary ($OLLAMA_SUMMARIZE_MODEL)
 ```
@@ -84,8 +84,8 @@ flowchart TD
     robots["robots.txt pre-check — tiers 1–3\ndisallowed → RobotsDisallowedError (cached 24h)"]
     tier_skip(["Per-domain tier skip\nsuccess rate &lt;30% over ≥10 tries\nor tier_skip operator override"])
     t1["Tier 1 — Firecrawl\n$FIRECRAWL_URL"]
-    t2["Tier 2 — Crawl4AI\n$CRAWL4AI_URL · optional"]
-    t3["Tier 3 — Raw HTTP + Readability\nfallback: raw HTML slice"]
+    t2["Tier 2 — Crawl4AI\n$CRAWL4AI_URL · optional\nadblock proxy if $ADBLOCK_PROXY_URL"]
+    t3["Tier 3 — Raw HTTP + Readability\nfallback: raw HTML slice\nadblock proxy if $ADBLOCK_PROXY_URL"]
     t4["Tier 4 — Wayback Machine CDX API\narchived snapshot · WAYBACK_ENABLED=true"]
     post["Post-extraction\nJSON-LD Article · title cascade\nog:title → twitter:title → title → h1 → URL"]
     result["→ return { title, url, text }"]
