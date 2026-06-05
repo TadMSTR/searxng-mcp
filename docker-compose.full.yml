@@ -1,7 +1,8 @@
 # searxng-mcp full stack
 #
 # Wires all optional services: cache, Firecrawl + adblock sidecar, Crawl4AI,
-# Ollama, Kiwix, and NATS. Requires SearXNG running externally (see SEARXNG_URL).
+# adblock-proxy (tiers 2+3), Ollama, Kiwix, and NATS. Requires SearXNG running
+# externally (see SEARXNG_URL).
 #
 # Prerequisites:
 #   - Kiwix: download ZIM files to ./kiwix-data/ before starting kiwix service.
@@ -56,6 +57,19 @@ services:
       ADBLOCK_FILTERS_URL: "https://easylist.to/easylist/easylist.txt,https://easylist.to/easylist/easyprivacy.txt"
       ADBLOCK_REFRESH_HOURS: "168"
       # Set ADBLOCK_DISABLE=true to disable adblocking for debugging.
+
+  # ── Adblock proxy (tiers 2+3 HTTP proxy filter) ────────────────────────────
+  # Routes Crawl4AI and raw Node fetch through a @ghostery/adblocker HTTP proxy.
+  # Plain-HTTP ad/tracker requests are blocked with an empty 200 response.
+  # HTTPS CONNECT is tunneled without MITM — see docker/adblock-proxy/README.md.
+  adblock-proxy:
+    build:
+      context: ./docker/adblock-proxy
+    restart: unless-stopped
+    environment:
+      ADBLOCK_FILTERS_URL: "https://easylist.to/easylist/easylist.txt,https://easylist.to/easylist/easyprivacy.txt"
+      ADBLOCK_REFRESH_HOURS: "168"
+      LOG_BLOCKED: "false"
 
   # ── Crawl4AI (tier-2 fetch fallback) ────────────────────────────────────────
   crawl4ai:
@@ -145,6 +159,7 @@ volumes:
 #   EXPAND_QUERIES          false
 #   KIWIX_URL               http://localhost:8292
 #   WAYBACK_ENABLED         false
+#   ADBLOCK_PROXY_URL       http://adblock-proxy:8118
 #   NATS_URL                nats://localhost:4222
 #   CACHE_TTL_SECONDS       3600
 #   FETCH_CACHE_TTL_SECONDS 86400

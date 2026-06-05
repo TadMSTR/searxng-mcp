@@ -341,7 +341,11 @@ All service URLs are configurable via environment variables.
 | `CRAWL4AI_URL` | *(unset)* | Crawl4AI instance URL — enables second-tier fetch fallback when Firecrawl fails |
 | `CRAWL4AI_API_TOKEN` | *(unset)* | Optional Bearer token for Crawl4AI instances with API token protection |
 | `WAYBACK_ENABLED` | `false` | Set to `true` to enable Wayback Machine tier-4 fallback — fetches archived snapshots when all three tiers fail |
+| `ADBLOCK_PROXY_URL` | *(unset)* | HTTP proxy URL for tier-2 (Crawl4AI) and tier-3 (raw Node fetch) adblocking — e.g. `http://adblock-proxy:8118`. See `docker/adblock-proxy/`. |
 | `KIWIX_URL` | *(unset)* | kiwix-serve base URL (e.g. `http://localhost:8292`) — enables Kiwix fast path for Wikipedia, Stack Overflow, and Arch Wiki. Feature is disabled and zero-overhead when unset. |
+| `SEARXNG_MCP_TRANSPORT` | `stdio` | Transport mode: `stdio` (default, single-client) or `http` (shared HTTP/SSE server). |
+| `SEARXNG_MCP_PORT` | `3001` | HTTP listen port (HTTP transport mode only). |
+| `SEARXNG_MCP_HOST` | `127.0.0.1` | HTTP listen address (HTTP transport mode only). |
 
 ## Install
 
