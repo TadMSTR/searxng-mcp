@@ -32,7 +32,8 @@ For a full local topology including Firecrawl, Crawl4AI, Ollama, Kiwix, the adbl
 | `search_and_fetch` | Search, rerank, then fetch full content of the top result(s) using the fetch cascade (Firecrawl → Crawl4AI → raw HTTP). | `query`, `category`, `time_range`, `fetch_count` (1–3), `domain_profile`, `expand`, `language` |
 | `search_and_summarize` | Search, fetch top results, then synthesize a summary with citations via Ollama (`OLLAMA_SUMMARIZE_MODEL`). Falls back to raw fetched content if Ollama is unavailable. | `query`, `fetch_count` (1–5), `category`, `time_range`, `domain_profile`, `expand`, `language` |
 | `fetch_url` | Fetch and extract readable markdown from any public URL. GitHub URLs use the GitHub API; all others use the fetch cascade (Firecrawl → Crawl4AI → raw HTTP). Truncated to 8,000 characters. | `url`, `domain_profile` |
-| `clear_cache` | Purge the search cache, fetch cache, or both. Useful when researching fast-moving topics where cached results may be stale. | `target` (`search`, `fetch`, `all`) |
+| `crawl_site` | Crawl an entire site and return a manifest of URL/title/snippet for each page. Tries Firecrawl crawl first, falls back to sitemap parsing, then optional BFS. Full page content is cached in Valkey so follow-up `fetch_url` calls are zero-cost. | `url`, `max_pages` (default: `CRAWL_MAX_PAGES_DEFAULT`), `bfs` (bool, opt-in BFS) |
+| `clear_cache` | Purge the search cache, fetch cache, crawl manifest cache, or all. Useful when researching fast-moving topics where cached results may be stale. | `target` (`search`, `fetch`, `crawl`, `all`) |
 
 ### Parameters
 
@@ -54,7 +55,7 @@ For a full local topology including Firecrawl, Crawl4AI, Ollama, Kiwix, the adbl
 MCP client (stdio)
       │
       ▼
-  searxng-mcp ──────────────→ cache ($CACHE_URL)           → result cache (search 1h, fetch 24h)
+  searxng-mcp ──────────────→ cache ($CACHE_URL)           → result cache (search 1h, fetch 24h, crawl 6h)
       │
       ├── expand (optional) →  Ollama ($OLLAMA_URL)        → rewritten query (qwen3:4b)
       ├── search ───────────→ SearXNG ($SEARXNG_URL)      → raw results
@@ -66,6 +67,9 @@ MCP client (stdio)
       │                     ├→ Crawl4AI ($CRAWL4AI_URL)  → page markdown (tier 2, optional; via $ADBLOCK_PROXY_URL if set)
       │                     ├→ Raw HTTP + Readability     → page markdown (tier 3 fallback; via $ADBLOCK_PROXY_URL if set)
       │                     └→ Wayback Machine (opt-in)  → archived page markdown (tier 4, $WAYBACK_ENABLED)
+      ├── crawl_site ───────┬→ Firecrawl crawl           → page manifest (phase 1)
+      │                     ├→ Sitemap parsing           → page manifest (phase 2 fallback, fast-xml-parser)
+      │                     └→ BFS crawl (opt-in)        → page manifest (phase 3, $CRAWL_BFS_ENABLED)
       └── summarize (opt.) →  Ollama ($OLLAMA_URL)        → synthesized summary ($OLLAMA_SUMMARIZE_MODEL)
 ```
 
@@ -230,6 +234,18 @@ unset the feature adds zero overhead — `isKiwixHost()` returns false immediate
 
 Set `KIWIX_URL` to your kiwix-serve base URL (e.g. `http://localhost:8292`).
 
+### Site crawling
+
+`crawl_site` crawls an entire site and returns a manifest of URL/title/snippet for each page found. It uses a three-phase strategy cascade:
+
+1. **Firecrawl crawl** — sends a crawl job to Firecrawl (`/crawl` endpoint), polls until complete, and returns the full page list. Controlled by `FIRECRAWL_CRAWL_POLL_INTERVAL_MS` and `FIRECRAWL_CRAWL_MAX_WAIT_MS`.
+2. **Sitemap parsing** — if Firecrawl fails or returns empty, fetches `/sitemap.xml` (and linked sitemaps) and extracts URLs with titles/snippets. Uses `fast-xml-parser` for sitemap XML parsing.
+3. **BFS crawl** (opt-in) — if sitemap parsing also fails, performs a breadth-first crawl starting from the given URL up to `CRAWL_BFS_MAX_DEPTH` link hops. Only runs when `CRAWL_BFS_ENABLED=true` or the `bfs` tool parameter is `true`.
+
+Full page content fetched during the crawl is cached in Valkey (TTL: `CRAWL_MANIFEST_TTL_SECONDS`, default 6 hours). Subsequent `fetch_url` calls for any URL in the manifest return immediately from cache — zero fetch overhead for follow-up reads.
+
+The manifest cache can be cleared with `clear_cache(target="crawl")`.
+
 ### Wayback Machine fallback
 
 When `WAYBACK_ENABLED=true`, a fourth tier queries the Wayback Machine CDX API for an archived snapshot when all three main tiers fail. Returned content is prefixed with a provenance header (`[Archived snapshot – <timestamp> – <original_url>]`) so callers know the content may not reflect the current page state.
@@ -384,6 +400,12 @@ All service URLs are configurable via environment variables.
 | `CACHE_URL` | `redis://localhost:6381` | Redis-compatible URL — enables result caching. Also accepts `VALKEY_URL` or `REDIS_URL` as aliases. Works with Redis, Valkey, and Dragonfly. Server degrades gracefully if unavailable. |
 | `CACHE_TTL_SECONDS` | `3600` | Search result cache TTL in seconds |
 | `FETCH_CACHE_TTL_SECONDS` | `86400` | Fetched page cache TTL in seconds |
+| `CRAWL_MANIFEST_TTL_SECONDS` | `21600` | Crawl manifest and page content cache TTL in seconds (6 hours) |
+| `CRAWL_MAX_PAGES_DEFAULT` | `20` | Default max pages returned by `crawl_site` when no `max_pages` is passed |
+| `CRAWL_BFS_ENABLED` | `false` | Set to `true` to enable BFS fallback in `crawl_site` globally. Can also be enabled per-call with the `bfs` parameter. |
+| `CRAWL_BFS_MAX_DEPTH` | `3` | Maximum link-hop depth for BFS crawl |
+| `FIRECRAWL_CRAWL_POLL_INTERVAL_MS` | `2000` | Polling interval when waiting for a Firecrawl crawl job to complete |
+| `FIRECRAWL_CRAWL_MAX_WAIT_MS` | `120000` | Maximum time to wait for a Firecrawl crawl job before falling back to sitemap |
 | `EXPAND_QUERIES` | `false` | Set to `true` to enable query expansion globally |
 | `CRAWL4AI_URL` | *(unset)* | Crawl4AI instance URL — enables second-tier fetch fallback when Firecrawl fails |
 | `CRAWL4AI_API_TOKEN` | *(unset)* | Optional Bearer token for Crawl4AI instances with API token protection |
