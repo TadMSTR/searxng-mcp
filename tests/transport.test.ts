@@ -1,7 +1,11 @@
-import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import {
+  createServer,
+  type IncomingMessage,
+  type ServerResponse,
+} from "node:http";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 // Minimal MCP server for transport tests — no tools, just verifies
 // the HTTP transport can be instantiated and handle requests.
@@ -20,8 +24,13 @@ beforeAll(async () => {
     transport.handleRequest(req, res).catch((err: unknown) => {
       const msg = err instanceof Error ? err.message : String(err);
       const stack = err instanceof Error ? err.stack : "";
-      process.stdout.write(`[transport-test] handleRequest error: ${msg}\n${stack}\n`);
-      if (!res.headersSent) { res.writeHead(500); res.end(JSON.stringify({ error: msg })); }
+      process.stdout.write(
+        `[transport-test] handleRequest error: ${msg}\n${stack}\n`,
+      );
+      if (!res.headersSent) {
+        res.writeHead(500);
+        res.end(JSON.stringify({ error: msg }));
+      }
     });
   });
 
@@ -69,7 +78,9 @@ describe("HTTP transport", () => {
       }),
     });
     const rawBody = await res.text();
-    process.stdout.write(`[transport-test-debug] status=${res.status} ct=${res.headers.get("content-type")} body=${rawBody.slice(0, 300)}\n`);
+    process.stdout.write(
+      `[transport-test-debug] status=${res.status} ct=${res.headers.get("content-type")} body=${rawBody.slice(0, 300)}\n`,
+    );
     // The SDK may return 200 with SSE body or 200 with JSON body depending on Accept negotiation.
     // Accept both; just verify the response is well-formed.
     expect(res.status).toBe(200);

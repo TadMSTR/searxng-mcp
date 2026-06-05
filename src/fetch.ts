@@ -13,14 +13,11 @@ import { isKiwixHost, kiwixFetch } from "./kiwix.js";
 import { tryLlmsTxtFetch } from "./llms-txt.js";
 import { incCounter, recordHistogram, withSpan } from "./observability.js";
 import { checkRobots } from "./robots.js";
-import { computeTierSkips, type SkipReason, TIER_NAME } from "./routing.js";
+import { getTiers, type SkipReason, TIER_NAME } from "./routing.js";
 import {
-  applyTier2Readability,
-  crawl4aiFetch,
   fetchRawHtmlForMetadata,
-  firecrawlScrape,
   githubFetch,
-  rawFetch,
+  tier2 as pdfTier,
   waybackFetch,
 } from "./tiers/index.js";
 import type { TierSlot } from "./types.js";
@@ -225,25 +222,26 @@ export async function fetchPage(
       }
 
       // Resolve data-driven + operator skips before kicking off the cascade.
-      const skipDecisions = await computeTierSkips(url);
+      const { active: activeTiers, skipped: skipDecisions } =
+        await getTiers(url);
       const skipBy = new Map<TierSlot, SkipReason>(
         skipDecisions.map((d) => [d.tier, d.reason]),
       );
-      const announceSkip = (slot: TierSlot): void => {
-        const reason = skipBy.get(slot);
-        if (!reason) return;
+
+      // Announce all skipped tiers up front (metrics + events + logs).
+      for (const { tier: slot, reason } of skipDecisions) {
         const tierName = TIER_NAME[slot];
         incCounter("fetch", { tier: tierName, outcome: "skipped" });
         events.fetchTierSkipped({ url, tier: tierName, reason });
         console.error(
           `[searxng-mcp] fetch ${slot} skipped url=${url} reason=${reason}`,
         );
-      };
+      }
 
-      // PDF fast path — Firecrawl can't extract PDF text; route directly to Crawl4AI.
+      // PDF fast path — Firecrawl can't extract PDF text; route directly to tier2.
       if (isPdfUrl(url)) {
         const pdfResult = await runTier("tier2_crawl4ai", url, () =>
-          crawl4aiFetch(url, 8000, preferFit),
+          pdfTier.fetch(url, 8000, preferFit),
         );
         if (!pdfResult) {
           throw new Error(
@@ -270,47 +268,18 @@ export async function fetchPage(
       const metadataHtmlPromise = fetchRawHtmlForMetadata(url);
 
       let fetched: TierResult | null = null;
-      if (skipBy.has("tier1")) {
-        announceSkip("tier1");
-      } else {
-        fetched = await runTier("tier1_firecrawl", url, async () => {
-          const r = await firecrawlScrape(url, 8000);
-          return r?.text ? r : null;
-        });
+      for (const tier of activeTiers) {
+        fetched = await runTier(tier.name, url, () =>
+          tier.fetch(url, 8000, preferFit),
+        );
         if (fetched) {
-          tierServed = "tier1_firecrawl";
-        } else {
-          console.error(`[searxng-mcp] fetch tier1 miss url=${url}`);
-        }
-      }
-
-      if (!fetched) {
-        if (skipBy.has("tier2")) {
-          announceSkip("tier2");
-        } else {
-          fetched = await runTier("tier2_crawl4ai", url, () =>
-            crawl4aiFetch(url, 8000, preferFit),
-          );
-          if (fetched) {
-            fetched = applyTier2Readability(fetched, url);
-            tierServed = "tier2_crawl4ai";
-            console.error(`[searxng-mcp] fetch tier2 hit url=${url}`);
-          } else {
-            console.error(`[searxng-mcp] fetch tier2 miss url=${url}`);
+          tierServed = tier.name;
+          if (tier.slot !== "tier1") {
+            console.error(`[searxng-mcp] fetch ${tier.slot} hit url=${url}`);
           }
+          break;
         }
-      }
-
-      if (!fetched) {
-        if (skipBy.has("tier3")) {
-          announceSkip("tier3");
-        } else {
-          console.error(`[searxng-mcp] fetch tier3 fallback url=${url}`);
-          fetched = await runTier("tier3_rawfetch", url, () =>
-            rawFetch(url, 8000),
-          );
-          if (fetched) tierServed = "tier3_rawfetch";
-        }
+        console.error(`[searxng-mcp] fetch ${tier.slot} miss url=${url}`);
       }
 
       if (!fetched && WAYBACK_ENABLED) {

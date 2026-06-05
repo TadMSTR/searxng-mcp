@@ -5,6 +5,7 @@
 
 import { getDomainRecord, type TierName } from "./domain-db.js";
 import { getOperatorTierSkips } from "./domains.js";
+import { ALL_TIERS, type Tier } from "./tiers/index.js";
 import type { TierSlot } from "./types.js";
 
 const MIN_ATTEMPTS_FOR_DECISION = 10;
@@ -48,4 +49,20 @@ export async function computeTierSkips(
   }
 
   return Array.from(decisions, ([tier, reason]) => ({ tier, reason }));
+}
+
+/**
+ * Returns the active tier list and skip decisions for a URL.
+ *
+ * `active` is the ordered set of tiers to attempt (skips already removed).
+ * `skipped` carries the skip decisions for observability/logging callers.
+ */
+export async function getTiers(url: string): Promise<{
+  active: Tier[];
+  skipped: TierSkipDecision[];
+}> {
+  const skipped = await computeTierSkips(url);
+  const skipSlots = new Set(skipped.map((d) => d.tier));
+  const active = ALL_TIERS.filter((t) => !skipSlots.has(t.slot));
+  return { active, skipped };
 }
