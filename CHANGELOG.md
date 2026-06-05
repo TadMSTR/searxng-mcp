@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [3.8.0] - 2026-06-05
+
 ### Added
 - **Kiwix fast path** — when `KIWIX_URL` is set, fetch requests for Wikipedia (`en.wikipedia.org`), Stack Overflow (`stackoverflow.com`), and Arch Wiki (`wiki.archlinux.org`) are intercepted before the Firecrawl/Crawl4AI cascade and served from the local Kiwix ZIM archive. Eliminates the 100% tier-1 failure rate for `en.wikipedia.org`. Feature is fully gated by the `KIWIX_URL` env var — zero overhead when unset.
 
@@ -206,7 +208,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Result reranking using a local ML model with fallback to raw SearXNG ordering when the reranker is unavailable
 - Category filtering: `general`, `news`, `it`, `science`
 
-[Unreleased]: https://github.com/TadMSTR/searxng-mcp/compare/v3.7.0...HEAD
+[Unreleased]: https://github.com/TadMSTR/searxng-mcp/compare/v3.8.0...HEAD
+[3.8.0]: https://github.com/TadMSTR/searxng-mcp/compare/v3.7.0...v3.8.0
 [3.7.0]: https://github.com/TadMSTR/searxng-mcp/compare/v3.6.0...v3.7.0
 [3.6.0]: https://github.com/TadMSTR/searxng-mcp/compare/v3.5.0...v3.6.0
 [3.5.0]: https://github.com/TadMSTR/searxng-mcp/compare/v3.4.0...v3.5.0
