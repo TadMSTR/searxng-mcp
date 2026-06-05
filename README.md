@@ -48,6 +48,7 @@ MCP client (stdio)
       ├── rerank ───────────→ Reranker ($RERANKER_URL)    → ranked results
       │                       (fallback: SearXNG order if reranker unavailable)
       ├── fetch content ────┬→ GitHub API (github.com)    → markdown
+      │                     ├→ Kiwix ($KIWIX_URL)         → ZIM content (Wikipedia/SO/Arch Wiki, fast path)
       │                     ├→ Firecrawl ($FIRECRAWL_URL) → page markdown (tier 1)
       │                     ├→ Crawl4AI ($CRAWL4AI_URL)  → page markdown (tier 2, optional)
       │                     ├→ Raw HTTP + Readability     → page markdown (tier 3 fallback)
@@ -57,7 +58,7 @@ MCP client (stdio)
 
 ![Fetch routing](assets/fetch-routing.drawio.svg)
 
-SearXNG and Firecrawl are required. Crawl4AI, Valkey, Ollama, and the reranker are optional — the server degrades gracefully when any of these are unavailable.
+SearXNG and Firecrawl are required. Crawl4AI, Valkey, Ollama, Kiwix, and the reranker are optional — the server degrades gracefully when any of these are unavailable.
 
 ### Adblock at tier 1
 
@@ -118,6 +119,27 @@ Concurrent updates for the same hostname (the tier-attempt, robots-probe, and po
 ### llms.txt fast path
 
 For whitelisted documentation domains in `domains.json` (`llms_txt` array), `fetchPage` tries `<origin>/llms-full.txt` first and extracts the section matching the requested URL before invoking any tier. This avoids running puppeteer against well-instrumented docs sites and returns a clean markdown section directly. Cached probe outcomes live in Valkey (`llms:<origin>:full`, 24 h / 7 d for present/absent); the large body is held in-process for the lifetime of the MCP. Default whitelist: `docs.anthropic.com`, `docs.openai.com`, `docs.stripe.com`, `docs.crawl4ai.com`, `docs.firecrawl.dev`, `docs.cursor.com`. Extend by editing `domains.json` — the file is hot-reloaded.
+
+### Kiwix fast path
+
+When `KIWIX_URL` is set, fetch requests for known offline-capable hosts are intercepted
+before the Firecrawl/Crawl4AI cascade and served from the local [Kiwix](https://kiwix.org/)
+ZIM archive. This eliminates the 100% tier-1 failure rate for sites like Wikipedia (which
+blocks headless scrapers) and returns clean readable content with zero external network traffic.
+
+Supported hosts and ZIM books (kiwix-serve must run with `--nodatealiases` / `-z`):
+
+| Host | ZIM book |
+|------|----------|
+| `en.wikipedia.org`, `wikipedia.org` | `wikipedia_en_all_mini` |
+| `stackoverflow.com` | `stackoverflow.com_en_all` |
+| `wiki.archlinux.org` | `archlinux_en_all_maxi` |
+
+The Kiwix path runs after the llms-txt fast path and before the robots gate. If the Kiwix
+request fails or returns empty, the full tier cascade runs as normal. When `KIWIX_URL` is
+unset the feature adds zero overhead — `isKiwixHost()` returns false immediately.
+
+Set `KIWIX_URL` to your kiwix-serve base URL (e.g. `http://localhost:8292`).
 
 ### Fetch quality
 
@@ -204,6 +226,23 @@ If your instance requires API token authentication, set `CRAWL4AI_API_TOKEN`.
 
 On the `search_and_summarize` path, Crawl4AI requests use `fit_markdown` for noise-filtered content extraction. Other callers (`search_and_fetch`, `fetch_url`) use `raw_markdown`.
 
+### Kiwix (optional)
+
+[kiwix-serve](https://github.com/kiwix/kiwix-tools) serves ZIM archives over HTTP. Download
+the required ZIM files and run kiwix-serve with `--nodatealiases` (`-z`) so book names are
+stable:
+
+```bash
+kiwix-serve --port 8292 --nodatealiases /path/to/zims/
+```
+
+Required ZIM files for each supported host:
+- Wikipedia: `wikipedia_en_all_mini` (or `maxi`)
+- Stack Overflow: `stackoverflow.com_en_all`
+- Arch Wiki: `archlinux_en_all_maxi`
+
+ZIM files can be downloaded from [library.kiwix.org](https://library.kiwix.org/).
+
 ### Valkey / Redis
 
 Any Redis-compatible instance. Valkey is recommended. Search results are cached for 1 hour; fetched pages for 24 hours. If unavailable, the server operates without caching.
@@ -241,6 +280,7 @@ All service URLs are configurable via environment variables.
 | `CRAWL4AI_URL` | *(unset)* | Crawl4AI instance URL — enables second-tier fetch fallback when Firecrawl fails |
 | `CRAWL4AI_API_TOKEN` | *(unset)* | Optional Bearer token for Crawl4AI instances with API token protection |
 | `WAYBACK_ENABLED` | `false` | Set to `true` to enable Wayback Machine tier-4 fallback — fetches archived snapshots when all three tiers fail |
+| `KIWIX_URL` | *(unset)* | kiwix-serve base URL (e.g. `http://localhost:8292`) — enables Kiwix fast path for Wikipedia, Stack Overflow, and Arch Wiki. Feature is disabled and zero-overhead when unset. |
 
 ## Install
 
