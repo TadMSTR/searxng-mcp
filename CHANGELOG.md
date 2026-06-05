@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [3.11.0] - 2026-06-05
+
+### Added
+- **`crawl_site` tool** — crawls a site and returns a manifest (URL, title, 200-char snippet per page). Full page content is written to the existing fetch cache so follow-up `fetch_url` calls hit the cache at 100%. Three-phase strategy cascade: Firecrawl `/v2/crawl` (JS rendering, async polling) → sitemap-first (robots.txt `Sitemap:` directives + `/sitemap.xml` + `/sitemap_index.xml`, batch-fetched via existing tier cascade) → BFS via JSDOM (opt-in, `CRAWL_BFS_ENABLED=true`). Manifest is cached under `crawl:` keys with configurable TTL (`CRAWL_MANIFEST_TTL_SECONDS`, default 6h).
+- **`clear_cache "crawl"` target** — purges `crawl:*` manifest cache keys. `clear_cache "all"` now also clears crawl manifests.
+- **New env vars:** `CRAWL_MANIFEST_TTL_SECONDS` (default 21600), `CRAWL_MAX_PAGES_DEFAULT` (default 20), `CRAWL_BFS_ENABLED` (default false), `CRAWL_BFS_MAX_DEPTH` (default 3), `FIRECRAWL_CRAWL_POLL_INTERVAL_MS` (default 2000), `FIRECRAWL_CRAWL_MAX_WAIT_MS` (default 120000).
+- **`fast-xml-parser` dependency** — pure-JS XML parser for sitemap parsing (no native bindings).
+
 ## [3.10.0] - 2026-06-05
 
 ### Added

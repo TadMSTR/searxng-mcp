@@ -135,6 +135,22 @@ export const events = {
   cacheMiss(p: { key_type: string; namespace: string }): void {
     publishEvent("cache.miss", p);
   },
+  crawlRequested(p: {
+    url: string;
+    max_pages: number;
+    same_domain_only: boolean;
+  }): void {
+    publishEvent("crawl.requested", p);
+  },
+  crawlCompleted(p: {
+    url: string;
+    strategy: string;
+    page_count: number;
+    latency_ms: number;
+    cached: boolean;
+  }): void {
+    publishEvent("crawl.completed", p);
+  },
   error(p: {
     stage: string;
     url?: string;

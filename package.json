@@ -1,6 +1,6 @@
 {
   "name": "@tadmstr/searxng-mcp",
-  "version": "3.10.0",
+  "version": "3.11.0",
   "description": "MCP server for SearXNG — private web search for Claude Code",
   "main": "build/src/index.js",
   "bin": {
@@ -46,6 +46,7 @@
     "@opentelemetry/exporter-trace-otlp-http": "^0.218.0",
     "@opentelemetry/sdk-metrics": "^2.7.1",
     "@opentelemetry/sdk-node": "^0.218.0",
+    "fast-xml-parser": "^5.8.0",
     "iovalkey": "^0.3.3",
     "jsdom": "^29.1.1",
     "robots-parser": "^3.0.1",

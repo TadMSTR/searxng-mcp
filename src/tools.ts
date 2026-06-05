@@ -2,6 +2,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { cacheClear } from "./cache.js";
 import { newRequestId, withRequestId } from "./context.js";
+import { crawlSite, formatCrawlManifest } from "./crawl.js";
 import { events } from "./events.js";
 import { fetchPage } from "./fetch.js";
 import { incCounter, recordHistogram, withSpan } from "./observability.js";
@@ -338,6 +339,47 @@ export async function handleFetchUrl({
   });
 }
 
+export async function handleCrawlSite({
+  url,
+  max_pages,
+  same_domain_only,
+  include_path,
+  exclude_path,
+}: {
+  url: string;
+  max_pages: number;
+  same_domain_only: boolean;
+  include_path?: string;
+  exclude_path?: string;
+}) {
+  return instrumentTool("crawl_site", async () => {
+    const t0 = Date.now();
+    events.crawlRequested({ url, max_pages, same_domain_only });
+    const manifest = await crawlSite(
+      url,
+      max_pages,
+      same_domain_only,
+      include_path,
+      exclude_path,
+    );
+    const latency_ms = Date.now() - t0;
+    events.crawlCompleted({
+      url,
+      strategy: manifest.strategy,
+      page_count: manifest.page_count,
+      latency_ms,
+      cached: manifest.cached,
+    });
+    incCounter("crawl", {
+      outcome: manifest.strategy === "error" ? "error" : "success",
+    });
+    recordHistogram("tool.crawl_site", latency_ms / 1000, {});
+    return {
+      content: [{ type: "text" as const, text: formatCrawlManifest(manifest) }],
+    };
+  });
+}
+
 export async function handleClearCache({ target }: { target: string }) {
   return instrumentTool("clear_cache", async () => {
     let cleared = 0;
@@ -346,6 +388,9 @@ export async function handleClearCache({ target }: { target: string }) {
     }
     if (target === "fetch" || target === "all") {
       cleared += await cacheClear("fetch:*");
+    }
+    if (target === "crawl" || target === "all") {
+      cleared += await cacheClear("crawl:*");
     }
     return {
       content: [
@@ -466,14 +511,43 @@ export function registerTools(server: McpServer): void {
   );
 
   server.tool(
+    "crawl_site",
+    "Crawl a site and return a manifest of pages with titles and snippets. " +
+      "Full page content is cached — call fetch_url on any page URL for the full text. " +
+      "Strategy: Firecrawl (JS rendering) → sitemap-first → BFS (if enabled).",
+    {
+      url: z.string().url().describe("Base URL to crawl"),
+      max_pages: z.coerce
+        .number()
+        .min(1)
+        .max(100)
+        .default(20)
+        .describe("Maximum pages to crawl (default 20, max 100)"),
+      same_domain_only: z.coerce
+        .boolean()
+        .default(true)
+        .describe("Restrict crawl to the same domain (default true)"),
+      include_path: z
+        .string()
+        .optional()
+        .describe("Only include URLs matching this path prefix (e.g. '/docs')"),
+      exclude_path: z
+        .string()
+        .optional()
+        .describe("Exclude URLs matching this path prefix (e.g. '/blog')"),
+    },
+    handleCrawlSite,
+  );
+
+  server.tool(
     "clear_cache",
     "Purge the search and/or fetch result cache. Useful when researching fast-moving topics where cached results from the past hour may be stale.",
     {
       target: z
-        .enum(["search", "fetch", "all"])
+        .enum(["search", "fetch", "crawl", "all"])
         .default("all")
         .describe(
-          "Which cache to clear: search results, fetched pages, or all (default all)",
+          "Which cache to clear: search results, fetched pages, crawl manifests, or all (default all)",
         ),
     },
     handleClearCache,

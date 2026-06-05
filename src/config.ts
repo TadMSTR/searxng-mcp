@@ -33,6 +33,28 @@ export const ADBLOCK_PROXY_URL = process.env.ADBLOCK_PROXY_URL ?? null;
 export const TRANSPORT = process.env.SEARXNG_MCP_TRANSPORT ?? "stdio"; // "stdio" | "http"
 export const HTTP_PORT = parseInt(process.env.SEARXNG_MCP_PORT ?? "3001", 10);
 export const HTTP_HOST = process.env.SEARXNG_MCP_HOST ?? "127.0.0.1";
+export const CRAWL_MANIFEST_TTL_SECONDS = parseInt(
+  process.env.CRAWL_MANIFEST_TTL_SECONDS ?? "21600",
+  10,
+);
+export const CRAWL_MAX_PAGES_DEFAULT = parseInt(
+  process.env.CRAWL_MAX_PAGES_DEFAULT ?? "20",
+  10,
+);
+export const CRAWL_BFS_ENABLED = process.env.CRAWL_BFS_ENABLED === "true";
+export const CRAWL_BFS_MAX_DEPTH = parseInt(
+  process.env.CRAWL_BFS_MAX_DEPTH ?? "3",
+  10,
+);
+export const FIRECRAWL_CRAWL_POLL_INTERVAL_MS = parseInt(
+  process.env.FIRECRAWL_CRAWL_POLL_INTERVAL_MS ?? "2000",
+  10,
+);
+export const FIRECRAWL_CRAWL_MAX_WAIT_MS = parseInt(
+  process.env.FIRECRAWL_CRAWL_MAX_WAIT_MS ?? "120000",
+  10,
+);
+
 export const RERANK_RECENCY_WEIGHT = (() => {
   const v = parseFloat(process.env.RERANK_RECENCY_WEIGHT ?? "0.15");
   if (Number.isNaN(v) || v < 0) {

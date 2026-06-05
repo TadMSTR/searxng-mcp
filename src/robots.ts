@@ -65,7 +65,9 @@ async function fetchRobotsTxt(origin: string): Promise<CachedRobots> {
   }
 }
 
-async function getRobotsForOrigin(origin: string): Promise<CachedRobots> {
+export async function getRobotsForOrigin(
+  origin: string,
+): Promise<CachedRobots> {
   const key = robotsCacheKey(origin);
   const cached = await cacheGet(key);
   if (cached) {
