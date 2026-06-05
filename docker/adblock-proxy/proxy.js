@@ -58,6 +58,9 @@ async function loadFilters() {
   const newEngine = FiltersEngine.parse(combined, { debug: false });
   const count = newEngine.filters ? newEngine.filters.size : "unknown";
   engine = newEngine;
+  if (!engine) {
+    console.error("[adblock-proxy] WARNING: no filters loaded — all requests will pass through unfiltered");
+  }
   console.log(`[adblock-proxy] loaded filters from ${FILTERS_URLS.length} list(s) (${count} rules)`);
 }
 
@@ -114,6 +117,16 @@ const server = http.createServer((req, res) => {
   req.pipe(proxy, { end: true });
 });
 
+// RFC-1918 / loopback blocklist — applied to CONNECT targets to prevent SSRF pivot.
+// Mirrors the patterns in src/fetch-utils.ts:assertPublicUrl.
+// SECURITY[control]: blocks internal address tunneling via CONNECT. Audit: 2026-06-05/searxng-mcp-transport-2026-06.
+const PRIVATE_HOSTS = [
+  /^localhost$/i, /^127\./, /^0\.0\.0\.0$/,
+  /^10\./, /^192\.168\./, /^172\.(1[6-9]|2[0-9]|3[01])\./,
+  /^host\.docker\.internal$/i,
+  /^::1$/, /^fc[0-9a-f]{2}:/i, /^fe[89ab][0-9a-f]:/i, /^fd[0-9a-f]{2}:/i,
+];
+
 // HTTPS CONNECT — TCP tunnel, no interception
 server.on("connect", (req, clientSocket, head) => {
   const [host, portStr] = (req.url ?? "").split(":");
@@ -121,6 +134,12 @@ server.on("connect", (req, clientSocket, head) => {
 
   if (!host || !port) {
     clientSocket.write("HTTP/1.1 400 Bad Request\r\n\r\n");
+    clientSocket.destroy();
+    return;
+  }
+
+  if (PRIVATE_HOSTS.some((r) => r.test(host))) {
+    clientSocket.write("HTTP/1.1 403 Forbidden\r\n\r\n");
     clientSocket.destroy();
     return;
   }

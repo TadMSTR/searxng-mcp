@@ -46,6 +46,11 @@ if (TRANSPORT === "http") {
     console.error(
       `[searxng-mcp] HTTP transport listening on http://${HTTP_HOST}:${HTTP_PORT}`,
     );
+    if (HTTP_HOST !== "127.0.0.1") {
+      console.error(
+        `[searxng-mcp] WARNING: HTTP transport bound to ${HTTP_HOST}:${HTTP_PORT} — no built-in auth; ensure network-level protection`,
+      );
+    }
   });
 } else {
   const transport = new StdioServerTransport();
