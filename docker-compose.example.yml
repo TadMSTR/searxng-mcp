@@ -1,0 +1,49 @@
+# searxng-mcp minimal stack
+#
+# Required: a running SearXNG instance (see SEARXNG_URL below).
+# This file wires only the cache backend — the minimum needed for
+# searxng-mcp to function beyond a bare in-memory session.
+#
+# For a full topology (Firecrawl, Crawl4AI, Ollama, Kiwix, NATS),
+# see docker-compose.full.yml.
+
+services:
+  cache:
+    image: docker.dragonflydb.io/dragonflydb/dragonfly:latest
+    # Alternatives (drop-in compatible):
+    #   image: redis:7-alpine
+    #   image: valkey/valkey:8-alpine
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:6381:6379"
+    command: ["--maxmemory=512mb", "--save_schedule="]
+    ulimits:
+      memlock: -1
+
+# ── MCP client configuration ──────────────────────────────────────────────────
+#
+# Add the following env block to your MCP client config.
+# Only SEARXNG_URL and CACHE_URL are required; everything else is optional.
+#
+#   SEARXNG_URL           http://localhost:8081    # Required: your SearXNG instance
+#   CACHE_URL             redis://localhost:6381   # Cache backend (Redis/Valkey/Dragonfly)
+#
+# Optional env vars:
+#   FIRECRAWL_URL         http://localhost:3002    # Tier-1 JS-render fetch
+#   FIRECRAWL_API_KEY     placeholder-local        # Firecrawl API key
+#   CRAWL4AI_URL          http://localhost:11235   # Tier-2 fetch fallback
+#   CRAWL4AI_API_TOKEN                             # Crawl4AI bearer token (if protected)
+#   RERANKER_URL          http://localhost:8787    # ML reranking (cross-encoder)
+#   OLLAMA_URL            http://localhost:11434   # Query expansion + summarization
+#   OLLAMA_API_KEY                                 # Bearer token for authenticated Ollama proxies
+#   OLLAMA_EXPAND_MODEL   qwen3:4b                 # Model for query expansion
+#   OLLAMA_SUMMARIZE_MODEL qwen3:14b               # Model for search_and_summarize
+#   EXPAND_QUERIES        false                    # Set true to expand queries globally
+#   KIWIX_URL             http://localhost:8292    # Kiwix fast path (Wikipedia/SO/Arch Wiki)
+#   WAYBACK_ENABLED       false                    # Set true to enable Wayback Machine tier-4
+#   GITHUB_TOKEN                                   # GitHub PAT — raises rate limit to 5k/h
+#   CACHE_TTL_SECONDS     3600                     # Search result cache TTL
+#   FETCH_CACHE_TTL_SECONDS 86400                  # Fetched page cache TTL
+#   NATS_URL                                       # NATS server for event publishing
+#   OTEL_EXPORTER_OTLP_ENDPOINT                   # OpenTelemetry endpoint
+#   RERANK_RECENCY_WEIGHT 0.15                     # Recency bias in reranking (0-1)

@@ -1,0 +1,151 @@
+# searxng-mcp full stack
+#
+# Wires all optional services: cache, Firecrawl + adblock sidecar, Crawl4AI,
+# Ollama, Kiwix, and NATS. Requires SearXNG running externally (see SEARXNG_URL).
+#
+# Prerequisites:
+#   - Kiwix: download ZIM files to ./kiwix-data/ before starting kiwix service.
+#     See https://download.kiwix.org/ — recommended: wikipedia_en_all_maxi,
+#     stackoverflow_en_all, archlinux_en_all
+#   - Ollama: pull required models after first start:
+#       docker exec ollama ollama pull qwen3:4b
+#       docker exec ollama ollama pull qwen3:14b
+#   - NATS: update NATS_CREDS path if using credential-based auth.
+
+services:
+  # ── Cache backend (Redis-compatible) ────────────────────────────────────────
+  cache:
+    image: docker.dragonflydb.io/dragonflydb/dragonfly:latest
+    # Alternatives (drop-in compatible):
+    #   image: redis:7-alpine
+    #   image: valkey/valkey:8-alpine
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:6381:6379"
+    command: ["--maxmemory=2gb", "--save_schedule="]
+    ulimits:
+      memlock: -1
+
+  # ── Firecrawl (tier-1 JS-render fetch) ──────────────────────────────────────
+  # Firecrawl requires its own Redis instance and the playwright-service sidecar.
+  # See https://docs.firecrawl.dev/self-hosting for full setup.
+  firecrawl-api:
+    image: ghcr.io/mendableai/firecrawl:latest
+    restart: unless-stopped
+    environment:
+      REDIS_URL: redis://firecrawl-redis:6379
+      PLAYWRIGHT_MICROSERVICE_URL: http://firecrawl-puppeteer:3000
+      USE_DB_AUTHENTICATION: "false"
+    ports:
+      - "127.0.0.1:3002:3002"
+    depends_on:
+      - firecrawl-redis
+      - firecrawl-puppeteer
+
+  firecrawl-redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+
+  firecrawl-puppeteer:
+    # Custom build: trieve/puppeteer-service-ts + @ghostery/adblocker-puppeteer
+    # See docker/puppeteer-adblock/README.md for details.
+    build:
+      context: ./docker/puppeteer-adblock
+    restart: unless-stopped
+    environment:
+      ADBLOCK_FILTERS_URL: "https://easylist.to/easylist/easylist.txt,https://easylist.to/easylist/easyprivacy.txt"
+      ADBLOCK_REFRESH_HOURS: "168"
+      # Set ADBLOCK_DISABLE=true to disable adblocking for debugging.
+
+  # ── Crawl4AI (tier-2 fetch fallback) ────────────────────────────────────────
+  crawl4ai:
+    image: unclecode/crawl4ai:latest
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:11235:11235"
+    environment:
+      CRAWL4AI_API_TOKEN: ""  # Set to protect your instance
+    shm_size: "1gb"
+
+  # ── Ollama (query expansion + summarization) ─────────────────────────────────
+  # Required models: qwen3:4b (expand), qwen3:14b (summarize)
+  # Pull after start: docker exec ollama ollama pull qwen3:4b && docker exec ollama ollama pull qwen3:14b
+  ollama:
+    image: ollama/ollama:latest
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:11434:11434"
+    volumes:
+      - ollama-data:/root/.ollama
+    # GPU support (NVIDIA):
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: all
+    #           capabilities: [gpu]
+
+  # ── Reranker (ML cross-encoder reranking) ────────────────────────────────────
+  # Options:
+  #   - Jina Reranker: docker pull jinaai/jina-reranker-v2-base-multilingual
+  #   - Infinity with a cross-encoder model: https://github.com/michaelfeil/infinity
+  #   - Any OpenAI-compatible reranker API at port 8787
+  reranker:
+    image: michaelf34/infinity:latest
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8787:7997"
+    command:
+      - v2
+      - --model-id
+      - cross-encoder/ms-marco-MiniLM-L-6-v2
+    # GPU support: add deploy.resources.reservations.devices as above
+
+  # ── Kiwix (offline Wikipedia / Stack Overflow / Arch Wiki) ──────────────────
+  # Requires ZIM files in ./kiwix-data/ — see https://download.kiwix.org/
+  kiwix:
+    image: ghcr.io/kiwix/kiwix-serve:latest
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8292:8080"
+    volumes:
+      - ./kiwix-data:/data
+    command: /data/*.zim
+
+  # ── NATS (event publishing) ──────────────────────────────────────────────────
+  # Optional: set NATS_URL=nats://localhost:4222 in searxng-mcp env to enable.
+  nats:
+    image: nats:2-alpine
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:4222:4222"
+    command: ["-js"]
+    # For credential-based auth, mount a config file:
+    # volumes:
+    #   - ./nats.conf:/etc/nats/nats.conf:ro
+    # command: ["-c", "/etc/nats/nats.conf"]
+
+volumes:
+  ollama-data:
+
+# ── MCP client configuration ──────────────────────────────────────────────────
+#
+# Full env block for your MCP client config (all services wired):
+#
+#   SEARXNG_URL             http://localhost:8081
+#   CACHE_URL               redis://localhost:6381
+#   FIRECRAWL_URL           http://localhost:3002
+#   FIRECRAWL_API_KEY       placeholder-local
+#   CRAWL4AI_URL            http://localhost:11235
+#   RERANKER_URL            http://localhost:8787
+#   OLLAMA_URL              http://localhost:11434
+#   OLLAMA_EXPAND_MODEL     qwen3:4b
+#   OLLAMA_SUMMARIZE_MODEL  qwen3:14b
+#   EXPAND_QUERIES          false
+#   KIWIX_URL               http://localhost:8292
+#   WAYBACK_ENABLED         false
+#   NATS_URL                nats://localhost:4222
+#   CACHE_TTL_SECONDS       3600
+#   FETCH_CACHE_TTL_SECONDS 86400
+#   RERANK_RECENCY_WEIGHT   0.15

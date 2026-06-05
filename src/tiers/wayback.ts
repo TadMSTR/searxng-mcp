@@ -20,15 +20,27 @@ export async function waybackFetch(
       string,
       unknown
     >;
-    const snapshotUrl = (
-      data.archived_snapshots as Record<string, { url?: string }>
-    )?.closest?.url;
-    if (!snapshotUrl) return null;
+    const closest = (
+      data.archived_snapshots as Record<
+        string,
+        { url?: string; timestamp?: string }
+      >
+    )?.closest;
+    if (!closest?.url) return null;
+
+    const archiveDate = closest.timestamp
+      ? `${closest.timestamp.slice(0, 4)}-${closest.timestamp.slice(4, 6)}-${closest.timestamp.slice(6, 8)}`
+      : "unknown date";
+    const provenance = `> [via Wayback Machine, archived ${archiveDate}]\n\n`;
 
     // Snapshot URLs are always archive.org — public, passes assertPublicUrl.
     // rawFetch calls assertPublicUrl internally.
-    const result = await rawFetch(snapshotUrl, maxChars);
-    return { ...result, title: `[Archived] ${result.title}` };
+    const result = await rawFetch(closest.url, maxChars);
+    return {
+      ...result,
+      title: `[Archived] ${result.title}`,
+      text: provenance + result.text,
+    };
   } catch {
     return null;
   }

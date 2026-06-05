@@ -25,6 +25,13 @@ function install() {
   if (process.env._ADBLOCK_LOADED) return;
   process.env._ADBLOCK_LOADED = "1";
 
+  try {
+    const pkg = require("/app/package.json");
+    console.log(`[adblock] wrapping puppeteer-service ${pkg.version}`);
+  } catch {
+    console.log("[adblock] wrapping puppeteer-service (version unknown)");
+  }
+
 const FILTER_URLS = (
   process.env.ADBLOCK_FILTERS_URL ||
   "https://easylist.to/easylist/easylist.txt,https://easylist.to/easylist/easyprivacy.txt"

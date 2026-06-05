@@ -3,9 +3,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("../src/cache.js", () => ({
   cacheGet: vi.fn(),
   cacheSet: vi.fn(),
+  cacheAtomicUpdate: vi.fn(),
 }));
 
-import { cacheGet, cacheSet } from "../src/cache.js";
+import { cacheAtomicUpdate, cacheGet } from "../src/cache.js";
 import {
   _clearWriteLocksForTests,
   type DomainRecord,
@@ -19,11 +20,23 @@ import {
 } from "../src/domain-db.js";
 
 const cacheGetMock = vi.mocked(cacheGet);
-const cacheSetMock = vi.mocked(cacheSet);
+const cacheAtomicUpdateMock = vi.mocked(cacheAtomicUpdate);
 
-function lastWrittenRecord(): DomainRecord {
-  const lastCall = cacheSetMock.mock.calls[cacheSetMock.mock.calls.length - 1];
-  return JSON.parse(lastCall[1] as string) as DomainRecord;
+// Simulate an atomic update: call mutateFn with the current stored value and
+// capture the result. Mimics the WATCH/MULTI/EXEC contract in tests.
+function setupAtomicMock(initial: string | null = null): {
+  getStored: () => string | null;
+} {
+  let stored: string | null = initial;
+  cacheAtomicUpdateMock.mockImplementation(async (_key, _ttl, mutateFn) => {
+    stored = mutateFn(stored);
+  });
+  return { getStored: () => stored };
+}
+
+function lastWrittenRecord(stored: string | null): DomainRecord {
+  if (!stored) throw new Error("No record written");
+  return JSON.parse(stored) as DomainRecord;
 }
 
 describe("normalizeHostname", () => {
@@ -55,16 +68,16 @@ describe("normalizeHostname", () => {
 describe("recordTierAttempt", () => {
   beforeEach(() => {
     cacheGetMock.mockReset();
-    cacheSetMock.mockReset();
+    cacheAtomicUpdateMock.mockReset();
     _clearWriteLocksForTests();
   });
 
   afterEach(() => vi.restoreAllMocks());
 
   it("creates a new record on the first call", async () => {
-    cacheGetMock.mockResolvedValue(null);
+    const { getStored } = setupAtomicMock(null);
     await recordTierAttempt("https://example.com/p", "tier1_firecrawl", "hit");
-    const written = lastWrittenRecord();
+    const written = lastWrittenRecord(getStored());
     expect(written.domain).toBe("example.com");
     expect(written.schema_version).toBe(2);
     expect(written.tier_stats_30d.tier1.attempts).toBe(1);
@@ -85,14 +98,14 @@ describe("recordTierAttempt", () => {
         tier3: { attempts: 0, ok: 0, fail: 0, window_start_ms: Date.now() },
       },
     };
-    cacheGetMock.mockResolvedValue(JSON.stringify(seed));
+    const { getStored } = setupAtomicMock(JSON.stringify(seed));
     await recordTierAttempt(
       "https://example.com/p",
       "tier1_firecrawl",
       "error",
       "timeout",
     );
-    const written = lastWrittenRecord();
+    const written = lastWrittenRecord(getStored());
     expect(written.tier_stats_30d.tier1.attempts).toBe(3);
     expect(written.tier_stats_30d.tier1.fail).toBe(2);
     expect(written.tier_stats_30d.tier1.last_fail_reason).toBe("timeout");
@@ -118,9 +131,9 @@ describe("recordTierAttempt", () => {
         tier3: { attempts: 0, ok: 0, fail: 0, window_start_ms: Date.now() },
       },
     };
-    cacheGetMock.mockResolvedValue(JSON.stringify(seed));
+    const { getStored } = setupAtomicMock(JSON.stringify(seed));
     await recordTierAttempt("https://example.com/p", "tier1_firecrawl", "hit");
-    const written = lastWrittenRecord();
+    const written = lastWrittenRecord(getStored());
     // Old window expired — counters reset, then this one attempt recorded
     expect(written.tier_stats_30d.tier1.attempts).toBe(1);
     expect(written.tier_stats_30d.tier1.ok).toBe(1);
@@ -132,33 +145,33 @@ describe("recordTierAttempt", () => {
   });
 
   it("does not throw on malformed cache content", async () => {
-    cacheGetMock.mockResolvedValue("{not json");
+    const { getStored } = setupAtomicMock("{not json");
     await expect(
       recordTierAttempt("https://example.com/p", "tier2_crawl4ai", "hit"),
     ).resolves.toBeUndefined();
     // A fresh record should be created and written.
-    expect(cacheSetMock).toHaveBeenCalled();
+    expect(cacheAtomicUpdateMock).toHaveBeenCalled();
+    expect(getStored()).not.toBeNull();
   });
 
   it("treats normalized hostnames as the same record", async () => {
-    cacheGetMock.mockResolvedValue(null);
+    setupAtomicMock(null);
     await recordTierAttempt(
       "https://www.Example.com/p",
       "tier1_firecrawl",
       "hit",
     );
-    const key = cacheSetMock.mock.calls[0][0] as string;
+    const key = cacheAtomicUpdateMock.mock.calls[0][0] as string;
     expect(key).toBe("domain:example.com");
   });
 
   it("serializes concurrent writes for the same hostname (no read-modify-write race)", async () => {
     // Simulate the in-fetch race: tier attempt, robots probe, and post-extract
-    // sample all fire concurrently for one URL. With proper serialization the
-    // final record reflects all three updates.
+    // sample all fire concurrently for one URL. With atomic writes the final
+    // record must reflect all three updates.
     let stored: string | null = null;
-    cacheGetMock.mockImplementation(async () => stored);
-    cacheSetMock.mockImplementation(async (_k, v) => {
-      stored = v as string;
+    cacheAtomicUpdateMock.mockImplementation(async (_key, _ttl, mutateFn) => {
+      stored = mutateFn(stored);
     });
 
     await Promise.all([
@@ -182,23 +195,23 @@ describe("recordTierAttempt", () => {
 describe("recordLlmsFullProbe", () => {
   beforeEach(() => {
     cacheGetMock.mockReset();
-    cacheSetMock.mockReset();
+    cacheAtomicUpdateMock.mockReset();
     _clearWriteLocksForTests();
   });
 
   it("sets preferred_strategy to llms_full_txt on a present probe", async () => {
-    cacheGetMock.mockResolvedValue(null);
+    const { getStored } = setupAtomicMock(null);
     await recordLlmsFullProbe("https://docs.anthropic.com", true, 76_123_708);
-    const written = lastWrittenRecord();
+    const written = lastWrittenRecord(getStored());
     expect(written.capabilities.llms_full_txt?.present).toBe(true);
     expect(written.capabilities.llms_full_txt?.size_bytes).toBe(76_123_708);
     expect(written.preferred_strategy).toBe("llms_full_txt");
   });
 
   it("records absence without changing preferred_strategy", async () => {
-    cacheGetMock.mockResolvedValue(null);
+    const { getStored } = setupAtomicMock(null);
     await recordLlmsFullProbe("https://docs.openai.com", false);
-    const written = lastWrittenRecord();
+    const written = lastWrittenRecord(getStored());
     expect(written.capabilities.llms_full_txt?.present).toBe(false);
     expect(written.preferred_strategy).toBeUndefined();
   });
@@ -207,22 +220,22 @@ describe("recordLlmsFullProbe", () => {
 describe("recordRobotsProbe", () => {
   beforeEach(() => {
     cacheGetMock.mockReset();
-    cacheSetMock.mockReset();
+    cacheAtomicUpdateMock.mockReset();
     _clearWriteLocksForTests();
   });
 
   it("records a present, allowed result", async () => {
-    cacheGetMock.mockResolvedValue(null);
+    const { getStored } = setupAtomicMock(null);
     await recordRobotsProbe("https://example.com", true, true);
-    const written = lastWrittenRecord();
+    const written = lastWrittenRecord(getStored());
     expect(written.capabilities.robots_txt?.present).toBe(true);
     expect(written.capabilities.robots_txt?.allows_us).toBe(true);
   });
 
   it("records disallow", async () => {
-    cacheGetMock.mockResolvedValue(null);
+    const { getStored } = setupAtomicMock(null);
     await recordRobotsProbe("https://example.com", true, false);
-    const written = lastWrittenRecord();
+    const written = lastWrittenRecord(getStored());
     expect(written.capabilities.robots_txt?.allows_us).toBe(false);
   });
 });
@@ -230,17 +243,17 @@ describe("recordRobotsProbe", () => {
 describe("recordPostExtractSample", () => {
   beforeEach(() => {
     cacheGetMock.mockReset();
-    cacheSetMock.mockReset();
+    cacheAtomicUpdateMock.mockReset();
     _clearWriteLocksForTests();
   });
 
   it("increments sampled and present counters", async () => {
-    cacheGetMock.mockResolvedValue(null);
+    const { getStored } = setupAtomicMock(null);
     await recordPostExtractSample("https://example.com/page", {
       jsonLdPresent: true,
       ogTitlePresent: true,
     });
-    const written = lastWrittenRecord();
+    const written = lastWrittenRecord(getStored());
     expect(written.capabilities.json_ld_article?.sampled).toBe(1);
     expect(written.capabilities.json_ld_article?.present).toBe(1);
     expect(written.capabilities.og_title?.sampled).toBe(1);
@@ -251,7 +264,7 @@ describe("recordPostExtractSample", () => {
 describe("shouldSkipJsonLdPostExtract", () => {
   beforeEach(() => {
     cacheGetMock.mockReset();
-    cacheSetMock.mockReset();
+    cacheAtomicUpdateMock.mockReset();
     _clearWriteLocksForTests();
   });
 

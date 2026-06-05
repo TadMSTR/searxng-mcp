@@ -6,6 +6,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+- `CACHE_URL` is now the canonical cache backend env var; `VALKEY_URL` and `REDIS_URL` are accepted as backward-compatible aliases. Works with Redis, Valkey, and Dragonfly.
+
 ## [3.8.0] - 2026-06-05
 
 ### Added
