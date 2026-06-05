@@ -13,7 +13,7 @@ await initEvents();
 
 const server = new McpServer({
   name: "searxng-mcp",
-  version: "3.9.0",
+  version: "3.10.0",
 });
 
 registerTools(server);
@@ -36,9 +36,9 @@ if (TRANSPORT === "http") {
 
   const httpServer = createServer((req, res) => {
     transport.handleRequest(req, res).catch((err: unknown) => {
-      const msg = err instanceof Error ? err.message : String(err);
+      console.error("[searxng-mcp] HTTP transport error:", err);
       res.writeHead(500, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ error: msg }));
+      res.end(JSON.stringify({ error: "Internal server error" }));
     });
   });
 
