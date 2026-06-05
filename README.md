@@ -99,18 +99,24 @@ flowchart TD
     t4 -->|success| result
     post --> result
 
-    style kiwix fill:#fff9c4,stroke:#d6b656
-    style kiwix_fetch fill:#fff9c4,stroke:#d6b656
-    style llms fill:#dae8fc,stroke:#6c8ebf
-    style llms_fetch fill:#dae8fc,stroke:#6c8ebf
-    style github fill:#dae8fc,stroke:#6c8ebf
-    style gh_fetch fill:#dae8fc,stroke:#6c8ebf
-    style t1 fill:#d5e8d4,stroke:#82b366
-    style t2 fill:#d5e8d4,stroke:#82b366
-    style t3 fill:#d5e8d4,stroke:#82b366
-    style t4 fill:#f8cecc,stroke:#b85450
-    style post fill:#e1d5e7,stroke:#9673a6
-    style tier_skip fill:#f5f5f5,stroke:#666666,color:#333333
+    style entry fill:#ffffff,stroke:#333333,color:#000000
+    style cache fill:#ffffff,stroke:#333333,color:#000000
+    style cached fill:#ffffff,stroke:#333333,color:#000000
+    style github fill:#dae8fc,stroke:#6c8ebf,color:#000000
+    style gh_fetch fill:#dae8fc,stroke:#6c8ebf,color:#000000
+    style llms fill:#dae8fc,stroke:#6c8ebf,color:#000000
+    style llms_fetch fill:#dae8fc,stroke:#6c8ebf,color:#000000
+    style kiwix fill:#fff9c4,stroke:#b8860b,color:#000000
+    style kiwix_fetch fill:#fff9c4,stroke:#b8860b,color:#000000
+    style pdf fill:#ffffff,stroke:#333333,color:#000000
+    style robots fill:#ffffff,stroke:#333333,color:#000000
+    style tier_skip fill:#f5f5f5,stroke:#666666,color:#000000
+    style t1 fill:#d5e8d4,stroke:#5a8a4a,color:#000000
+    style t2 fill:#d5e8d4,stroke:#5a8a4a,color:#000000
+    style t3 fill:#d5e8d4,stroke:#5a8a4a,color:#000000
+    style t4 fill:#f8cecc,stroke:#a03030,color:#000000
+    style post fill:#e1d5e7,stroke:#7a5a8a,color:#000000
+    style result fill:#ffffff,stroke:#333333,color:#000000
 ```
 
 SearXNG and Firecrawl are required. Crawl4AI, Valkey, Ollama, Kiwix, and the reranker are optional — the server degrades gracefully when any of these are unavailable.
