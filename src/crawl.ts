@@ -11,7 +11,7 @@ import {
   FIRECRAWL_CRAWL_POLL_INTERVAL_MS,
   FIRECRAWL_URL,
 } from "./config.js";
-import { fetchPage } from "./fetch.js";
+import { assertPublicUrl, fetchPage } from "./fetch.js";
 import { incCounter, recordHistogram } from "./observability.js";
 import { checkRobots, getRobotsForOrigin } from "./robots.js";
 
@@ -180,6 +180,7 @@ export function extractSitemapUrls(xml: string): string[] {
 
 async function fetchSitemapXml(url: string): Promise<string | null> {
   try {
+    assertPublicUrl(url); // SSRF guard — sitemap URLs can come from untrusted robots.txt
     const res = await fetch(url, {
       headers: { "User-Agent": "searxng-mcp" },
       signal: AbortSignal.timeout(10_000),
