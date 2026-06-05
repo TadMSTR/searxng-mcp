@@ -56,7 +56,62 @@ MCP client (stdio)
       └── summarize (opt.) →  Ollama ($OLLAMA_URL)        → synthesized summary ($OLLAMA_SUMMARIZE_MODEL)
 ```
 
-![Fetch routing](assets/fetch-routing.drawio.svg)
+```mermaid
+flowchart TD
+    entry["fetchPage(url)"]
+    cache{"Valkey cache hit?"}
+    cached["→ return cached { title, url, text }"]
+    github{"github.com?"}
+    gh_fetch["GitHub API / raw.githubusercontent.com\n→ return"]
+    llms{"llms.txt domain?"}
+    llms_fetch["Probe /llms-full.txt\nextract matching section\n→ return"]
+    kiwix{"Kiwix host?\nKIWIX_URL set"}
+    kiwix_fetch["Local Kiwix ZIM\nWikipedia · Stack Overflow · Arch Wiki\n→ cache + return"]
+    pdf{".pdf URL?"}
+    robots["robots.txt pre-check — tiers 1–3\ndisallowed → RobotsDisallowedError (cached 24h)"]
+    tier_skip(["Per-domain tier skip\nsuccess rate &lt;30% over ≥10 tries\nor tier_skip operator override"])
+    t1["Tier 1 — Firecrawl\n$FIRECRAWL_URL"]
+    t2["Tier 2 — Crawl4AI\n$CRAWL4AI_URL · optional"]
+    t3["Tier 3 — Raw HTTP + Readability\nfallback: raw HTML slice"]
+    t4["Tier 4 — Wayback Machine CDX API\narchived snapshot · WAYBACK_ENABLED=true"]
+    post["Post-extraction\nJSON-LD Article · title cascade\nog:title → twitter:title → title → h1 → URL"]
+    result["→ return { title, url, text }"]
+
+    entry --> cache
+    cache -->|hit| cached
+    cache -->|miss| github
+    github -->|yes| gh_fetch
+    github -->|no| llms
+    llms -->|yes| llms_fetch
+    llms -->|no| kiwix
+    kiwix -->|yes| kiwix_fetch
+    kiwix -->|no| pdf
+    pdf -->|"yes — skip tier 1"| t2
+    pdf -->|no| robots
+    robots --> tier_skip
+    tier_skip --> t1
+    t1 -->|success| post
+    t1 -->|"empty / error"| t2
+    t2 -->|success| post
+    t2 -->|"empty / error"| t3
+    t3 -->|success| post
+    t3 -->|"empty / error"| t4
+    t4 -->|success| result
+    post --> result
+
+    style kiwix fill:#fff9c4,stroke:#d6b656
+    style kiwix_fetch fill:#fff9c4,stroke:#d6b656
+    style llms fill:#dae8fc,stroke:#6c8ebf
+    style llms_fetch fill:#dae8fc,stroke:#6c8ebf
+    style github fill:#dae8fc,stroke:#6c8ebf
+    style gh_fetch fill:#dae8fc,stroke:#6c8ebf
+    style t1 fill:#d5e8d4,stroke:#82b366
+    style t2 fill:#d5e8d4,stroke:#82b366
+    style t3 fill:#d5e8d4,stroke:#82b366
+    style t4 fill:#f8cecc,stroke:#b85450
+    style post fill:#e1d5e7,stroke:#9673a6
+    style tier_skip fill:#f5f5f5,stroke:#666666,color:#333333
+```
 
 SearXNG and Firecrawl are required. Crawl4AI, Valkey, Ollama, Kiwix, and the reranker are optional — the server degrades gracefully when any of these are unavailable.
 
