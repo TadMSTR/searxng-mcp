@@ -28,7 +28,10 @@ export async function histerFetch(
         params: {
           name: "search",
           arguments: {
-            query: `url:${url}`,
+            // Quoted url: filter prevents query-injection ambiguity from special chars in the URL.
+            // SECURITY[control]: JSON.stringify escapes embedded quotes; url equality check (line 58-59)
+            // ensures only exact-match content is served. Audit: 2026-06-07/hister-searxng-mcp-2026-06.
+            query: `url:"${url}"`,
             fields: ["text"],
             limit: 1,
           },
@@ -74,7 +77,12 @@ export async function histerFetch(
       url,
       text: text.slice(0, maxChars),
     };
-  } catch {
+  } catch (err) {
+    // Log non-timeout errors for ops visibility — token misconfig or Hister down
+    // should appear in stderr, not silently degrade. AbortError = expected timeout.
+    if (err instanceof Error && !err.message.includes("AbortError")) {
+      console.error(`[searxng-mcp] hister fetch error url=${url}: ${err.message}`);
+    }
     return null;
   }
 }
