@@ -56,6 +56,7 @@ Optional services (server degrades gracefully without these):
 | Valkey/Redis/Dragonfly | `CACHE_URL` | Result caching (also accepts `VALKEY_URL` or `REDIS_URL`) |
 | Ollama | `OLLAMA_URL` | Query expansion + summarization |
 | Wayback Machine | `WAYBACK_ENABLED=true` | Archived snapshot fallback (tier 4, opt-in) |
+| Hister | `HISTER_URL`, `HISTER_TOKEN` | Browsing-history index (Firefox extension); fast path before tier cascade for login-walled and JS-heavy pages |
 
 ## Build and run
 

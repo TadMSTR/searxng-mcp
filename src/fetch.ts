@@ -9,6 +9,7 @@ import { getBlockList, urlMatchesDomain } from "./domains.js";
 import { events } from "./events.js";
 import { postExtract } from "./extractors/post-extract.js";
 import { assertPublicUrl, isPdfUrl, type TierResult } from "./fetch-utils.js";
+import { histerFetch } from "./hister.js";
 import { isKiwixHost, kiwixFetch } from "./kiwix.js";
 import { tryLlmsTxtFetch } from "./llms-txt.js";
 import { incCounter, recordHistogram, withSpan } from "./observability.js";
@@ -204,6 +205,32 @@ export async function fetchPage(
         // Kiwix miss (article not in ZIM or Kiwix down) — fall through to cascade
         incCounter("fetch", { tier: "kiwix", outcome: "miss" });
       }
+
+      // Hister fast path — check Ted's browsing-history index before the tier
+      // cascade. Serves pages that are login-walled or JS-heavy (already rendered
+      // by Firefox) and avoids re-fetching stable docs that are indexed here.
+      const hister = await withSpan("hister", { "fetch.url": url }, () =>
+        histerFetch(url, 8000),
+      );
+      if (hister) {
+        incCounter("fetch", { tier: "hister", outcome: "hit" });
+        const persisted = {
+          title: hister.title,
+          url: hister.url,
+          text: hister.text,
+        };
+        await cacheSet(key, JSON.stringify(persisted), FETCH_CACHE_TTL_SECONDS);
+        events.fetchCompleted({
+          url,
+          tier_served: "hister",
+          title: hister.title,
+          text_len: hister.text.length,
+          latency_ms: Date.now() - t_total,
+          source: "hister",
+        });
+        return { ...persisted, text: persisted.text.slice(0, maxChars) };
+      }
+      incCounter("fetch", { tier: "hister", outcome: "miss" });
 
       // robots.txt gate — skips fetch on disallow (cached 24h per origin)
       const robots = await checkRobots(url, "searxng-mcp");
