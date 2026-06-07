@@ -63,6 +63,7 @@ MCP client (stdio)
       │                       (fallback: SearXNG order if reranker unavailable)
       ├── fetch content ────┬→ GitHub API (github.com)    → markdown
       │                     ├→ Kiwix ($KIWIX_URL)         → ZIM content (Wikipedia/SO/Arch Wiki, fast path)
+      │                     ├→ Hister ($HISTER_URL)       → browsing-history index (login-walled/JS-heavy fast path)
       │                     ├→ Firecrawl ($FIRECRAWL_URL) → page markdown (tier 1)
       │                     ├→ Crawl4AI ($CRAWL4AI_URL)  → page markdown (tier 2, optional; via $ADBLOCK_PROXY_URL if set)
       │                     ├→ Raw HTTP + Readability     → page markdown (tier 3 fallback; via $ADBLOCK_PROXY_URL if set)
@@ -367,6 +368,12 @@ Required ZIM files for each supported host:
 
 ZIM files can be downloaded from [library.kiwix.org](https://library.kiwix.org/).
 
+### Hister (optional)
+
+[Hister](https://github.com/nicholasgasior/hister) is a browsing-history index populated by a Firefox extension. When `HISTER_URL` is set, `fetchPage` checks the history index before invoking the tier cascade — useful for login-walled and JS-heavy pages where scrapers fail.
+
+Set `HISTER_URL` to your Hister instance base URL and `HISTER_TOKEN` if bearer token auth is required.
+
 ### Valkey / Redis
 
 Any Redis-compatible instance. Valkey is recommended. Search results are cached for 1 hour; fetched pages for 24 hours. If unavailable, the server operates without caching.
@@ -412,6 +419,8 @@ All service URLs are configurable via environment variables.
 | `WAYBACK_ENABLED` | `false` | Set to `true` to enable Wayback Machine tier-4 fallback — fetches archived snapshots when all three tiers fail |
 | `ADBLOCK_PROXY_URL` | *(unset)* | HTTP proxy URL for tier-2 (Crawl4AI) and tier-3 (raw Node fetch) adblocking — e.g. `http://adblock-proxy:8118`. See `docker/adblock-proxy/`. |
 | `KIWIX_URL` | *(unset)* | kiwix-serve base URL (e.g. `http://localhost:8292`) — enables Kiwix fast path for Wikipedia, Stack Overflow, and Arch Wiki. Feature is disabled and zero-overhead when unset. |
+| `HISTER_URL` | *(unset)* | Hister browsing-history index base URL — enables Hister fast path before the tier cascade for login-walled and JS-heavy pages. Feature disabled and zero-overhead when unset. |
+| `HISTER_TOKEN` | *(unset)* | Bearer token for Hister API authentication. Required when `HISTER_URL` is set and the instance has token auth enabled. |
 | `SEARXNG_MCP_TRANSPORT` | `stdio` | Transport mode: `stdio` (default, single-client) or `http` (shared HTTP/SSE server). |
 | `SEARXNG_MCP_PORT` | `3001` | HTTP listen port (HTTP transport mode only). |
 | `SEARXNG_MCP_HOST` | `127.0.0.1` | HTTP listen address (HTTP transport mode only). |
