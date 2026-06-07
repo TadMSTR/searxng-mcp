@@ -52,7 +52,7 @@ export async function histerFetch(
     if (data.error || !data.result?.content?.length) return null;
 
     const content = data.result.content.find((c) => c.type === "text");
-    if (!content?.text || !content.text.startsWith("Found")) return null;
+    if (!content?.text?.startsWith("Found")) return null;
 
     const raw = content.text;
 
@@ -81,7 +81,9 @@ export async function histerFetch(
     // Log non-timeout errors for ops visibility — token misconfig or Hister down
     // should appear in stderr, not silently degrade. AbortError = expected timeout.
     if (err instanceof Error && !err.message.includes("AbortError")) {
-      console.error(`[searxng-mcp] hister fetch error url=${url}: ${err.message}`);
+      console.error(
+        `[searxng-mcp] hister fetch error url=${url}: ${err.message}`,
+      );
     }
     return null;
   }
