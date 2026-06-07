@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [3.12.0] - 2026-06-07
+
+### Added
+- **Hister fast path** — when `HISTER_URL` and `HISTER_TOKEN` are set, `fetch_url` queries the Hister browsing-history index before invoking the tier cascade. Uses the Hister MCP endpoint (`POST /mcp → tools/call → search`) with a `url:` field filter for exact-URL matching. On a hit, content is served directly and written to the Dragonfly hot cache (24h TTL), skipping Firecrawl/Crawl4AI entirely. Provides access to login-walled and JS-heavy pages already rendered by the browser extension, and avoids re-fetching stable indexed content. Inserted after the Kiwix fast path and before the robots.txt gate. Feature is fully gated — zero overhead when env vars are unset.
+- **New env vars:** `HISTER_URL` (Hister instance base URL), `HISTER_TOKEN` (bearer token for MCP endpoint access).
+
+### Security
+- Hister `url:` filter value wrapped in quotes to prevent query-injection ambiguity from special characters in URLs (`hister.ts`). Belt-and-suspenders: JSON encoding handles embedded characters and the URL equality check on the response prevents serving wrong-page content regardless.
+- Non-timeout errors in `histerFetch` now logged to stderr for ops visibility — auth failures and Hister-down events no longer silently degrade.
+
 ## [3.11.0] - 2026-06-05
 
 ### Added

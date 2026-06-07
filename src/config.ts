@@ -26,6 +26,8 @@ export const OLLAMA_SUMMARIZE_MODEL =
   process.env.OLLAMA_SUMMARIZE_MODEL ?? "qwen3:14b";
 export const EXPAND_QUERIES_DEFAULT = process.env.EXPAND_QUERIES === "true";
 export const KIWIX_URL = process.env.KIWIX_URL?.replace(/\/$/, "") ?? "";
+export const HISTER_URL = process.env.HISTER_URL?.replace(/\/$/, "") ?? "";
+export const HISTER_TOKEN = process.env.HISTER_TOKEN ?? "";
 export const CRAWL4AI_URL = process.env.CRAWL4AI_URL ?? null;
 export const CRAWL4AI_API_TOKEN = process.env.CRAWL4AI_API_TOKEN;
 export const WAYBACK_ENABLED = process.env.WAYBACK_ENABLED === "true";
