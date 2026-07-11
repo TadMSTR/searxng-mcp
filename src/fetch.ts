@@ -18,6 +18,7 @@ import { getTiers, TIER_NAME } from "./routing.js";
 import {
   fetchRawHtmlForMetadata,
   githubFetch,
+  isGithubUrl,
   tier2 as pdfTier,
   waybackFetch,
 } from "./tiers/index.js";
@@ -143,11 +144,9 @@ export async function fetchPage(
       }
     }
 
-    const { hostname } = new URL(url);
-
     let result: TierResult;
     let tierServed = "github";
-    if (hostname === "github.com") {
+    if (isGithubUrl(url)) {
       result = await githubFetch(url, maxChars);
     } else {
       // llms.txt fast path — for whitelisted docs domains, try fetching the

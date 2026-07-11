@@ -6,6 +6,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+- **GitHub fast path now handles `raw.githubusercontent.com` and `api.github.com` directly** — previously the fast path only matched `hostname === "github.com"`, so a direct raw-file or API URL fell through to the generic tier1-3 HTML-scraping cascade and failed 100% of the time (Firecrawl/Crawl4AI can't usefully render a raw text file or bare JSON response). These were the two highest-volume, 100%-failure domains in a month of tracked usage (`raw.githubusercontent.com`: 28 attempts/0 successes, `api.github.com`: 6/0). `githubFetch` now dispatches on hostname: raw URLs are fetched as-is, `api.github.com` responses are decoded (base64 `content` fields) or pretty-printed as JSON, and `github.com/*/blob/*` still rewrites to a raw-content fetch as before.
+
 ### Security
 - **Dependency audit clean** — bumped `undici` to `7.28.0` (patches `GHSA-35p6-xmwp-9g52`, `GHSA-g8m3-5g58-fq7m`, `GHSA-p88m-4jfj-68fv`, `GHSA-pr7r-676h-xcf6`, `GHSA-wgpf-jwqj-8h8p`) and the `@opentelemetry/sdk-node`/`exporter-metrics-otlp-http`/`exporter-trace-otlp-http` trio to `0.220.0` (pulls in `@opentelemetry/core@2.9.0`, `@grpc/grpc-js`, and `protobufjs` patched versions). `pnpm audit --prod` clean: 0 findings (was 17: 7 high, 8 moderate, 2 low).
 
