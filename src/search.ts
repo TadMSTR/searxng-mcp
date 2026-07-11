@@ -4,10 +4,26 @@ import {
   EXPAND_QUERIES_DEFAULT,
   SEARXNG_URL,
 } from "./config.js";
+import { normalizeHostname, recordSearchAppearance } from "./domain-db.js";
 import { applyDomainFilters } from "./domains.js";
 import { withSpan } from "./observability.js";
 import { expandQuery } from "./ollama.js";
 import type { SearxResponse, SearxResult } from "./types.js";
+
+// Fire-and-forget: mark each unique domain among the results as "seen in
+// search" so dump-domain can distinguish that from "never seen at all".
+// Cheap by design — deduplicated to one write per unique domain (not per
+// result URL), no fetch performed, and never awaited on the response path.
+function recordSearchAppearances(results: SearxResult[]): void {
+  const domains = new Set<string>();
+  for (const r of results) {
+    const host = normalizeHostname(r.url);
+    if (host) domains.add(host);
+  }
+  for (const host of domains) {
+    recordSearchAppearance(host).catch(() => {});
+  }
+}
 
 export async function searxSearchSingle(
   query: string,
@@ -58,6 +74,7 @@ export async function searxSearch(
   if (cached && !shouldExpand) {
     try {
       const results = JSON.parse(cached) as SearxResult[];
+      recordSearchAppearances(results);
       // Domain filtering applied after cache retrieval so profile changes take effect immediately
       return applyDomainFilters(results, domainProfile);
     } catch {
@@ -106,6 +123,7 @@ export async function searxSearch(
     // Cache only the original query results (not the expanded pool)
     await cacheSet(key, JSON.stringify(originalResults), CACHE_TTL_SECONDS);
 
+    recordSearchAppearances(merged);
     return applyDomainFilters(merged, domainProfile);
   }
 
@@ -121,5 +139,6 @@ export async function searxSearch(
   // Cache pre-filter results so domain config changes apply retroactively on cache hits
   await cacheSet(key, JSON.stringify(raw), CACHE_TTL_SECONDS);
 
+  recordSearchAppearances(raw);
   return applyDomainFilters(raw, domainProfile);
 }
