@@ -24,6 +24,18 @@ export const OLLAMA_EXPAND_MODEL =
   process.env.OLLAMA_EXPAND_MODEL ?? "qwen3:4b";
 export const OLLAMA_SUMMARIZE_MODEL =
   process.env.OLLAMA_SUMMARIZE_MODEL ?? "qwen3:14b";
+// OpenAI-compatible chat backend for expand + summarize (vLLM, llama.cpp, LM
+// Studio, etc.). When LLM_BASE_URL is set it takes precedence over the Ollama
+// endpoint, so an already-loaded chat model can be reused instead of running a
+// separate Ollama model. LLM_MODEL overrides the per-capability model names.
+// LLM_DISABLE_THINKING (default on) sends `chat_template_kwargs.enable_thinking:
+// false` so reasoning models (e.g. Qwen3) return direct output; set it to
+// "false" for servers that reject that field.
+export const LLM_BASE_URL = (process.env.LLM_BASE_URL ?? "").replace(/\/$/, "");
+export const LLM_MODEL = process.env.LLM_MODEL ?? "";
+export const LLM_API_KEY = process.env.LLM_API_KEY ?? "";
+export const LLM_DISABLE_THINKING =
+  process.env.LLM_DISABLE_THINKING !== "false";
 export const EXPAND_QUERIES_DEFAULT = process.env.EXPAND_QUERIES === "true";
 export const KIWIX_URL = process.env.KIWIX_URL?.replace(/\/$/, "") ?? "";
 export const HISTER_URL = process.env.HISTER_URL?.replace(/\/$/, "") ?? "";
