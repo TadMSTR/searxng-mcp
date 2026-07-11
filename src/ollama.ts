@@ -1,4 +1,8 @@
 import {
+  LLM_API_KEY,
+  LLM_BASE_URL,
+  LLM_DISABLE_THINKING,
+  LLM_MODEL,
   OLLAMA_API_KEY,
   OLLAMA_EXPAND_MODEL,
   OLLAMA_SUMMARIZE_MODEL,
@@ -11,8 +15,65 @@ import type {
   SummaryResult,
 } from "./types.js";
 
+type ChatMessage = { role: string; content: string };
+
+/**
+ * Run a chat completion and return the assistant text.
+ *
+ * Prefers an OpenAI-compatible endpoint (`LLM_BASE_URL`) so an already-loaded
+ * vLLM / llama.cpp / LM Studio model can be reused; otherwise falls back to the
+ * Ollama `/api/chat` endpoint. Both suppress reasoning traces.
+ */
+async function llmChat(
+  model: string,
+  messages: ChatMessage[],
+  timeoutMs: number,
+): Promise<string> {
+  if (LLM_BASE_URL) {
+    const res = await fetch(`${LLM_BASE_URL}/chat/completions`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...(LLM_API_KEY && { Authorization: `Bearer ${LLM_API_KEY}` }),
+      },
+      body: JSON.stringify({
+        model,
+        messages,
+        stream: false,
+        temperature: 0.2,
+        ...(LLM_DISABLE_THINKING
+          ? { chat_template_kwargs: { enable_thinking: false } }
+          : {}),
+      }),
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+    if (!res.ok) throw new Error(`LLM error: ${res.status}`);
+    const data = (await res.json()) as {
+      choices?: Array<{ message?: { content?: string } }>;
+    };
+    return data.choices?.[0]?.message?.content ?? "";
+  }
+  const res = await fetch(`${OLLAMA_URL}/api/chat`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      ...(OLLAMA_API_KEY && { Authorization: `Bearer ${OLLAMA_API_KEY}` }),
+    },
+    body: JSON.stringify({
+      model,
+      messages,
+      stream: false,
+      options: { think: false },
+    }),
+    signal: AbortSignal.timeout(timeoutMs),
+  });
+  if (!res.ok) throw new Error(`Ollama error: ${res.status}`);
+  const data = (await res.json()) as OllamaChatResponse;
+  return data.message.content;
+}
+
 export async function expandQuery(query: string): Promise<string[]> {
-  if (!OLLAMA_URL) return [];
+  if (!OLLAMA_URL && !LLM_BASE_URL) return [];
   const prompt =
     `Generate 2-3 search query variants for the query below. ` +
     `Output ONLY the variant queries, one per line. No numbering, no explanations, no extra text.\n\n` +
@@ -24,25 +85,32 @@ export async function expandQuery(query: string): Promise<string[]> {
     `Output 2 or 3 variants only:`;
 
   try {
-    const res = await fetch(`${OLLAMA_URL}/api/generate`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        ...(OLLAMA_API_KEY && { Authorization: `Bearer ${OLLAMA_API_KEY}` }),
-      },
-      body: JSON.stringify({
-        model: OLLAMA_EXPAND_MODEL,
-        prompt,
-        stream: false,
-        options: { think: false },
-      }),
-      signal: AbortSignal.timeout(12000),
-    });
-
-    if (!res.ok) throw new Error(`Ollama error: ${res.status}`);
-
-    const data = (await res.json()) as OllamaGenerateResponse;
-    return data.response
+    let text: string;
+    if (LLM_BASE_URL) {
+      text = await llmChat(
+        LLM_MODEL || OLLAMA_EXPAND_MODEL,
+        [{ role: "user", content: prompt }],
+        12000,
+      );
+    } else {
+      const res = await fetch(`${OLLAMA_URL}/api/generate`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...(OLLAMA_API_KEY && { Authorization: `Bearer ${OLLAMA_API_KEY}` }),
+        },
+        body: JSON.stringify({
+          model: OLLAMA_EXPAND_MODEL,
+          prompt,
+          stream: false,
+          options: { think: false },
+        }),
+        signal: AbortSignal.timeout(12000),
+      });
+      if (!res.ok) throw new Error(`Ollama error: ${res.status}`);
+      text = ((await res.json()) as OllamaGenerateResponse).response;
+    }
+    return text
       .split("\n")
       .map((line) => line.trim())
       .filter((line) => line.length > 0 && line !== query)
@@ -57,7 +125,7 @@ export async function summarizePages(
   query: string,
   pages: Array<{ title: string; url: string; text: string }>,
 ): Promise<SummaryResult> {
-  if (!OLLAMA_URL) return { summary: "", citations: [] };
+  if (!OLLAMA_URL && !LLM_BASE_URL) return { summary: "", citations: [] };
   if (pages.length === 0) {
     return { summary: "No content to summarize.", citations: [] };
   }
@@ -70,41 +138,28 @@ export async function summarizePages(
     )
     .join("\n\n---\n\n");
 
+  const messages: ChatMessage[] = [
+    {
+      role: "system",
+      content:
+        "You are a research assistant. Synthesize the provided sources to answer the query. " +
+        "Respond with JSON only, no markdown fences, matching this exact schema: " +
+        '{"summary":"<synthesized answer>","citations":[{"url":"<url>","title":"<title>","key_facts":["<fact>"]}]} ' +
+        "Include only sources that contributed to the answer. key_facts: 1-3 short phrases per source.",
+    },
+    {
+      role: "user",
+      content: `Query: ${query}\n\nSources:\n${pageBlocks}`,
+    },
+  ];
+
   try {
-    const res = await fetch(`${OLLAMA_URL}/api/chat`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        ...(OLLAMA_API_KEY && { Authorization: `Bearer ${OLLAMA_API_KEY}` }),
-      },
-      body: JSON.stringify({
-        model: OLLAMA_SUMMARIZE_MODEL,
-        messages: [
-          {
-            role: "system",
-            content:
-              "You are a research assistant. Synthesize the provided sources to answer the query. " +
-              "Respond with JSON only, no markdown fences, matching this exact schema: " +
-              '{"summary":"<synthesized answer>","citations":[{"url":"<url>","title":"<title>","key_facts":["<fact>"]}]} ' +
-              "Include only sources that contributed to the answer. key_facts: 1-3 short phrases per source.",
-          },
-          {
-            role: "user",
-            content: `Query: ${query}\n\nSources:\n${pageBlocks}`,
-          },
-        ],
-        stream: false,
-        options: { think: false },
-      }),
-      signal: AbortSignal.timeout(45000),
-    });
-
-    if (!res.ok) throw new Error(`Ollama error: ${res.status}`);
-
-    const data = (await res.json()) as OllamaChatResponse;
-    const raw = (data.message.content.match(/\{[\s\S]*\}/) ?? [
-      data.message.content,
-    ])[0];
+    const content = await llmChat(
+      LLM_MODEL || OLLAMA_SUMMARIZE_MODEL,
+      messages,
+      45000,
+    );
+    const raw = (content.match(/\{[\s\S]*\}/) ?? [content])[0];
     // The model controls this JSON, so treat it as untrusted and normalize
     // each citation to the Citation contract here — the trust boundary. A
     // model may return a citation without `key_facts` (or url/title), which

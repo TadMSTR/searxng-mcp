@@ -5,17 +5,25 @@ const mockFetch = vi.fn();
 vi.stubGlobal("fetch", mockFetch);
 
 // Reset env before each test; individual tests set what they need
+const LLM_ENV = [
+  "OLLAMA_URL",
+  "OLLAMA_API_KEY",
+  "LLM_BASE_URL",
+  "LLM_MODEL",
+  "LLM_API_KEY",
+  "LLM_DISABLE_THINKING",
+];
+function clearLlmEnv() {
+  for (const k of LLM_ENV) delete process.env[k];
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
   vi.resetModules();
-  delete process.env.OLLAMA_URL;
-  delete process.env.OLLAMA_API_KEY;
+  clearLlmEnv();
 });
 
-afterEach(() => {
-  delete process.env.OLLAMA_URL;
-  delete process.env.OLLAMA_API_KEY;
-});
+afterEach(clearLlmEnv);
 
 describe("expandQuery", () => {
   it("returns empty array when OLLAMA_URL is not set", async () => {
@@ -217,5 +225,91 @@ describe("formatSummaryResult", () => {
     });
     expect(out).toContain("- f1");
     expect(out).toContain("- f2");
+  });
+});
+
+describe("OpenAI-compatible backend (LLM_BASE_URL)", () => {
+  const okJson = (content: string) => ({
+    ok: true,
+    json: () => Promise.resolve({ choices: [{ message: { content } }] }),
+  });
+  const lastCall = () => mockFetch.mock.calls[0] as [string, RequestInit];
+  const bodyOf = (opts: RequestInit) => JSON.parse(opts.body as string);
+
+  it("summarizePages POSTs to <LLM_BASE_URL>/chat/completions with thinking disabled and LLM_MODEL", async () => {
+    process.env.LLM_BASE_URL = "http://llm:8000/v1";
+    process.env.LLM_MODEL = "my-model";
+    const { summarizePages } = await import("../src/ollama.js");
+    mockFetch.mockResolvedValueOnce(
+      okJson(JSON.stringify({ summary: "s", citations: [] })),
+    );
+    const result = await summarizePages("q", [
+      { title: "T", url: "https://e.com", text: "t" },
+    ]);
+    const [url, opts] = lastCall();
+    expect(url).toBe("http://llm:8000/v1/chat/completions");
+    const body = bodyOf(opts);
+    expect(body.model).toBe("my-model");
+    expect(body.chat_template_kwargs).toEqual({ enable_thinking: false });
+    expect(
+      (opts.headers as Record<string, string>).Authorization,
+    ).toBeUndefined();
+    expect(result.summary).toBe("s");
+  });
+
+  it("strips a single trailing slash from LLM_BASE_URL", async () => {
+    process.env.LLM_BASE_URL = "http://llm:8000/v1/";
+    const { summarizePages } = await import("../src/ollama.js");
+    mockFetch.mockResolvedValueOnce(okJson('{"summary":"s","citations":[]}'));
+    await summarizePages("q", [
+      { title: "T", url: "https://e.com", text: "t" },
+    ]);
+    expect(lastCall()[0]).toBe("http://llm:8000/v1/chat/completions");
+  });
+
+  it("omits chat_template_kwargs when LLM_DISABLE_THINKING=false", async () => {
+    process.env.LLM_BASE_URL = "http://llm:8000/v1";
+    process.env.LLM_DISABLE_THINKING = "false";
+    const { summarizePages } = await import("../src/ollama.js");
+    mockFetch.mockResolvedValueOnce(okJson('{"summary":"s","citations":[]}'));
+    await summarizePages("q", [
+      { title: "T", url: "https://e.com", text: "t" },
+    ]);
+    expect(bodyOf(lastCall()[1]).chat_template_kwargs).toBeUndefined();
+  });
+
+  it("adds Authorization when LLM_API_KEY is set", async () => {
+    process.env.LLM_BASE_URL = "http://llm:8000/v1";
+    process.env.LLM_API_KEY = "sk-abc";
+    const { summarizePages } = await import("../src/ollama.js");
+    mockFetch.mockResolvedValueOnce(okJson('{"summary":"s","citations":[]}'));
+    await summarizePages("q", [
+      { title: "T", url: "https://e.com", text: "t" },
+    ]);
+    expect(
+      (lastCall()[1].headers as Record<string, string>).Authorization,
+    ).toBe("Bearer sk-abc");
+  });
+
+  it("degrades to empty summary when choices are missing", async () => {
+    process.env.LLM_BASE_URL = "http://llm:8000/v1";
+    const { summarizePages } = await import("../src/ollama.js");
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: () => Promise.resolve({}),
+    });
+    const result = await summarizePages("q", [
+      { title: "T", url: "https://e.com", text: "t" },
+    ]);
+    expect(result).toEqual({ summary: "", citations: [] });
+  });
+
+  it("expandQuery uses /chat/completions when LLM_BASE_URL is set", async () => {
+    process.env.LLM_BASE_URL = "http://llm:8000/v1";
+    const { expandQuery } = await import("../src/ollama.js");
+    mockFetch.mockResolvedValueOnce(okJson("variant one\nvariant two"));
+    const result = await expandQuery("orig");
+    expect(lastCall()[0]).toBe("http://llm:8000/v1/chat/completions");
+    expect(result).toEqual(["variant one", "variant two"]);
   });
 });

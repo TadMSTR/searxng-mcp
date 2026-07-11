@@ -404,6 +404,10 @@ All service URLs are configurable via environment variables.
 | `OLLAMA_API_KEY` | *(unset)* | Bearer token for authenticated Ollama proxies — adds `Authorization: Bearer <key>` header when set |
 | `OLLAMA_EXPAND_MODEL` | `qwen3:4b` | Model used by query expansion (`expand` parameter). Override without rebuilding. |
 | `OLLAMA_SUMMARIZE_MODEL` | `qwen3:14b` | Model used by `search_and_summarize`. Override without rebuilding. |
+| `LLM_BASE_URL` | *(unset)* | OpenAI-compatible chat endpoint (e.g. vLLM, llama.cpp, LM Studio) for `expand` + `search_and_summarize`. Must include the API path — e.g. `http://host:8000/v1` — the server appends `/chat/completions`. When set, takes precedence over `OLLAMA_URL`, so an already-loaded model can be reused instead of running a separate Ollama model. |
+| `LLM_MODEL` | *(unset)* | Model id for the OpenAI-compatible backend; overrides `OLLAMA_EXPAND_MODEL` / `OLLAMA_SUMMARIZE_MODEL` when set. |
+| `LLM_API_KEY` | *(unset)* | Bearer token for the OpenAI-compatible backend — adds `Authorization: Bearer <key>` when set. |
+| `LLM_DISABLE_THINKING` | `true` | Sends `chat_template_kwargs.enable_thinking: false` so reasoning models (e.g. Qwen3) return direct output. Set to `false` for servers that reject that field. |
 | `CACHE_URL` | `redis://localhost:6381` | Redis-compatible URL — enables result caching. Also accepts `VALKEY_URL` or `REDIS_URL` as aliases. Works with Redis, Valkey, and Dragonfly. Server degrades gracefully if unavailable. |
 | `CACHE_TTL_SECONDS` | `3600` | Search result cache TTL in seconds |
 | `FETCH_CACHE_TTL_SECONDS` | `86400` | Fetched page cache TTL in seconds |
