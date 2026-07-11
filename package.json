@@ -15,6 +15,7 @@
     "build": "tsc && chmod 755 build/src/index.js",
     "test": "vitest run --typecheck",
     "test:watch": "vitest --typecheck",
+    "coverage": "vitest run --coverage",
     "lint": "biome check src/ tests/",
     "lint:fix": "biome check --write src/ tests/",
     "dump-domain": "node build/src/cli/dump-domain.js"
@@ -57,6 +58,7 @@
     "@biomejs/biome": "^2.5.3",
     "@types/jsdom": "^28.0.3",
     "@types/node": "^22.20.1",
+    "@vitest/coverage-v8": "^4.1.10",
     "typescript": "^5.9.3",
     "vitest": "^4.1.10"
   },
