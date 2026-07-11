@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [3.13.0] - 2026-07-11
+
 ### Added
 - **Test coverage tooling** — `@vitest/coverage-v8` wired into `vitest.config.ts` (`pnpm coverage`), with a threshold floor set from the measured post-coverage baseline (70% statements, 63% branches, 73% functions, 72% lines). CI runs it on the Node 22 leg.
 - **Test coverage for previously-untested files** — `src/tiers/github.ts`, `src/hister.ts`, `src/cli/dump-domain.ts`, and `src/config.ts` had zero test coverage; all four now have dedicated suites (35 new tests, on top of the 22 added for the GitHub routing fix above). `src/cli/dump-domain.ts`'s top-level CLI invocation is now guarded behind an `import.meta.url` entrypoint check so `main()` can be imported and unit-tested without triggering `process.exit`.
