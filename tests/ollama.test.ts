@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { Citation } from "../src/types.js";
 
 const mockFetch = vi.fn();
 vi.stubGlobal("fetch", mockFetch);
@@ -141,5 +142,80 @@ describe("summarizePages", () => {
       { title: "T", url: "https://example.com", text: "t" },
     ]);
     expect(result).toEqual({ summary: "", citations: [] });
+  });
+
+  it("normalizes a citation missing key_facts to an empty array", async () => {
+    // Regression: a model may omit key_facts. Previously this survived
+    // summarizePages and later crashed formatSummaryResult on
+    // `c.key_facts.map(...)`.
+    process.env.OLLAMA_URL = "http://ollama:11434";
+    const { summarizePages } = await import("../src/ollama.js");
+    const payload = {
+      summary: "answer",
+      citations: [{ url: "https://example.com", title: "Example" }],
+    };
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: () =>
+        Promise.resolve({ message: { content: JSON.stringify(payload) } }),
+    });
+    const result = await summarizePages("query", [
+      { title: "Example", url: "https://example.com", text: "t" },
+    ]);
+    expect(result.citations).toHaveLength(1);
+    expect(result.citations[0].key_facts).toEqual([]);
+  });
+
+  it("drops non-string key_facts entries", async () => {
+    process.env.OLLAMA_URL = "http://ollama:11434";
+    const { summarizePages } = await import("../src/ollama.js");
+    const payload = {
+      summary: "answer",
+      citations: [
+        { url: "https://x.com", title: "X", key_facts: ["ok", 42, null] },
+      ],
+    };
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: () =>
+        Promise.resolve({ message: { content: JSON.stringify(payload) } }),
+    });
+    const result = await summarizePages("query", [
+      { title: "X", url: "https://x.com", text: "t" },
+    ]);
+    expect(result.citations[0].key_facts).toEqual(["ok"]);
+  });
+});
+
+describe("formatSummaryResult", () => {
+  it("returns empty string when summary is empty", async () => {
+    const { formatSummaryResult } = await import("../src/ollama.js");
+    expect(formatSummaryResult({ summary: "", citations: [] })).toBe("");
+  });
+
+  it("does not throw when a citation is missing key_facts", async () => {
+    // Defensive: the exported formatter must tolerate malformed citations
+    // even if a caller bypasses summarizePages' normalization.
+    const { formatSummaryResult } = await import("../src/ollama.js");
+    const out = formatSummaryResult({
+      summary: "answer",
+      citations: [
+        { url: "https://example.com", title: "Example" } as unknown as Citation,
+      ],
+    });
+    expect(out).toContain("answer");
+    expect(out).toContain("https://example.com");
+  });
+
+  it("renders key_facts as bulleted lines when present", async () => {
+    const { formatSummaryResult } = await import("../src/ollama.js");
+    const out = formatSummaryResult({
+      summary: "answer",
+      citations: [
+        { url: "https://x.com", title: "X", key_facts: ["f1", "f2"] },
+      ],
+    });
+    expect(out).toContain("- f1");
+    expect(out).toContain("- f2");
   });
 });

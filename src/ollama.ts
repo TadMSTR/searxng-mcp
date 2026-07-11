@@ -105,10 +105,37 @@ export async function summarizePages(
     const raw = (data.message.content.match(/\{[\s\S]*\}/) ?? [
       data.message.content,
     ])[0];
-    const parsed = JSON.parse(raw) as SummaryResult;
+    // The model controls this JSON, so treat it as untrusted and normalize
+    // each citation to the Citation contract here — the trust boundary. A
+    // model may return a citation without `key_facts` (or url/title), which
+    // previously reached formatSummaryResult and crashed it on
+    // `c.key_facts.map(...)`.
+    const parsed = JSON.parse(raw) as {
+      summary?: unknown;
+      citations?: unknown;
+    };
+    const citations: Citation[] = Array.isArray(parsed.citations)
+      ? parsed.citations.map((c): Citation => {
+          const entry = (c ?? {}) as {
+            url?: unknown;
+            title?: unknown;
+            key_facts?: unknown;
+          };
+          const url = typeof entry.url === "string" ? entry.url : "";
+          return {
+            url,
+            title: typeof entry.title === "string" ? entry.title : url,
+            key_facts: Array.isArray(entry.key_facts)
+              ? entry.key_facts.filter(
+                  (f): f is string => typeof f === "string",
+                )
+              : [],
+          };
+        })
+      : [];
     return {
-      summary: parsed.summary ?? "",
-      citations: Array.isArray(parsed.citations) ? parsed.citations : [],
+      summary: typeof parsed.summary === "string" ? parsed.summary : "",
+      citations,
     };
   } catch {
     // Ollama unavailable, timeout, or parse error — return null to signal fallback
@@ -118,9 +145,11 @@ export async function summarizePages(
 
 export function formatSummaryResult(result: SummaryResult): string {
   if (!result.summary) return "";
-  const citationText = result.citations
+  const citationText = (result.citations ?? [])
     .map((c: Citation) => {
-      const facts = c.key_facts.map((f) => `     - ${f}`).join("\n");
+      const facts = (Array.isArray(c.key_facts) ? c.key_facts : [])
+        .map((f) => `     - ${f}`)
+        .join("\n");
       return `  - ${c.title}\n    URL: ${c.url}\n${facts}`;
     })
     .join("\n\n");
