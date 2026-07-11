@@ -65,6 +65,39 @@ describe("isGithubUrl", () => {
   });
 });
 
+describe("githubFetch — SSRF guards", () => {
+  it("rejects a non-http(s) protocol before any fetch call (SSRF-08)", async () => {
+    await expect(
+      githubFetch("ftp://raw.githubusercontent.com/a/b/main/f.txt"),
+    ).rejects.toThrow("Only http/https URLs are supported");
+    expect(mockFetch).not.toHaveBeenCalled();
+  });
+
+  it("does not follow a redirect and does not leak the Location target (SSRF-02/OE-02)", async () => {
+    mockFetch.mockResolvedValueOnce({
+      ok: false,
+      status: 302,
+      statusText: "Found",
+      headers: new Headers({
+        Location: "http://169.254.169.254/latest/meta-data",
+      }),
+      text: () => Promise.resolve(""),
+    });
+    let thrown: Error | undefined;
+    try {
+      await githubFetch("https://raw.githubusercontent.com/a/b/main/f.txt");
+    } catch (err) {
+      thrown = err as Error;
+    }
+    expect(thrown?.message).toBe(
+      "GitHub raw fetch error: redirect not followed (302)",
+    );
+    expect(thrown?.message).not.toContain("169.254.169.254");
+    const [, init] = mockFetch.mock.calls[0];
+    expect(init.redirect).toBe("manual");
+  });
+});
+
 describe("githubFetch — raw.githubusercontent.com", () => {
   const RAW_URL =
     "https://raw.githubusercontent.com/TadMSTR/searxng-mcp/main/src/index.ts";

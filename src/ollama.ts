@@ -17,6 +17,22 @@ import type {
 
 type ChatMessage = { role: string; content: string };
 
+// F-01 (security audit, PR #15/#16): LLM_API_KEY over a plain-http
+// LLM_BASE_URL transmits the bearer token in cleartext. Not a merge
+// blocker — many LLM_BASE_URL deployments are on a trusted internal
+// network — but worth a loud one-time warning so it's a deliberate choice.
+let warnedCleartextLlmCredential = false;
+
+function warnIfCleartextLlmCredential(): void {
+  if (warnedCleartextLlmCredential) return;
+  if (LLM_API_KEY && LLM_BASE_URL.startsWith("http://")) {
+    warnedCleartextLlmCredential = true;
+    console.error(
+      `[searxng-mcp] LLM_API_KEY is set with a plain-http LLM_BASE_URL ("${LLM_BASE_URL}") — the bearer token will transmit in cleartext. Use an https:// LLM_BASE_URL, or confirm this is an internal/trusted network.`,
+    );
+  }
+}
+
 /**
  * Run a chat completion and return the assistant text.
  *
@@ -30,6 +46,7 @@ async function llmChat(
   timeoutMs: number,
 ): Promise<string> {
   if (LLM_BASE_URL) {
+    warnIfCleartextLlmCredential();
     const res = await fetch(`${LLM_BASE_URL}/chat/completions`, {
       method: "POST",
       headers: {

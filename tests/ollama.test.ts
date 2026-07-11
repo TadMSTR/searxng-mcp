@@ -313,3 +313,62 @@ describe("OpenAI-compatible backend (LLM_BASE_URL)", () => {
     expect(result).toEqual(["variant one", "variant two"]);
   });
 });
+
+describe("F-01: cleartext LLM credential warning", () => {
+  const okJson = (content: string) => ({
+    ok: true,
+    json: () => Promise.resolve({ choices: [{ message: { content } }] }),
+  });
+
+  it("warns once when LLM_API_KEY is set with a plain-http LLM_BASE_URL", async () => {
+    const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    process.env.LLM_BASE_URL = "http://llm:8000/v1";
+    process.env.LLM_API_KEY = "sk-abc";
+    const { summarizePages } = await import("../src/ollama.js");
+    mockFetch.mockResolvedValue(okJson('{"summary":"s","citations":[]}'));
+
+    await summarizePages("q", [
+      { title: "T", url: "https://e.com", text: "t" },
+    ]);
+    await summarizePages("q", [
+      { title: "T", url: "https://e.com", text: "t" },
+    ]);
+
+    const cleartextWarnings = errSpy.mock.calls.filter((c) =>
+      String(c[0]).includes("cleartext"),
+    );
+    expect(cleartextWarnings).toHaveLength(1);
+    expect(cleartextWarnings[0][0]).toContain("http://llm:8000/v1");
+  });
+
+  it("does not warn when LLM_BASE_URL is https", async () => {
+    const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    process.env.LLM_BASE_URL = "https://llm:8000/v1";
+    process.env.LLM_API_KEY = "sk-abc";
+    const { summarizePages } = await import("../src/ollama.js");
+    mockFetch.mockResolvedValue(okJson('{"summary":"s","citations":[]}'));
+
+    await summarizePages("q", [
+      { title: "T", url: "https://e.com", text: "t" },
+    ]);
+
+    expect(
+      errSpy.mock.calls.some((c) => String(c[0]).includes("cleartext")),
+    ).toBe(false);
+  });
+
+  it("does not warn when LLM_API_KEY is unset", async () => {
+    const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    process.env.LLM_BASE_URL = "http://llm:8000/v1";
+    const { summarizePages } = await import("../src/ollama.js");
+    mockFetch.mockResolvedValue(okJson('{"summary":"s","citations":[]}'));
+
+    await summarizePages("q", [
+      { title: "T", url: "https://e.com", text: "t" },
+    ]);
+
+    expect(
+      errSpy.mock.calls.some((c) => String(c[0]).includes("cleartext")),
+    ).toBe(false);
+  });
+});

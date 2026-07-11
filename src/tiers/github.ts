@@ -1,5 +1,5 @@
 import { GITHUB_TOKEN } from "../config.js";
-import { USER_AGENT } from "../fetch-utils.js";
+import { assertPublicUrl, USER_AGENT } from "../fetch-utils.js";
 import type { GitHubReadmeResponse } from "../types.js";
 
 /** Hostnames handled by this tier's fast path. */
@@ -33,17 +33,39 @@ function apiHeaders(): Record<string, string> {
   return headers;
 }
 
+// SSRF-02: redirect: "manual" + explicit 3xx rejection prevents a public
+// GitHub URL from redirecting to an internal address and bypassing
+// assertPublicUrl (which only validates the original URL). Location header
+// is deliberately not echoed in the error — that would leak an internal
+// address to the MCP caller (OE-02).
+async function fetchWithRedirectGuard(
+  url: string,
+  headers: Record<string, string>,
+  errorPrefix: string,
+): Promise<Response> {
+  const res = await fetch(url, {
+    headers,
+    redirect: "manual",
+    signal: AbortSignal.timeout(10000),
+  });
+  if (res.status >= 300 && res.status < 400) {
+    throw new Error(`${errorPrefix}: redirect not followed (${res.status})`);
+  }
+  if (!res.ok)
+    throw new Error(`${errorPrefix}: ${res.status} ${res.statusText}`);
+  return res;
+}
+
 /** Fetch a raw.githubusercontent.com URL directly — no rewrite needed. */
 async function fetchRawContent(
   url: string,
   maxChars: number,
 ): Promise<{ title: string; url: string; text: string }> {
-  const res = await fetch(url, {
-    headers: rawHeaders(),
-    signal: AbortSignal.timeout(10000),
-  });
-  if (!res.ok)
-    throw new Error(`GitHub raw fetch error: ${res.status} ${res.statusText}`);
+  const res = await fetchWithRedirectGuard(
+    url,
+    rawHeaders(),
+    "GitHub raw fetch error",
+  );
   const text = (await res.text()).slice(0, maxChars);
   const parts = new URL(url).pathname.split("/").filter(Boolean);
   const fileName = parts[parts.length - 1] ?? url;
@@ -56,12 +78,11 @@ async function fetchApiUrl(
   url: string,
   maxChars: number,
 ): Promise<{ title: string; url: string; text: string }> {
-  const res = await fetch(url, {
-    headers: apiHeaders(),
-    signal: AbortSignal.timeout(10000),
-  });
-  if (!res.ok)
-    throw new Error(`GitHub API error: ${res.status} ${res.statusText}`);
+  const res = await fetchWithRedirectGuard(
+    url,
+    apiHeaders(),
+    "GitHub API error",
+  );
   const data = (await res.json()) as Record<string, unknown>;
 
   if (
@@ -84,6 +105,10 @@ export async function githubFetch(
   url: string,
   maxChars = 8000,
 ): Promise<{ title: string; url: string; text: string }> {
+  // Defensive SSRF guard (SSRF-08) — fetch.ts's fetchPage() already calls
+  // assertPublicUrl before dispatching here, but githubFetch is exported so
+  // this protects against future direct callers.
+  assertPublicUrl(url);
   const parsed = new URL(url);
 
   if (parsed.hostname === "raw.githubusercontent.com") {
@@ -108,12 +133,11 @@ export async function githubFetch(
   // Repo root or tree — fetch README via GitHub API
   const [owner, repo] = parts;
   const apiUrl = `https://api.github.com/repos/${owner}/${repo}/readme`;
-  const res = await fetch(apiUrl, {
-    headers: apiHeaders(),
-    signal: AbortSignal.timeout(10000),
-  });
-  if (!res.ok)
-    throw new Error(`GitHub API error: ${res.status} ${res.statusText}`);
+  const res = await fetchWithRedirectGuard(
+    apiUrl,
+    apiHeaders(),
+    "GitHub API error",
+  );
   const data = (await res.json()) as GitHubReadmeResponse;
   const text = Buffer.from(data.content, "base64")
     .toString("utf-8")

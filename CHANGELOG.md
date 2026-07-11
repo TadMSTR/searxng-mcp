@@ -18,6 +18,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Security
 - **Dependency audit clean** — bumped `undici` to `7.28.0` (patches `GHSA-35p6-xmwp-9g52`, `GHSA-g8m3-5g58-fq7m`, `GHSA-p88m-4jfj-68fv`, `GHSA-pr7r-676h-xcf6`, `GHSA-wgpf-jwqj-8h8p`) and the `@opentelemetry/sdk-node`/`exporter-metrics-otlp-http`/`exporter-trace-otlp-http` trio to `0.220.0` (pulls in `@opentelemetry/core@2.9.0`, `@grpc/grpc-js`, and `protobufjs` patched versions). `pnpm audit --prod` clean: 0 findings (was 17: 7 high, 8 moderate, 2 low).
+- **F-01: cleartext LLM credential warning** — `llmChat()` now emits a one-time `console.error` when `LLM_API_KEY` is set alongside a plain-`http://` `LLM_BASE_URL`, since the bearer token would transmit in cleartext. Not a merge blocker (many `LLM_BASE_URL` deployments are on a trusted internal network) — a deliberate, visible warning rather than a hard failure. From PR #15/#16's security audit (Low, deferred to this follow-up pass).
+- **`src/tiers/github.ts` SSRF hardening** — the new `raw.githubusercontent.com`/`api.github.com` fetch paths (added above) now set `redirect: "manual"` and reject 3xx responses without echoing the `Location` header (matches the existing pattern in `src/tiers/raw.ts`; SSRF-02/OE-02 from the shared security-patterns knowledge base). `githubFetch()` also gained a defensive `assertPublicUrl()` call at its top, matching `rawFetch`'s SSRF-08 fix — `fetch.ts` already guards before dispatching here, but `githubFetch` is exported so this protects future direct callers. Caught in this build's own pre-audit self-check before handoff to the security agent.
 
 ## [3.12.0] - 2026-06-07
 
