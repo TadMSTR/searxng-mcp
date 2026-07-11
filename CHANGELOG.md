@@ -6,6 +6,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Security
+- **Dependency audit clean** — bumped `undici` to `7.28.0` (patches `GHSA-35p6-xmwp-9g52`, `GHSA-g8m3-5g58-fq7m`, `GHSA-p88m-4jfj-68fv`, `GHSA-pr7r-676h-xcf6`, `GHSA-wgpf-jwqj-8h8p`) and the `@opentelemetry/sdk-node`/`exporter-metrics-otlp-http`/`exporter-trace-otlp-http` trio to `0.220.0` (pulls in `@opentelemetry/core@2.9.0`, `@grpc/grpc-js`, and `protobufjs` patched versions). `pnpm audit --prod` clean: 0 findings (was 17: 7 high, 8 moderate, 2 low).
+
 ## [3.12.0] - 2026-06-07
 
 ### Added
