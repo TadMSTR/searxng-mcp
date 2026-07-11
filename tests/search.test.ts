@@ -15,6 +15,20 @@ vi.mock("../src/domains.js", () => ({
   applyDomainFilters: vi.fn().mockImplementation((results) => results),
 }));
 
+vi.mock("../src/domain-db.js", () => ({
+  normalizeHostname: (input: string) => {
+    try {
+      const host = input.includes("://")
+        ? new URL(input).hostname
+        : input.trim();
+      return host.replace(/^www\./i, "").toLowerCase() || null;
+    } catch {
+      return null;
+    }
+  },
+  recordSearchAppearance: vi.fn().mockResolvedValue(undefined),
+}));
+
 vi.mock("../src/observability.js", () => ({
   withSpan: vi.fn().mockImplementation((_n, _a, fn) => fn()),
 }));
@@ -37,6 +51,7 @@ function mockSearxResponse(results: object[]) {
 }
 
 import { cacheGet, cacheSet } from "../src/cache.js";
+import { recordSearchAppearance } from "../src/domain-db.js";
 import { applyDomainFilters } from "../src/domains.js";
 import { searxSearch } from "../src/search.js";
 
@@ -143,6 +158,35 @@ describe("searxSearch", () => {
     await expect(
       searxSearch("query", "general", 5, undefined, undefined, true),
     ).resolves.toBeDefined();
+  });
+
+  it("records a search appearance per unique domain on a live fetch (non-expand path)", async () => {
+    mockFetch.mockResolvedValue(
+      mockSearxResponse([
+        makeResult("https://a.com/1"),
+        makeResult("https://a.com/2"),
+        makeResult("https://b.com/1"),
+      ]),
+    );
+    await searxSearch("query", "general", 5);
+    expect(recordSearchAppearance).toHaveBeenCalledTimes(2);
+    expect(recordSearchAppearance).toHaveBeenCalledWith("a.com");
+    expect(recordSearchAppearance).toHaveBeenCalledWith("b.com");
+  });
+
+  it("records a search appearance on a cache hit", async () => {
+    const cached = JSON.stringify([makeResult("https://cached.com")]);
+    vi.mocked(cacheGet).mockResolvedValue(cached);
+    await searxSearch("query", "general", 5);
+    expect(recordSearchAppearance).toHaveBeenCalledWith("cached.com");
+  });
+
+  it("records a search appearance for the merged result set on the expand path", async () => {
+    mockFetch.mockResolvedValue(
+      mockSearxResponse([makeResult("https://expanded.com")]),
+    );
+    await searxSearch("query", "general", 5, undefined, undefined, true);
+    expect(recordSearchAppearance).toHaveBeenCalledWith("expanded.com");
   });
 });
 

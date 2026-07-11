@@ -1,6 +1,7 @@
 import { cacheGet, cacheSet, fetchCacheKey } from "./cache.js";
 import { FETCH_CACHE_TTL_SECONDS, WAYBACK_ENABLED } from "./config.js";
 import {
+  recordMetadataFetchAttempt,
   recordPostExtractSample,
   recordTierAttempt,
   type TierName,
@@ -304,11 +305,15 @@ export async function fetchPage(
       }
 
       if (!fetched && WAYBACK_ENABLED) {
-        console.error(`[searxng-mcp] fetch tier4 wayback attempt url=${url}`);
-        fetched = await waybackFetch(url, 8000);
+        console.error(`[searxng-mcp] fetch tier4_wayback attempt url=${url}`);
+        fetched = await runTier("tier4_wayback", url, () =>
+          waybackFetch(url, 8000),
+        );
         if (fetched) {
           tierServed = "tier4_wayback";
-          console.error(`[searxng-mcp] fetch tier4 wayback hit url=${url}`);
+          console.error(`[searxng-mcp] fetch tier4_wayback hit url=${url}`);
+        } else {
+          console.error(`[searxng-mcp] fetch tier4_wayback miss url=${url}`);
         }
       }
 
@@ -324,6 +329,7 @@ export async function fetchPage(
 
       const tierFetched: TierResult = fetched;
       const metadataHtml = await metadataHtmlPromise;
+      recordMetadataFetchAttempt(url, metadataHtml !== null).catch(() => {});
       result = await withSpan("post_extract", { "fetch.url": url }, () =>
         applyPostExtract(tierFetched, url, metadataHtml),
       );

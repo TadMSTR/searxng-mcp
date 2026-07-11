@@ -38,15 +38,27 @@ describe("dump-domain CLI — present-domain case", () => {
     const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
     process.argv[2] = "docs.example.com";
     getDomainRecordMock.mockResolvedValueOnce({
-      schema_version: 2,
+      schema_version: 3,
       domain: "docs.example.com",
       first_seen: "2026-05-01T00:00:00Z",
       last_fetch: "2026-06-01T00:00:00Z",
-      capabilities: {},
+      capabilities: {
+        metadata_fetch: {
+          attempts: 4,
+          ok: 3,
+          fail: 1,
+          last_checked: "2026-06-01T00:00:00Z",
+        },
+        seen_in_search: {
+          count: 7,
+          last_seen_at: "2026-06-01T00:00:00Z",
+        },
+      },
       tier_stats_30d: {
         tier1: stat(10, 9, 1),
         tier2: stat(2, 0, 2),
         tier3: stat(0, 0, 0),
+        tier4: stat(3, 2, 1),
       },
     });
 
@@ -62,14 +74,45 @@ describe("dump-domain CLI — present-domain case", () => {
     expect(output).toContain("tier2 (crawl4ai)");
     expect(output).toContain("0% ok (0/2)");
     expect(output).toContain("tier3 (raw)");
+    expect(output).toContain("tier4 (wayback)");
+    expect(output).toContain("67% ok (2/3)");
+    expect(output).toContain("metadata_fetch");
+    expect(output).toContain("75% ok (3/4)");
+    expect(output).toContain("seen_in_search");
+    expect(output).toContain("7x");
+  });
+
+  it("shows 'no data' for tier3 and defaults for capabilities that have never been recorded", async () => {
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    process.argv[2] = "sparse.example.com";
+    getDomainRecordMock.mockResolvedValueOnce({
+      schema_version: 3,
+      domain: "sparse.example.com",
+      first_seen: "2026-05-01T00:00:00Z",
+      last_fetch: "2026-06-01T00:00:00Z",
+      capabilities: {},
+      tier_stats_30d: {
+        tier1: stat(10, 9, 1),
+        tier2: stat(2, 0, 2),
+        tier3: stat(0, 0, 0),
+        tier4: stat(0, 0, 0),
+      },
+    });
+
+    await main();
+
+    const output = logSpy.mock.calls.map((c) => c[0]).join("\n");
+    expect(output).toContain("tier3 (raw)");
     expect(output).toContain("no data");
+    expect(output).toContain("metadata_fetch   : no data");
+    expect(output).toContain("seen_in_search   : never seen in search results");
   });
 
   it("includes last_fail_reason in the tier summary when present", async () => {
     const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
     process.argv[2] = "flaky.example.com";
     getDomainRecordMock.mockResolvedValueOnce({
-      schema_version: 2,
+      schema_version: 3,
       domain: "flaky.example.com",
       first_seen: "2026-05-01T00:00:00Z",
       last_fetch: "2026-06-01T00:00:00Z",
@@ -78,6 +121,7 @@ describe("dump-domain CLI — present-domain case", () => {
         tier1: { ...stat(3, 0, 3), last_fail_reason: "timeout" },
         tier2: stat(0, 0, 0),
         tier3: stat(0, 0, 0),
+        tier4: stat(0, 0, 0),
       },
     });
 

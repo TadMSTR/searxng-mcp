@@ -48,6 +48,22 @@ export async function main(): Promise<number> {
   console.log(tierSummary("tier1 (firecrawl)", record.tier_stats_30d.tier1));
   console.log(tierSummary("tier2 (crawl4ai) ", record.tier_stats_30d.tier2));
   console.log(tierSummary("tier3 (raw)      ", record.tier_stats_30d.tier3));
+  console.log(tierSummary("tier4 (wayback)  ", record.tier_stats_30d.tier4));
+
+  const meta = record.capabilities.metadata_fetch;
+  console.log(
+    meta
+      ? `  metadata_fetch   : ${Math.round((meta.ok / meta.attempts) * 100)}% ok (${meta.ok}/${meta.attempts}) | last checked: ${meta.last_checked}`
+      : "  metadata_fetch   : no data",
+  );
+
+  const seen = record.capabilities.seen_in_search;
+  console.log(
+    seen
+      ? `  seen_in_search   : ${seen.count}x | last seen: ${seen.last_seen_at}`
+      : "  seen_in_search   : never seen in search results",
+  );
+
   return 0;
 }
 

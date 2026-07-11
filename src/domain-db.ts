@@ -10,10 +10,17 @@
 import { cacheAtomicUpdate, cacheGet } from "./cache.js";
 
 const DOMAIN_RECORD_TTL_SECONDS = 90 * 24 * 60 * 60;
-const SCHEMA_VERSION = 2;
+// Bumped 2->3 to add tier4_wayback to tier_stats_30d — existing records on
+// schema 2 are treated as stale and rebuilt fresh (see updateRecord), same
+// migration approach used for the 1->2 bump.
+const SCHEMA_VERSION = 3;
 const WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
 
-export type TierName = "tier1_firecrawl" | "tier2_crawl4ai" | "tier3_rawfetch";
+export type TierName =
+  | "tier1_firecrawl"
+  | "tier2_crawl4ai"
+  | "tier3_rawfetch"
+  | "tier4_wayback";
 export type PreferredStrategy = "llms_full_txt" | "tier1" | "tier2" | "tier3";
 
 export interface TierStat {
@@ -50,6 +57,25 @@ export interface DomainCapabilities {
     present: number;
     last_sampled_at: string;
   };
+  // Side-channel raw-HTML fetch used for JSON-LD/og:title sampling
+  // (fetchRawHtmlForMetadata). Distinct from tier_stats_30d — this fetch
+  // exists to sample metadata, not to deliver full page content, so a
+  // "failure" here doesn't mean the domain is unreachable. Tracked so
+  // dump-domain can answer "is this domain reachable at all" without
+  // cross-referencing tier stats and post-extract sampling separately.
+  metadata_fetch?: {
+    attempts: number;
+    ok: number;
+    fail: number;
+    last_checked: string;
+  };
+  // Lightweight signal that a domain showed up in search results, even if
+  // it was never fetched. Lets dump-domain distinguish "never seen" from
+  // "seen in search, never fetched."
+  seen_in_search?: {
+    count: number;
+    last_seen_at: string;
+  };
 }
 
 export interface DomainRecord {
@@ -62,6 +88,7 @@ export interface DomainRecord {
     tier1: TierStat;
     tier2: TierStat;
     tier3: TierStat;
+    tier4: TierStat;
   };
   preferred_strategy?: PreferredStrategy;
   notes?: string;
@@ -82,6 +109,7 @@ function newRecord(domain: string, now: string): DomainRecord {
       tier1: emptyStat(),
       tier2: emptyStat(),
       tier3: emptyStat(),
+      tier4: emptyStat(),
     },
   };
 }
@@ -149,10 +177,11 @@ function updateRecord(
   });
 }
 
-const TIER_KEY: Record<TierName, "tier1" | "tier2" | "tier3"> = {
+const TIER_KEY: Record<TierName, "tier1" | "tier2" | "tier3" | "tier4"> = {
   tier1_firecrawl: "tier1",
   tier2_crawl4ai: "tier2",
   tier3_rawfetch: "tier3",
+  tier4_wayback: "tier4",
 };
 
 export async function recordTierAttempt(
@@ -235,6 +264,43 @@ export async function recordPostExtractSample(
     if (signals.ogTitlePresent) og.present += 1;
     og.last_sampled_at = now;
     record.capabilities.og_title = og;
+  });
+}
+
+export async function recordMetadataFetchAttempt(
+  url: string,
+  ok: boolean,
+): Promise<void> {
+  await updateRecord(url, (record) => {
+    const stat = record.capabilities.metadata_fetch ?? {
+      attempts: 0,
+      ok: 0,
+      fail: 0,
+      last_checked: new Date().toISOString(),
+    };
+    stat.attempts += 1;
+    if (ok) stat.ok += 1;
+    else stat.fail += 1;
+    stat.last_checked = new Date().toISOString();
+    record.capabilities.metadata_fetch = stat;
+  });
+}
+
+/**
+ * Record that a domain appeared in search results. Cheap, best-effort — no
+ * fetch is performed, this just marks the domain as "seen" so dump-domain
+ * can distinguish it from a domain that's never shown up at all.
+ */
+export async function recordSearchAppearance(url: string): Promise<void> {
+  await updateRecord(url, (record) => {
+    const now = new Date().toISOString();
+    const seen = record.capabilities.seen_in_search ?? {
+      count: 0,
+      last_seen_at: now,
+    };
+    seen.count += 1;
+    seen.last_seen_at = now;
+    record.capabilities.seen_in_search = seen;
   });
 }
 
