@@ -17,6 +17,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Changed
 - **Domain-record tier-stats formatter extracted and shared** — the tier-stats rendering used by `dump-domain` now lives in `src/domain-stats.ts` (`formatDomainRecord`) and is reused by the `domain_stats` tool, so the CLI and the tool present identical output. Coverage floor ratcheted to the new measured baseline (lines 74 / statements 72 / functions 74 / branches 65).
 
+### Security
+- **Snapshot writes are atomic (FW-01)** — `writeSnapshot` writes to a `.tmp` sibling and renames into place, so a crash mid-write cannot leave a truncated newest snapshot that `loadLatestSnapshot` would reject (breaking restore). Pre-audit baseline fix.
+- **Restore-path structural validation (LOW-1)** — `applyRestore` now structurally validates each snapshot record (schema, `domain`, `first_seen`/`last_fetch` strings, a numeric `tier_stats_30d` block for all five slots) before re-seeding it into Valkey. The restore path is the one place external file contents flow back into the live domain-db (where `tier_stats_30d` drives tier-skip routing and `domain_stats` rendering), so a crafted snapshot can no longer inject malformed records that skew routing or crash `domain_stats`. From the security audit; trust-gated (operator-owned snapshot dir) but cheap to close. Snapshot-dir permissions (`0700`) are a deploy-time note for the sysadmin sub-handoff.
+
 ### Docs
 - **Hister compose documentation (closes SXNG-6)** — `docker-compose.full.yml` gains an optional-service comment block for Hister and `HISTER_URL`/`HISTER_TOKEN` in the MCP-client env block; `docker-compose.example.yml`'s env block gains the same two lines. Hister is a separate deployable (not shipped in the compose), so this documents pointing searxng-mcp at it. README documents the new `domain_stats` tool and a "Domain-db persistence" section.
 

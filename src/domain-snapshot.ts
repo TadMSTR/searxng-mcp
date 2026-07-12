@@ -27,6 +27,9 @@ import {
 
 const SNAPSHOT_PREFIX = "domain-db-";
 const SNAPSHOT_SUFFIX = ".json";
+// Tier slots every well-formed record must carry (mirrors domain-db's
+// tier_stats_30d). Used by the restore-path structural guard.
+const TIER_SLOTS = ["tier1", "tier2", "tier3", "tier4", "github"] as const;
 // Matches only snapshots this module writes: the prefix, an ISO-ish timestamp
 // (digits, T, Z, dashes, dots), then .json. Anything else in the dir is ignored.
 const SNAPSHOT_FILE_RE = /^domain-db-[0-9TZ.-]+\.json$/;
@@ -49,6 +52,41 @@ export interface RestoreResult {
   total: number;
   restored: number;
   skipped: number;
+}
+
+/**
+ * Structural validation of a snapshot record before it is re-seeded into Valkey
+ * (LOW-1). Snapshot files live in an operator-owned dir, but the restore path is
+ * the one place external file contents flow back into the live domain-db, where
+ * tier_stats_30d drives tier-skip routing and domain_stats rendering. Rejecting
+ * malformed records here stops a crafted snapshot from injecting entries that
+ * skew routing or crash domain_stats single mode. Beyond schema_version+domain,
+ * require the last_fetch/first_seen strings and a numeric tier_stats_30d block.
+ */
+export function isStructurallyValidRecord(
+  value: unknown,
+): value is DomainRecord {
+  if (!value || typeof value !== "object") return false;
+  const r = value as Record<string, unknown>;
+  if (r.schema_version !== SCHEMA_VERSION) return false;
+  if (typeof r.domain !== "string" || r.domain.length === 0) return false;
+  if (typeof r.first_seen !== "string" || typeof r.last_fetch !== "string") {
+    return false;
+  }
+  if (!r.tier_stats_30d || typeof r.tier_stats_30d !== "object") return false;
+  const tiers = r.tier_stats_30d as Record<string, unknown>;
+  for (const slot of TIER_SLOTS) {
+    const stat = tiers[slot] as Record<string, unknown> | undefined;
+    if (!stat || typeof stat !== "object") return false;
+    if (
+      typeof stat.attempts !== "number" ||
+      typeof stat.ok !== "number" ||
+      typeof stat.fail !== "number"
+    ) {
+      return false;
+    }
+  }
+  return true;
 }
 
 /** Filesystem-safe, lexicographically-sortable snapshot filename for `now`. */
@@ -135,9 +173,9 @@ export async function loadLatestSnapshot(
 /**
  * Re-seed `records` into Valkey, restoring only keys that are missing or whose
  * live record is strictly staler than the snapshot (older last_fetch). Never
- * overwrites a fresher-or-equal live record. Records on a different schema than
- * the current one are skipped. Best-effort per key — a single failure is
- * counted as skipped, not fatal.
+ * overwrites a fresher-or-equal live record. Structurally invalid or
+ * stale-schema records are skipped (LOW-1 guard). Best-effort per key — a
+ * single failure is counted as skipped, not fatal.
  */
 export async function applyRestore(
   client: RestoreClient,
@@ -146,7 +184,7 @@ export async function applyRestore(
   let restored = 0;
   let skipped = 0;
   for (const record of records) {
-    if (record.schema_version !== SCHEMA_VERSION || !record.domain) {
+    if (!isStructurallyValidRecord(record)) {
       skipped += 1;
       continue;
     }

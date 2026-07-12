@@ -237,6 +237,36 @@ describe("applyRestore", () => {
     expect(client.store.size).toBe(0);
   });
 
+  it("skips structurally invalid records (LOW-1 guard)", async () => {
+    const client = memClient();
+    const good = mkRecord("good.com", "2026-06-01T00:00:00Z");
+    const missingTiers = {
+      ...mkRecord("no-tiers.com", "2026-06-01T00:00:00Z"),
+    };
+    delete (missingTiers as Record<string, unknown>).tier_stats_30d;
+    const missingSlot = mkRecord("no-github.com", "2026-06-01T00:00:00Z");
+    delete (missingSlot.tier_stats_30d as Record<string, unknown>).github;
+    const nonStringDomain = {
+      ...mkRecord("x", "2026-06-01T00:00:00Z"),
+      domain: 42,
+    };
+    const nonNumericStat = mkRecord("bad-stat.com", "2026-06-01T00:00:00Z");
+    (nonNumericStat.tier_stats_30d.tier1 as Record<string, unknown>).attempts =
+      "lots";
+
+    const result = await applyRestore(client, [
+      good,
+      missingTiers as DomainRecord,
+      missingSlot,
+      nonStringDomain as unknown as DomainRecord,
+      nonNumericStat,
+    ]);
+
+    // Only the well-formed record is restored; the four malformed ones skipped.
+    expect(result).toEqual({ total: 5, restored: 1, skipped: 4 });
+    expect([...client.store.keys()]).toEqual(["domain:good.com"]);
+  });
+
   it("counts a per-key set failure as skipped, not fatal", async () => {
     const client: RestoreClient = {
       get: async () => null,
