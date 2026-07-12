@@ -9,7 +9,14 @@
 // path validates filenames against SNAPSHOT_FILE_RE and resolves within the
 // snapshot dir — no path traversal via the on-disk contents.
 
-import { mkdir, readdir, readFile, unlink, writeFile } from "node:fs/promises";
+import {
+  mkdir,
+  readdir,
+  readFile,
+  rename,
+  unlink,
+  writeFile,
+} from "node:fs/promises";
 import { basename, join } from "node:path";
 import {
   DOMAIN_RECORD_TTL_SECONDS,
@@ -67,7 +74,13 @@ export async function writeSnapshot(
     records,
   };
   const path = join(dir, snapshotFilename(now));
-  await writeFile(path, JSON.stringify(snapshot), "utf-8");
+  // FW-01: write to a temp file then rename so a crash mid-write can never
+  // leave a truncated newest snapshot (which loadLatestSnapshot would reject,
+  // breaking restore). rename within the same dir is atomic. `.tmp` is not a
+  // valid snapshot name (SNAPSHOT_FILE_RE), so a leftover temp is ignored.
+  const tmpPath = `${path}.tmp`;
+  await writeFile(tmpPath, JSON.stringify(snapshot), "utf-8");
+  await rename(tmpPath, path);
   return { path, count: records.length };
 }
 

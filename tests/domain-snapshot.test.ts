@@ -80,6 +80,10 @@ describe("writeSnapshot + loadLatestSnapshot", () => {
     expect(loaded?.count).toBe(1);
     expect(loaded?.schema_version).toBe(4);
     expect(loaded?.records[0].domain).toBe("a.com");
+
+    // FW-01: atomic write leaves no leftover .tmp file behind.
+    const entries = await readdir(dir);
+    expect(entries.some((f) => f.endsWith(".tmp"))).toBe(false);
   });
 
   it("creates the snapshot dir if it does not exist", async () => {
@@ -133,6 +137,12 @@ describe("listSnapshots", () => {
     );
     await writeFile(join(dir, "unrelated.json"), "{}", "utf-8");
     await writeFile(join(dir, "notes.txt"), "x", "utf-8");
+    // A leftover atomic-write temp file must be ignored.
+    await writeFile(
+      join(dir, "domain-db-2026-07-03T00-00-00.000Z.json.tmp"),
+      "{}",
+      "utf-8",
+    );
     const names = await listSnapshots(dir);
     expect(names).toEqual([
       "domain-db-2026-07-01T00-00-00.000Z.json",
