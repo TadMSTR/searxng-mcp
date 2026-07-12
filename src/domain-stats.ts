@@ -9,7 +9,15 @@
 // write contract.
 
 import { getValkey } from "./cache.js";
-import { type DomainRecord, parseDomainRecord } from "./domain-db.js";
+import {
+  type DomainRecord,
+  parseDomainRecord,
+  type TierStat,
+} from "./domain-db.js";
+
+// Window length for the "resets in ~Nd" hint in the human formatter. Mirrors
+// domain-db's WINDOW_MS (30d rolling stats window).
+const WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
 
 const DOMAIN_KEY_PATTERN = "domain:*";
 // SCAN batch hint — how many keys Valkey returns per cursor step. Not a hard
@@ -200,4 +208,151 @@ export function aggregateDomainStats(
     top_failing: failing.slice(0, TOP_FAILING_LIMIT),
     truncated,
   };
+}
+
+// ── Single-domain summary (structured output for the domain_stats tool) ──────
+
+export interface SingleDomainSummary {
+  domain: string;
+  first_seen: string;
+  last_fetch: string;
+  preferred_strategy: string | null;
+  tiers: Record<TierSlotName, TierAggregate>;
+  capabilities: {
+    llms_full_txt: boolean;
+    robots_allows_us: boolean | null;
+    metadata_fetch_rate: number | null;
+    seen_in_search: number;
+  };
+}
+
+function tierAggregateOf(stat: TierStat): TierAggregate {
+  return {
+    attempts: stat.attempts,
+    ok: stat.ok,
+    fail: stat.fail,
+    success_rate: stat.attempts > 0 ? round2(stat.ok / stat.attempts) : null,
+  };
+}
+
+/**
+ * Reduce a full DomainRecord to the compact, agent-consumable shape returned as
+ * `structuredContent` — per-tier success rates plus the capability flags an
+ * agent would threshold on, without the internal window bookkeeping.
+ */
+export function summarizeDomainRecord(
+  record: DomainRecord,
+): SingleDomainSummary {
+  const t = record.tier_stats_30d;
+  const meta = record.capabilities.metadata_fetch;
+  return {
+    domain: record.domain,
+    first_seen: record.first_seen,
+    last_fetch: record.last_fetch,
+    preferred_strategy: record.preferred_strategy ?? null,
+    tiers: {
+      tier1: tierAggregateOf(t.tier1),
+      tier2: tierAggregateOf(t.tier2),
+      tier3: tierAggregateOf(t.tier3),
+      tier4: tierAggregateOf(t.tier4),
+      github: tierAggregateOf(t.github),
+    },
+    capabilities: {
+      llms_full_txt: record.capabilities.llms_full_txt?.present ?? false,
+      robots_allows_us: record.capabilities.robots_txt
+        ? record.capabilities.robots_txt.allows_us
+        : null,
+      metadata_fetch_rate:
+        meta && meta.attempts > 0 ? round2(meta.ok / meta.attempts) : null,
+      seen_in_search: record.capabilities.seen_in_search?.count ?? 0,
+    },
+  };
+}
+
+// ── Human-readable formatters (shared by the dump-domain CLI and the tool) ───
+
+function tierLine(label: string, stat: TierStat, now: number): string {
+  const successRate =
+    stat.attempts > 0
+      ? `${Math.round((stat.ok / stat.attempts) * 100)}% ok (${stat.ok}/${stat.attempts})`
+      : "no data";
+  const daysLeft = Math.max(
+    0,
+    Math.round((WINDOW_MS - (now - stat.window_start_ms)) / 86400000),
+  );
+  const failNote = stat.last_fail_reason
+    ? ` | last fail: ${stat.last_fail_reason}`
+    : "";
+  return `  ${label}: ${successRate} | window resets in ~${daysLeft}d${failNote}`;
+}
+
+/**
+ * Human-readable tier-stats + capabilities block for one domain. Shared by the
+ * dump-domain CLI and the domain_stats tool's text `content`.
+ */
+export function formatDomainRecord(
+  record: DomainRecord,
+  now: number = Date.now(),
+): string {
+  const t = record.tier_stats_30d;
+  const lines = [
+    `domain: ${record.domain} (first seen ${record.first_seen}, last fetch ${record.last_fetch})`,
+    `preferred strategy: ${record.preferred_strategy ?? "none"}`,
+    "",
+    "--- tier stats (30d window) ---",
+    tierLine("tier1 (firecrawl)", t.tier1, now),
+    tierLine("tier2 (crawl4ai) ", t.tier2, now),
+    tierLine("tier3 (raw)      ", t.tier3, now),
+    tierLine("tier4 (wayback)  ", t.tier4, now),
+    tierLine("github (fastpath)", t.github, now),
+  ];
+
+  const meta = record.capabilities.metadata_fetch;
+  lines.push(
+    meta
+      ? `  metadata_fetch   : ${Math.round((meta.ok / meta.attempts) * 100)}% ok (${meta.ok}/${meta.attempts}) | last checked: ${meta.last_checked}`
+      : "  metadata_fetch   : no data",
+  );
+
+  const seen = record.capabilities.seen_in_search;
+  lines.push(
+    seen
+      ? `  seen_in_search   : ${seen.count}x | last seen: ${seen.last_seen_at}`
+      : "  seen_in_search   : never seen in search results",
+  );
+
+  return lines.join("\n");
+}
+
+/**
+ * Human-readable rendering of an aggregate across the whole domain-db. Shared by
+ * the domain_stats tool's text `content` and available to the maintenance job.
+ */
+export function formatDomainAggregate(agg: DomainAggregate): string {
+  const lines = [
+    `domains tracked: ${agg.domains_tracked}${agg.truncated ? " (truncated — scan cap hit)" : ""}`,
+    `seen in search but never fetched: ${agg.seen_never_fetched}`,
+    "",
+    "--- per-tier success (all domains, 30d window) ---",
+  ];
+  for (const [slot, ta] of Object.entries(agg.tiers)) {
+    const rate =
+      ta.success_rate === null
+        ? "no data"
+        : `${Math.round(ta.success_rate * 100)}% ok (${ta.ok}/${ta.attempts})`;
+    lines.push(`  ${slot.padEnd(7)}: ${rate}`);
+  }
+
+  lines.push("", `--- top failing domains (worst first) ---`);
+  if (agg.top_failing.length === 0) {
+    lines.push("  none");
+  } else {
+    for (const f of agg.top_failing) {
+      lines.push(
+        `  ${f.domain}: ${Math.round(f.success_rate * 100)}% ok (${f.ok}/${f.attempts})`,
+      );
+    }
+  }
+
+  return lines.join("\n");
 }
