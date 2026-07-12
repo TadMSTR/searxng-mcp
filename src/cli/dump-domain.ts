@@ -49,6 +49,7 @@ export async function main(): Promise<number> {
   console.log(tierSummary("tier2 (crawl4ai) ", record.tier_stats_30d.tier2));
   console.log(tierSummary("tier3 (raw)      ", record.tier_stats_30d.tier3));
   console.log(tierSummary("tier4 (wayback)  ", record.tier_stats_30d.tier4));
+  console.log(tierSummary("github (fastpath)", record.tier_stats_30d.github));
 
   const meta = record.capabilities.metadata_fetch;
   console.log(
