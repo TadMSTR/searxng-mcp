@@ -7,3 +7,4 @@ core.*
 *.env
 run.sh
 package-lock.json
+domain-db-snapshots/

@@ -79,7 +79,7 @@ describe("recordTierAttempt", () => {
     await recordTierAttempt("https://example.com/p", "tier1_firecrawl", "hit");
     const written = lastWrittenRecord(getStored());
     expect(written.domain).toBe("example.com");
-    expect(written.schema_version).toBe(3);
+    expect(written.schema_version).toBe(4);
     expect(written.tier_stats_30d.tier1.attempts).toBe(1);
     expect(written.tier_stats_30d.tier1.ok).toBe(1);
     expect(written.tier_stats_30d.tier1.window_start_ms).toBeGreaterThan(0);
@@ -87,7 +87,7 @@ describe("recordTierAttempt", () => {
 
   it("updates an existing record incrementally", async () => {
     const seed: DomainRecord = {
-      schema_version: 3,
+      schema_version: 4,
       domain: "example.com",
       first_seen: "2026-05-01T00:00:00Z",
       last_fetch: "2026-05-01T00:00:00Z",
@@ -97,6 +97,7 @@ describe("recordTierAttempt", () => {
         tier2: { attempts: 0, ok: 0, fail: 0, window_start_ms: Date.now() },
         tier3: { attempts: 0, ok: 0, fail: 0, window_start_ms: Date.now() },
         tier4: { attempts: 0, ok: 0, fail: 0, window_start_ms: Date.now() },
+        github: { attempts: 0, ok: 0, fail: 0, window_start_ms: Date.now() },
       },
     };
     const { getStored } = setupAtomicMock(JSON.stringify(seed));
@@ -115,7 +116,7 @@ describe("recordTierAttempt", () => {
   it("resets window counters when window_start_ms is older than 30 days", async () => {
     const oldWindowMs = Date.now() - 31 * 24 * 60 * 60 * 1000;
     const seed: DomainRecord = {
-      schema_version: 3,
+      schema_version: 4,
       domain: "example.com",
       first_seen: "2026-04-01T00:00:00Z",
       last_fetch: "2026-04-15T00:00:00Z",
@@ -131,6 +132,7 @@ describe("recordTierAttempt", () => {
         tier2: { attempts: 0, ok: 0, fail: 0, window_start_ms: Date.now() },
         tier3: { attempts: 0, ok: 0, fail: 0, window_start_ms: Date.now() },
         tier4: { attempts: 0, ok: 0, fail: 0, window_start_ms: Date.now() },
+        github: { attempts: 0, ok: 0, fail: 0, window_start_ms: Date.now() },
       },
     };
     const { getStored } = setupAtomicMock(JSON.stringify(seed));
@@ -200,6 +202,50 @@ describe("recordTierAttempt", () => {
     expect(written.tier_stats_30d.tier4.attempts).toBe(1);
     expect(written.tier_stats_30d.tier4.ok).toBe(1);
     expect(written.tier_stats_30d.tier1.attempts).toBe(0);
+  });
+
+  it("records github fast-path attempts under tier_stats_30d.github (SXNG-10)", async () => {
+    const { getStored } = setupAtomicMock(null);
+    await recordTierAttempt(
+      "https://raw.githubusercontent.com/a/b/main/f.txt",
+      "github",
+      "error",
+      "404 Not Found",
+    );
+    const written = lastWrittenRecord(getStored());
+    expect(written.tier_stats_30d.github.attempts).toBe(1);
+    expect(written.tier_stats_30d.github.fail).toBe(1);
+    expect(written.tier_stats_30d.github.last_fail_reason).toBe(
+      "404 Not Found",
+    );
+    // Github traffic must not leak into any cascade tier.
+    expect(written.tier_stats_30d.tier1.attempts).toBe(0);
+    expect(written.tier_stats_30d.tier3.attempts).toBe(0);
+  });
+
+  it("rebuilds a schema-3 record fresh on the 3->4 bump (loses stale windows)", async () => {
+    // A pre-bump record carrying accumulated tier1 stats but no github slot.
+    const staleSeed = JSON.stringify({
+      schema_version: 3,
+      domain: "example.com",
+      first_seen: "2026-05-01T00:00:00Z",
+      last_fetch: "2026-05-01T00:00:00Z",
+      capabilities: {},
+      tier_stats_30d: {
+        tier1: { attempts: 40, ok: 2, fail: 38, window_start_ms: Date.now() },
+        tier2: { attempts: 0, ok: 0, fail: 0, window_start_ms: Date.now() },
+        tier3: { attempts: 0, ok: 0, fail: 0, window_start_ms: Date.now() },
+        tier4: { attempts: 0, ok: 0, fail: 0, window_start_ms: Date.now() },
+      },
+    });
+    const { getStored } = setupAtomicMock(staleSeed);
+    await recordTierAttempt("https://example.com/p", "github", "hit");
+    const written = lastWrittenRecord(getStored());
+    expect(written.schema_version).toBe(4);
+    // Stale tier1 windows discarded on rebuild, github slot now present.
+    expect(written.tier_stats_30d.tier1.attempts).toBe(0);
+    expect(written.tier_stats_30d.github.attempts).toBe(1);
+    expect(written.tier_stats_30d.github.ok).toBe(1);
   });
 });
 
@@ -339,7 +385,7 @@ describe("shouldSkipJsonLdPostExtract", () => {
 
   it("returns false until 5 samples are recorded with zero hits", async () => {
     const seed: DomainRecord = {
-      schema_version: 3,
+      schema_version: 4,
       domain: "example.com",
       first_seen: "2026-05-01T00:00:00Z",
       last_fetch: "2026-05-01T00:00:00Z",
@@ -355,6 +401,7 @@ describe("shouldSkipJsonLdPostExtract", () => {
         tier2: { attempts: 0, ok: 0, fail: 0, window_start_ms: Date.now() },
         tier3: { attempts: 0, ok: 0, fail: 0, window_start_ms: Date.now() },
         tier4: { attempts: 0, ok: 0, fail: 0, window_start_ms: Date.now() },
+        github: { attempts: 0, ok: 0, fail: 0, window_start_ms: Date.now() },
       },
     };
     cacheGetMock.mockResolvedValue(JSON.stringify(seed));
@@ -365,7 +412,7 @@ describe("shouldSkipJsonLdPostExtract", () => {
 
   it("returns true after 5+ samples with zero JSON-LD hits", async () => {
     const seed: DomainRecord = {
-      schema_version: 3,
+      schema_version: 4,
       domain: "example.com",
       first_seen: "2026-05-01T00:00:00Z",
       last_fetch: "2026-05-01T00:00:00Z",
@@ -381,6 +428,7 @@ describe("shouldSkipJsonLdPostExtract", () => {
         tier2: { attempts: 0, ok: 0, fail: 0, window_start_ms: Date.now() },
         tier3: { attempts: 0, ok: 0, fail: 0, window_start_ms: Date.now() },
         tier4: { attempts: 0, ok: 0, fail: 0, window_start_ms: Date.now() },
+        github: { attempts: 0, ok: 0, fail: 0, window_start_ms: Date.now() },
       },
     };
     cacheGetMock.mockResolvedValue(JSON.stringify(seed));
@@ -391,7 +439,7 @@ describe("shouldSkipJsonLdPostExtract", () => {
 
   it("returns false once any JSON-LD hit has been seen, regardless of sample count", async () => {
     const seed: DomainRecord = {
-      schema_version: 3,
+      schema_version: 4,
       domain: "example.com",
       first_seen: "2026-05-01T00:00:00Z",
       last_fetch: "2026-05-01T00:00:00Z",
@@ -407,6 +455,7 @@ describe("shouldSkipJsonLdPostExtract", () => {
         tier2: { attempts: 0, ok: 0, fail: 0, window_start_ms: Date.now() },
         tier3: { attempts: 0, ok: 0, fail: 0, window_start_ms: Date.now() },
         tier4: { attempts: 0, ok: 0, fail: 0, window_start_ms: Date.now() },
+        github: { attempts: 0, ok: 0, fail: 0, window_start_ms: Date.now() },
       },
     };
     cacheGetMock.mockResolvedValue(JSON.stringify(seed));
@@ -443,6 +492,13 @@ describe("getDomainRecord", () => {
   it("returns null on schema_version 2 (v2 records discarded after v3 tier4 bump)", async () => {
     cacheGetMock.mockResolvedValue(
       JSON.stringify({ schema_version: 2, domain: "example.com" }),
+    );
+    expect(await getDomainRecord("https://example.com")).toBeNull();
+  });
+
+  it("returns null on schema_version 3 (v3 records discarded after v4 github bump)", async () => {
+    cacheGetMock.mockResolvedValue(
+      JSON.stringify({ schema_version: 3, domain: "example.com" }),
     );
     expect(await getDomainRecord("https://example.com")).toBeNull();
   });

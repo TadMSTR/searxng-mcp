@@ -3,6 +3,14 @@ import { z } from "zod";
 import { cacheClear } from "./cache.js";
 import { newRequestId, withRequestId } from "./context.js";
 import { crawlSite, formatCrawlManifest } from "./crawl.js";
+import { getDomainRecord } from "./domain-db.js";
+import {
+  aggregateDomainStats,
+  enumerateDomains,
+  formatDomainAggregate,
+  formatDomainRecord,
+  summarizeDomainRecord,
+} from "./domain-stats.js";
 import { events } from "./events.js";
 import { fetchPage } from "./fetch.js";
 import { incCounter, recordHistogram, withSpan } from "./observability.js";
@@ -403,6 +411,115 @@ export async function handleClearCache({ target }: { target: string }) {
   });
 }
 
+// ── domain_stats structured output ──────────────────────────────────────────
+// Single Zod object covering both tool modes; the other mode's slot is null.
+// The SDK validates returned `structuredContent` against this before it leaves
+// the server and advertises the derived JSON Schema in tools/list.
+
+const TierStatsOutputSchema = z.object({
+  attempts: z.number(),
+  ok: z.number(),
+  fail: z.number(),
+  success_rate: z.number().nullable(),
+});
+
+const AllTiersOutputSchema = z.object({
+  tier1: TierStatsOutputSchema,
+  tier2: TierStatsOutputSchema,
+  tier3: TierStatsOutputSchema,
+  tier4: TierStatsOutputSchema,
+  github: TierStatsOutputSchema,
+});
+
+const SingleDomainOutputSchema = z.object({
+  domain: z.string(),
+  first_seen: z.string(),
+  last_fetch: z.string(),
+  preferred_strategy: z.string().nullable(),
+  tiers: AllTiersOutputSchema,
+  capabilities: z.object({
+    llms_full_txt: z.boolean(),
+    robots_allows_us: z.boolean().nullable(),
+    metadata_fetch_rate: z.number().nullable(),
+    seen_in_search: z.number(),
+  }),
+});
+
+const AggregateOutputSchema = z.object({
+  domains_tracked: z.number(),
+  seen_never_fetched: z.number(),
+  tiers: AllTiersOutputSchema,
+  failing_count: z.number(),
+  top_failing: z.array(
+    z.object({
+      domain: z.string(),
+      attempts: z.number(),
+      ok: z.number(),
+      success_rate: z.number(),
+    }),
+  ),
+  truncated: z.boolean(),
+});
+
+const DomainStatsOutputSchema = z.object({
+  mode: z.enum(["single", "aggregate"]),
+  hostname: z.string().nullable(),
+  found: z.boolean(),
+  record: SingleDomainOutputSchema.nullable(),
+  aggregate: AggregateOutputSchema.nullable(),
+});
+
+export async function handleDomainStats({ hostname }: { hostname?: string }) {
+  return instrumentTool("domain_stats", async () => {
+    if (hostname) {
+      const record = await getDomainRecord(hostname);
+      if (!record) {
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: `No domain-db record for ${hostname}.`,
+            },
+          ],
+          structuredContent: {
+            mode: "single" as const,
+            hostname,
+            found: false,
+            record: null,
+            aggregate: null,
+          },
+        };
+      }
+      return {
+        content: [{ type: "text" as const, text: formatDomainRecord(record) }],
+        structuredContent: {
+          mode: "single" as const,
+          hostname,
+          found: true,
+          record: summarizeDomainRecord(record),
+          aggregate: null,
+        },
+      };
+    }
+
+    // Aggregate mode — operator-triggered, bounded off-hot-path scan.
+    const { records, truncated } = await enumerateDomains();
+    const aggregate = aggregateDomainStats(records, truncated);
+    return {
+      content: [
+        { type: "text" as const, text: formatDomainAggregate(aggregate) },
+      ],
+      structuredContent: {
+        mode: "aggregate" as const,
+        hostname: null,
+        found: aggregate.domains_tracked > 0,
+        record: null,
+        aggregate,
+      },
+    };
+  });
+}
+
 const LanguageSchema = z
   .string()
   .optional()
@@ -551,5 +668,24 @@ export function registerTools(server: McpServer): void {
         ),
     },
     handleClearCache,
+  );
+
+  server.registerTool(
+    "domain_stats",
+    {
+      title: "Domain capability stats",
+      description:
+        "Read the searxng-mcp domain capability database — what it has learned about hosts from fetches: per-tier success rates (tier1-3 cascade, tier4 wayback, github fast path), llms.txt/robots presence, metadata reachability, and search appearances. Provide `hostname` for one domain's record, or omit it for an aggregate across all tracked domains (per-tier success rates, worst failing domains, seen-but-never-fetched count). Read-only. Aggregate mode reports `truncated: true` if the internal scan cap is hit.",
+      inputSchema: {
+        hostname: z
+          .string()
+          .optional()
+          .describe(
+            "Hostname or URL to look up (e.g. 'docs.anthropic.com'). Omit for an aggregate over all tracked domains.",
+          ),
+      },
+      outputSchema: DomainStatsOutputSchema,
+    },
+    handleDomainStats,
   );
 }

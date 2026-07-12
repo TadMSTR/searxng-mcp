@@ -148,7 +148,24 @@ export async function fetchPage(
     let result: TierResult;
     let tierServed = "github";
     if (isGithubUrl(url)) {
-      result = await githubFetch(url, maxChars);
+      // GitHub fast path — routed through runTier() so its hit/miss/error is
+      // recorded in the domain-db and OTel like any other tier (SXNG-10).
+      // githubFetch throws on failure; runTier catches it, records an error
+      // attempt, and returns null, so we translate that back into a throw for
+      // the caller.
+      const gh = await runTier<TierResult | null>("github", url, () =>
+        githubFetch(url, maxChars),
+      );
+      if (!gh) {
+        events.error({
+          stage: "fetch",
+          url,
+          error_type: "github_fetch_failed",
+          message: "GitHub fast-path fetch failed",
+        });
+        throw new Error("GitHub fast-path fetch failed");
+      }
+      result = gh;
     } else {
       // llms.txt fast path — for whitelisted docs domains, try fetching the
       // section from a pre-cached llms-full.txt before invoking any tier.

@@ -4,13 +4,15 @@ MCP server for private web search via a self-hosted SearXNG instance. Reranks re
 
 ## What it does
 
-Exposes five MCP tools:
+Exposes seven MCP tools:
 
 - **`search`** — queries SearXNG, reranks results with a local ML model, returns top N structured results
 - **`search_and_fetch`** — same as `search` but also fetches full content of the top result(s) via the fetch cascade
 - **`search_and_summarize`** — search, fetch, then synthesize a summary with citations via Ollama (default `qwen3:14b`, override with `OLLAMA_SUMMARIZE_MODEL`)
 - **`fetch_url`** — fetch and extract readable markdown from any public URL; GitHub URLs use the GitHub API
-- **`clear_cache`** — purge the Valkey result cache (search, fetch, or both)
+- **`crawl_site`** — crawl a site and return a page manifest (Firecrawl → sitemap → optional BFS); content cached for follow-up `fetch_url`
+- **`clear_cache`** — purge the Valkey result cache (search, fetch, crawl, or all)
+- **`domain_stats`** — read-only view of the domain capability database (single-domain or aggregate) with MCP structured output
 
 ## Structure
 
@@ -30,13 +32,22 @@ src/
     index.ts      # Barrel re-export
   reranker.ts     # Jina-compatible reranker client + recency weighting
   ollama.ts       # Ollama client (query expansion + summarization)
-  cache.ts        # Valkey/Redis caching layer
+  cache.ts        # Valkey/Redis caching layer (get/set + WATCH/MULTI/EXEC atomic update + SCAN)
+  domain-db.ts    # Per-domain capability records (tier stats, capabilities); best-effort writes
+  domain-stats.ts # Bounded SCAN enumerate + aggregate helpers, summary/formatters (tool + job)
+  domain-snapshot.ts # Durable JSON snapshot write/prune/load + non-clobbering restore
   domains.ts      # Domain boost/block filtering + profiles
   config.ts       # Environment variable configuration
   types.ts        # Shared type definitions
+  cli/
+    dump-domain.ts           # Print one domain's capability record
+    domain-db-maintenance.ts # Standalone job: OTel gauges + durable snapshot (cron/PM2, single writer)
+    restore-domain-db.ts     # Re-seed the domain-db from the newest snapshot after a flush
 tests/
-  *.test.ts       # Vitest unit tests (211 tests across 22 files)
+  *.test.ts       # Vitest unit tests (377 tests across 37 files)
 ```
+
+The domain-db maintenance/restore CLIs are standalone (`pnpm domain-db-maintenance`, `pnpm restore-domain-db`) — run the maintenance job on a schedule, **not** as an in-process timer, since searxng-mcp runs as several concurrent per-agent stdio children. Snapshot path/retention via `DOMAIN_DB_SNAPSHOT_DIR` / `DOMAIN_DB_SNAPSHOT_RETENTION`.
 
 ## Dependencies
 

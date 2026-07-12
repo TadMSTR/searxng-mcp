@@ -34,6 +34,7 @@ For a full local topology including Firecrawl, Crawl4AI, Ollama, Kiwix, the adbl
 | `fetch_url` | Fetch and extract readable markdown from any public URL. GitHub hosts (`github.com`, `raw.githubusercontent.com`, `api.github.com`) take the GitHub fast path; all others use the fetch cascade (Firecrawl → Crawl4AI → raw HTTP). Truncated to 8,000 characters. | `url`, `domain_profile` |
 | `crawl_site` | Crawl an entire site and return a manifest of URL/title/snippet for each page. Tries Firecrawl crawl first, falls back to sitemap parsing, then optional BFS. Full page content is cached in Valkey so follow-up `fetch_url` calls are zero-cost. | `url`, `max_pages` (default: `CRAWL_MAX_PAGES_DEFAULT`), `bfs` (bool, opt-in BFS) |
 | `clear_cache` | Purge the search cache, fetch cache, crawl manifest cache, or all. Useful when researching fast-moving topics where cached results may be stale. | `target` (`search`, `fetch`, `crawl`, `all`) |
+| `domain_stats` | Read-only view of the [domain capability database](#domain-capability-database). With `hostname`: one domain's per-tier success rates and capability flags. Without: an aggregate across all tracked domains (per-tier success, worst failing domains, seen-but-never-fetched count). Returns MCP structured output (`structuredContent`) for programmatic thresholding. | `hostname` (optional) |
 
 ### Parameters
 
@@ -193,9 +194,9 @@ Before invoking the fetch cascade, searxng-mcp reads the domain's `tier_stats_30
 
 ### Domain capability database
 
-Every fetch records what searxng-mcp learns about the target domain to Valkey under `domain:<hostname>` (90-day TTL, schema_version 3). Captured per record:
+Every fetch records what searxng-mcp learns about the target domain to Valkey under `domain:<hostname>` (90-day TTL, schema_version 4). Captured per record:
 
-- `tier_stats_30d.{tier1,tier2,tier3,tier4}.{attempts, ok, fail, last_fail_reason, window_start_ms}` — fetch success rate per tier over a rolling 30-day window; counters reset when the window expires. The `tier4` (Wayback Machine) slot is recorded only when `WAYBACK_ENABLED=true`.
+- `tier_stats_30d.{tier1,tier2,tier3,tier4,github}.{attempts, ok, fail, last_fail_reason, window_start_ms}` — fetch success rate per tier over a rolling 30-day window; counters reset when the window expires. The `tier4` (Wayback Machine) slot is recorded only when `WAYBACK_ENABLED=true`. The `github` slot records the [GitHub fast path](#github-urls) (`raw.githubusercontent.com` / `api.github.com` / `github.com` README fetches), which bypasses the tier cascade but is still tracked here. A `schema_version` bump rebuilds existing records fresh — accumulated windows for currently-idle domains are discarded (precedented across the 1→2, 2→3, 3→4 bumps).
 - `capabilities.metadata_fetch.{attempts, ok, fail, last_fail_reason}` — success/failure of the metadata side-channel fetch (`fetchRawHtmlForMetadata`, used for JSON-LD/og:title sampling). Tracked separately from `tier_stats_30d` since it answers "is this domain reachable at all", not "did full-content delivery succeed".
 - `capabilities.seen_in_search.{count, last_seen_ms}` — how often the domain appears in `search` results. Written fire-and-forget by `searxSearch()` on every return path (including cache hits) with no fetch performed, so a domain can be tracked before it is ever fetched.
 - `capabilities.robots_txt.{present, fetched, allows_us}` — robots.txt presence and whether it permits us
@@ -204,13 +205,30 @@ Every fetch records what searxng-mcp learns about the target domain to Valkey un
 - `capabilities.og_title.{sampled, present, last_sampled_at}` — same for `<meta property="og:title">`
 - `preferred_strategy` — currently set to `llms_full_txt` when a present probe lands; future phases will use this to skip the tier cascade
 
-Inspect a record with the bundled CLI:
+Inspect a record with the bundled CLI, or query it from an agent via the `domain_stats` tool (single-domain or aggregate; see [Tools](#tools)):
 
 ```bash
 pnpm dump-domain docs.anthropic.com
 ```
 
-Concurrent updates for the same hostname (the tier-attempt, robots-probe, and post-extract-sample recorders that fire in parallel during one fetch) are serialized through an in-process write queue per hostname.
+Concurrent updates for the same hostname (the tier-attempt, robots-probe, and post-extract-sample recorders that fire in parallel during one fetch) are serialized with an atomic `WATCH`/`MULTI`/`EXEC` read-modify-write, so writers across all processes stay consistent.
+
+#### Domain-db persistence
+
+The domain-db lives only in Valkey under a 90-day TTL and 30-day rolling windows, so a cache flush or TTL expiry erases capability learning that is expensive to re-acquire. Two CLIs make it durable:
+
+```bash
+pnpm domain-db-maintenance   # SCAN all domain:* records → write a dated JSON snapshot (+ prune) and emit OTel gauges
+pnpm restore-domain-db       # re-seed the domain-db from the newest snapshot after a flush
+```
+
+- **`domain-db-maintenance`** is a standalone job (run it on a schedule via cron or a PM2 cron-restart — **not** as an in-process timer, since searxng-mcp runs as several concurrent per-agent stdio children that would each fire it). One bounded `SCAN` feeds both outputs: a durable dated snapshot and, when `OTEL_EXPORTER_OTLP_ENDPOINT` is set, gauges (`searxng_domains_tracked`, `searxng_domains_failing`, `searxng_domain_tier_success_ratio{tier}`) force-flushed before exit.
+- **`restore-domain-db`** re-seeds only keys that are missing or whose live record is strictly staler than the snapshot (compares `last_fetch`) — it never clobbers a fresher-or-equal live record, so it is safe to run against a live, partially-populated Valkey (e.g. in a service boot sequence for automatic flush recovery).
+
+| Env var | Default | Purpose |
+|---------|---------|---------|
+| `DOMAIN_DB_SNAPSHOT_DIR` | `./domain-db-snapshots` | Where dated snapshots are written/read. Set to a durable path (appdata or NFS mount) in deployment. |
+| `DOMAIN_DB_SNAPSHOT_RETENTION` | `14` | How many snapshots to keep; older ones are pruned each maintenance run. |
 
 ### llms.txt fast path
 

@@ -38,7 +38,7 @@ describe("dump-domain CLI — present-domain case", () => {
     const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
     process.argv[2] = "docs.example.com";
     getDomainRecordMock.mockResolvedValueOnce({
-      schema_version: 3,
+      schema_version: 4,
       domain: "docs.example.com",
       first_seen: "2026-05-01T00:00:00Z",
       last_fetch: "2026-06-01T00:00:00Z",
@@ -59,6 +59,7 @@ describe("dump-domain CLI — present-domain case", () => {
         tier2: stat(2, 0, 2),
         tier3: stat(0, 0, 0),
         tier4: stat(3, 2, 1),
+        github: stat(5, 5, 0),
       },
     });
 
@@ -76,6 +77,8 @@ describe("dump-domain CLI — present-domain case", () => {
     expect(output).toContain("tier3 (raw)");
     expect(output).toContain("tier4 (wayback)");
     expect(output).toContain("67% ok (2/3)");
+    expect(output).toContain("github (fastpath)");
+    expect(output).toContain("100% ok (5/5)");
     expect(output).toContain("metadata_fetch");
     expect(output).toContain("75% ok (3/4)");
     expect(output).toContain("seen_in_search");
@@ -86,7 +89,7 @@ describe("dump-domain CLI — present-domain case", () => {
     const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
     process.argv[2] = "sparse.example.com";
     getDomainRecordMock.mockResolvedValueOnce({
-      schema_version: 3,
+      schema_version: 4,
       domain: "sparse.example.com",
       first_seen: "2026-05-01T00:00:00Z",
       last_fetch: "2026-06-01T00:00:00Z",
@@ -96,6 +99,7 @@ describe("dump-domain CLI — present-domain case", () => {
         tier2: stat(2, 0, 2),
         tier3: stat(0, 0, 0),
         tier4: stat(0, 0, 0),
+        github: stat(0, 0, 0),
       },
     });
 
@@ -112,7 +116,7 @@ describe("dump-domain CLI — present-domain case", () => {
     const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
     process.argv[2] = "flaky.example.com";
     getDomainRecordMock.mockResolvedValueOnce({
-      schema_version: 3,
+      schema_version: 4,
       domain: "flaky.example.com",
       first_seen: "2026-05-01T00:00:00Z",
       last_fetch: "2026-06-01T00:00:00Z",
@@ -122,6 +126,7 @@ describe("dump-domain CLI — present-domain case", () => {
         tier2: stat(0, 0, 0),
         tier3: stat(0, 0, 0),
         tier4: stat(0, 0, 0),
+        github: stat(0, 0, 0),
       },
     });
 

@@ -86,6 +86,7 @@ vi.mock("../src/tiers/index.js", () => ({
   waybackFetch: vi.fn().mockResolvedValue(null),
 }));
 
+import { recordTierAttempt } from "../src/domain-db.js";
 import { fetchPage } from "../src/fetch.js";
 import { tryLlmsTxtFetch } from "../src/llms-txt.js";
 import { checkRobots } from "../src/robots.js";
@@ -94,6 +95,7 @@ import { githubFetch } from "../src/tiers/index.js";
 const githubFetchMock = vi.mocked(githubFetch);
 const checkRobotsMock = vi.mocked(checkRobots);
 const llmsTxtMock = vi.mocked(tryLlmsTxtFetch);
+const recordTierAttemptMock = vi.mocked(recordTierAttempt);
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -126,6 +128,36 @@ describe("fetchPage — GitHub fast path", () => {
   it("routes api.github.com through githubFetch", async () => {
     await fetchPage("https://api.github.com/repos/a/b");
     expect(githubFetchMock).toHaveBeenCalledOnce();
+  });
+
+  it("records a github tier hit in the domain-db (SXNG-10)", async () => {
+    githubFetchMock.mockResolvedValueOnce({
+      title: "f.txt",
+      url: "https://raw.githubusercontent.com/a/b/main/f.txt",
+      text: "file contents",
+    });
+    await fetchPage("https://raw.githubusercontent.com/a/b/main/f.txt");
+    expect(recordTierAttemptMock).toHaveBeenCalledWith(
+      "https://raw.githubusercontent.com/a/b/main/f.txt",
+      "github",
+      "hit",
+    );
+  });
+
+  it("records a github tier error and rethrows when githubFetch fails (SXNG-10)", async () => {
+    githubFetchMock.mockRejectedValueOnce(
+      new Error("GitHub raw fetch error: 404 Not Found"),
+    );
+    await expect(
+      fetchPage("https://raw.githubusercontent.com/a/b/main/missing.txt"),
+    ).rejects.toThrow("GitHub fast-path fetch failed");
+    // runTier swallowed the original error but recorded it as a tier error.
+    expect(recordTierAttemptMock).toHaveBeenCalledWith(
+      "https://raw.githubusercontent.com/a/b/main/missing.txt",
+      "github",
+      "error",
+      "GitHub raw fetch error: 404 Not Found",
+    );
   });
 
   it("routes github.com through githubFetch", async () => {

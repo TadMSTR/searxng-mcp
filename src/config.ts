@@ -43,6 +43,17 @@ export const HISTER_TOKEN = process.env.HISTER_TOKEN ?? "";
 export const CRAWL4AI_URL = process.env.CRAWL4AI_URL ?? null;
 export const CRAWL4AI_API_TOKEN = process.env.CRAWL4AI_API_TOKEN;
 export const WAYBACK_ENABLED = process.env.WAYBACK_ENABLED === "true";
+// Durable domain-db snapshots (written by the domain-db-maintenance job,
+// re-seeded by restore-domain-db). DOMAIN_DB_SNAPSHOT_DIR is where dated JSON
+// snapshots live — set it to a durable path in deployment (e.g. an appdata or
+// NFS mount); defaults to a repo-local dir so the CLIs run without config.
+// DOMAIN_DB_SNAPSHOT_RETENTION is how many snapshots to keep (older pruned).
+export const DOMAIN_DB_SNAPSHOT_DIR =
+  process.env.DOMAIN_DB_SNAPSHOT_DIR ?? "./domain-db-snapshots";
+export const DOMAIN_DB_SNAPSHOT_RETENTION = (() => {
+  const v = parseInt(process.env.DOMAIN_DB_SNAPSHOT_RETENTION ?? "14", 10);
+  return Number.isNaN(v) || v < 1 ? 14 : v;
+})();
 export const ADBLOCK_PROXY_URL = process.env.ADBLOCK_PROXY_URL ?? null;
 export const TRANSPORT = process.env.SEARXNG_MCP_TRANSPORT ?? "stdio"; // "stdio" | "http"
 export const HTTP_PORT = parseInt(process.env.SEARXNG_MCP_PORT ?? "3001", 10);

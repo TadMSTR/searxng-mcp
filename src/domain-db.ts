@@ -9,18 +9,24 @@
 
 import { cacheAtomicUpdate, cacheGet } from "./cache.js";
 
-const DOMAIN_RECORD_TTL_SECONDS = 90 * 24 * 60 * 60;
-// Bumped 2->3 to add tier4_wayback to tier_stats_30d — existing records on
-// schema 2 are treated as stale and rebuilt fresh (see updateRecord), same
-// migration approach used for the 1->2 bump.
-const SCHEMA_VERSION = 3;
+export const DOMAIN_RECORD_TTL_SECONDS = 90 * 24 * 60 * 60;
+// Bumped 3->4 to add the `github` fast-path slot to tier_stats_30d (SXNG-10 —
+// GitHub fetches previously bypassed runTier() and recorded no tier stats).
+// Existing records on schema 3 are treated as stale and rebuilt fresh (see
+// updateRecord), same migration approach used for the 1->2 and 2->3 bumps.
+export const SCHEMA_VERSION = 4;
 const WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
 
 export type TierName =
   | "tier1_firecrawl"
   | "tier2_crawl4ai"
   | "tier3_rawfetch"
-  | "tier4_wayback";
+  | "tier4_wayback"
+  // GitHub fast path (raw.githubusercontent.com / api.github.com / github.com
+  // README fetches). Not a cascade tier — dispatched directly in fetchPage —
+  // but routed through runTier() so its hit/miss/error is recorded like any
+  // other tier.
+  | "github";
 export type PreferredStrategy = "llms_full_txt" | "tier1" | "tier2" | "tier3";
 
 export interface TierStat {
@@ -89,6 +95,7 @@ export interface DomainRecord {
     tier2: TierStat;
     tier3: TierStat;
     tier4: TierStat;
+    github: TierStat;
   };
   preferred_strategy?: PreferredStrategy;
   notes?: string;
@@ -110,6 +117,7 @@ function newRecord(domain: string, now: string): DomainRecord {
       tier2: emptyStat(),
       tier3: emptyStat(),
       tier4: emptyStat(),
+      github: emptyStat(),
     },
   };
 }
@@ -124,16 +132,17 @@ export function normalizeHostname(input: string): string | null {
   }
 }
 
-function domainKey(hostname: string): string {
+export function domainKey(hostname: string): string {
   return `domain:${hostname}`;
 }
 
-export async function getDomainRecord(
-  hostnameOrUrl: string,
-): Promise<DomainRecord | null> {
-  const hostname = normalizeHostname(hostnameOrUrl);
-  if (!hostname) return null;
-  const raw = await cacheGet(domainKey(hostname));
+/**
+ * Parse a raw domain-db value, returning the record only if it is valid JSON
+ * on the current schema. Stale-schema and malformed records return null — the
+ * same staleness gate `getDomainRecord` applies, extracted so the bounded
+ * enumeration in domain-stats.ts uses an identical contract.
+ */
+export function parseDomainRecord(raw: string | null): DomainRecord | null {
   if (!raw) return null;
   try {
     const parsed = JSON.parse(raw) as DomainRecord;
@@ -142,6 +151,14 @@ export async function getDomainRecord(
   } catch {
     return null;
   }
+}
+
+export async function getDomainRecord(
+  hostnameOrUrl: string,
+): Promise<DomainRecord | null> {
+  const hostname = normalizeHostname(hostnameOrUrl);
+  if (!hostname) return null;
+  return parseDomainRecord(await cacheGet(domainKey(hostname)));
 }
 
 // Atomic read-modify-write: uses WATCH/MULTI/EXEC via cacheAtomicUpdate.
@@ -177,11 +194,15 @@ function updateRecord(
   });
 }
 
-const TIER_KEY: Record<TierName, "tier1" | "tier2" | "tier3" | "tier4"> = {
+const TIER_KEY: Record<
+  TierName,
+  "tier1" | "tier2" | "tier3" | "tier4" | "github"
+> = {
   tier1_firecrawl: "tier1",
   tier2_crawl4ai: "tier2",
   tier3_rawfetch: "tier3",
   tier4_wayback: "tier4",
+  github: "github",
 };
 
 export async function recordTierAttempt(

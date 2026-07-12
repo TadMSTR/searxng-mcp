@@ -1,6 +1,6 @@
 {
   "name": "@tadmstr/searxng-mcp",
-  "version": "3.13.0",
+  "version": "3.14.0",
   "description": "MCP server for SearXNG — private web search for Claude Code",
   "main": "build/src/index.js",
   "bin": {
@@ -18,7 +18,9 @@
     "coverage": "vitest run --coverage",
     "lint": "biome check src/ tests/",
     "lint:fix": "biome check --write src/ tests/",
-    "dump-domain": "node build/src/cli/dump-domain.js"
+    "dump-domain": "node build/src/cli/dump-domain.js",
+    "domain-db-maintenance": "node build/src/cli/domain-db-maintenance.js",
+    "restore-domain-db": "node build/src/cli/restore-domain-db.js"
   },
   "keywords": [
     "searxng",
