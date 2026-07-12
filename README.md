@@ -31,7 +31,7 @@ For a full local topology including Firecrawl, Crawl4AI, Ollama, Kiwix, the adbl
 | `search` | Search via SearXNG with local reranking. Fetches a wider result pool, reranks by relevance, returns top N. | `query`, `num_results` (1–20), `category`, `time_range`, `domain_profile`, `expand`, `language` |
 | `search_and_fetch` | Search, rerank, then fetch full content of the top result(s) using the fetch cascade (Firecrawl → Crawl4AI → raw HTTP). | `query`, `category`, `time_range`, `fetch_count` (1–3), `domain_profile`, `expand`, `language` |
 | `search_and_summarize` | Search, fetch top results, then synthesize a summary with citations via Ollama (`OLLAMA_SUMMARIZE_MODEL`). Falls back to raw fetched content if Ollama is unavailable. | `query`, `fetch_count` (1–5), `category`, `time_range`, `domain_profile`, `expand`, `language` |
-| `fetch_url` | Fetch and extract readable markdown from any public URL. GitHub URLs use the GitHub API; all others use the fetch cascade (Firecrawl → Crawl4AI → raw HTTP). Truncated to 8,000 characters. | `url`, `domain_profile` |
+| `fetch_url` | Fetch and extract readable markdown from any public URL. GitHub hosts (`github.com`, `raw.githubusercontent.com`, `api.github.com`) take the GitHub fast path; all others use the fetch cascade (Firecrawl → Crawl4AI → raw HTTP). Truncated to 8,000 characters. | `url`, `domain_profile` |
 | `crawl_site` | Crawl an entire site and return a manifest of URL/title/snippet for each page. Tries Firecrawl crawl first, falls back to sitemap parsing, then optional BFS. Full page content is cached in Valkey so follow-up `fetch_url` calls are zero-cost. | `url`, `max_pages` (default: `CRAWL_MAX_PAGES_DEFAULT`), `bfs` (bool, opt-in BFS) |
 | `clear_cache` | Purge the search cache, fetch cache, crawl manifest cache, or all. Useful when researching fast-moving topics where cached results may be stale. | `target` (`search`, `fetch`, `crawl`, `all`) |
 
@@ -79,8 +79,8 @@ flowchart TD
     entry["fetchPage(url)"]
     cache{"Valkey cache hit?"}
     cached["→ return cached { title, url, text }"]
-    github{"github.com?"}
-    gh_fetch["GitHub API / raw.githubusercontent.com\n→ return"]
+    github{"GitHub host?\ngithub.com · raw · api"}
+    gh_fetch["GitHub API / raw.githubusercontent.com / api.github.com\n→ return"]
     llms{"llms.txt domain?"}
     llms_fetch["Probe /llms-full.txt\nextract matching section\n→ return"]
     kiwix{"Kiwix host?\nKIWIX_URL set"}
@@ -193,9 +193,11 @@ Before invoking the fetch cascade, searxng-mcp reads the domain's `tier_stats_30
 
 ### Domain capability database
 
-Every fetch records what searxng-mcp learns about the target domain to Valkey under `domain:<hostname>` (90-day TTL, schema_version 2). Captured per record:
+Every fetch records what searxng-mcp learns about the target domain to Valkey under `domain:<hostname>` (90-day TTL, schema_version 3). Captured per record:
 
-- `tier_stats_30d.{tier1,tier2,tier3}.{attempts, ok, fail, last_fail_reason, window_start_ms}` — fetch success rate per tier over a rolling 30-day window; counters reset when the window expires
+- `tier_stats_30d.{tier1,tier2,tier3,tier4}.{attempts, ok, fail, last_fail_reason, window_start_ms}` — fetch success rate per tier over a rolling 30-day window; counters reset when the window expires. The `tier4` (Wayback Machine) slot is recorded only when `WAYBACK_ENABLED=true`.
+- `capabilities.metadata_fetch.{attempts, ok, fail, last_fail_reason}` — success/failure of the metadata side-channel fetch (`fetchRawHtmlForMetadata`, used for JSON-LD/og:title sampling). Tracked separately from `tier_stats_30d` since it answers "is this domain reachable at all", not "did full-content delivery succeed".
+- `capabilities.seen_in_search.{count, last_seen_ms}` — how often the domain appears in `search` results. Written fire-and-forget by `searxSearch()` on every return path (including cache hits) with no fetch performed, so a domain can be tracked before it is ever fetched.
 - `capabilities.robots_txt.{present, fetched, allows_us}` — robots.txt presence and whether it permits us
 - `capabilities.llms_full_txt.{present, size_bytes, last_checked}` — whether the domain serves `/llms-full.txt`
 - `capabilities.json_ld_article.{sampled, present, last_sampled_at}` — how often Article-schema JSON-LD is found
@@ -521,10 +523,14 @@ mcpServers:
 
 ## GitHub URLs
 
-`github.com` URLs are handled natively without Firecrawl:
+GitHub URLs are handled natively without Firecrawl. `githubFetch` dispatches on hostname:
 
 - **Repo root** (`github.com/owner/repo`) — fetches the README via the GitHub API
-- **File blob** (`github.com/owner/repo/blob/branch/path/to/file`) — fetches raw content from `raw.githubusercontent.com`
+- **File blob** (`github.com/owner/repo/blob/branch/path/to/file`) — rewrites to and fetches raw content from `raw.githubusercontent.com`
+- **Raw file** (`raw.githubusercontent.com/...`) — fetched directly as-is
+- **API** (`api.github.com/...`) — response decoded (base64 `content` fields) or pretty-printed as JSON
+
+Direct `raw.githubusercontent.com` and `api.github.com` URLs previously matched only `github.com` and fell through to the HTML-scraping tier cascade, which cannot render a raw text file or bare JSON response — they failed 100% of the time. They now take the GitHub fast path.
 
 Unauthenticated requests are rate-limited to 60/hour. Set `GITHUB_TOKEN` to raise this to 5,000/hour.
 
