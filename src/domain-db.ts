@@ -136,12 +136,13 @@ function domainKey(hostname: string): string {
   return `domain:${hostname}`;
 }
 
-export async function getDomainRecord(
-  hostnameOrUrl: string,
-): Promise<DomainRecord | null> {
-  const hostname = normalizeHostname(hostnameOrUrl);
-  if (!hostname) return null;
-  const raw = await cacheGet(domainKey(hostname));
+/**
+ * Parse a raw domain-db value, returning the record only if it is valid JSON
+ * on the current schema. Stale-schema and malformed records return null — the
+ * same staleness gate `getDomainRecord` applies, extracted so the bounded
+ * enumeration in domain-stats.ts uses an identical contract.
+ */
+export function parseDomainRecord(raw: string | null): DomainRecord | null {
   if (!raw) return null;
   try {
     const parsed = JSON.parse(raw) as DomainRecord;
@@ -150,6 +151,14 @@ export async function getDomainRecord(
   } catch {
     return null;
   }
+}
+
+export async function getDomainRecord(
+  hostnameOrUrl: string,
+): Promise<DomainRecord | null> {
+  const hostname = normalizeHostname(hostnameOrUrl);
+  if (!hostname) return null;
+  return parseDomainRecord(await cacheGet(domainKey(hostname)));
 }
 
 // Atomic read-modify-write: uses WATCH/MULTI/EXEC via cacheAtomicUpdate.
