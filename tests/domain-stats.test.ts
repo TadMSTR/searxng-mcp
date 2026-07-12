@@ -222,6 +222,7 @@ describe("aggregateDomainStats", () => {
       mkRecord("new.com", { tier1: stat(3, 0, 3) }),
     ];
     const agg = aggregateDomainStats(records);
+    expect(agg.failing_count).toBe(2);
     expect(agg.top_failing.map((f) => f.domain)).toEqual([
       "raw.githubusercontent.com",
       "flaky.com",
@@ -239,6 +240,7 @@ describe("aggregateDomainStats", () => {
       mkRecord(`fail${i}.com`, { tier1: stat(20, 0, 20) }),
     );
     const agg = aggregateDomainStats(records);
+    expect(agg.failing_count).toBe(15);
     expect(agg.top_failing).toHaveLength(10);
   });
 

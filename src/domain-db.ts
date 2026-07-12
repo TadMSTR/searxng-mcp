@@ -9,12 +9,12 @@
 
 import { cacheAtomicUpdate, cacheGet } from "./cache.js";
 
-const DOMAIN_RECORD_TTL_SECONDS = 90 * 24 * 60 * 60;
+export const DOMAIN_RECORD_TTL_SECONDS = 90 * 24 * 60 * 60;
 // Bumped 3->4 to add the `github` fast-path slot to tier_stats_30d (SXNG-10 —
 // GitHub fetches previously bypassed runTier() and recorded no tier stats).
 // Existing records on schema 3 are treated as stale and rebuilt fresh (see
 // updateRecord), same migration approach used for the 1->2 and 2->3 bumps.
-const SCHEMA_VERSION = 4;
+export const SCHEMA_VERSION = 4;
 const WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
 
 export type TierName =
@@ -132,7 +132,7 @@ export function normalizeHostname(input: string): string | null {
   }
 }
 
-function domainKey(hostname: string): string {
+export function domainKey(hostname: string): string {
   return `domain:${hostname}`;
 }
 

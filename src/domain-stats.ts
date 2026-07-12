@@ -79,6 +79,9 @@ export interface DomainAggregate {
   // attempts) — candidates the cascade has never exercised.
   seen_never_fetched: number;
   tiers: Record<TierSlotName, TierAggregate>;
+  // Total number of failing domains (enough attempts + low success rate),
+  // uncapped — top_failing is a bounded sample of this set.
+  failing_count: number;
   // Domains with enough attempts to judge and a low success rate, worst
   // (most attempts) first, capped at TOP_FAILING_LIMIT.
   top_failing: FailingDomain[];
@@ -205,6 +208,7 @@ export function aggregateDomainStats(
     domains_tracked: records.length,
     seen_never_fetched: seenNeverFetched,
     tiers,
+    failing_count: failing.length,
     top_failing: failing.slice(0, TOP_FAILING_LIMIT),
     truncated,
   };
@@ -343,7 +347,11 @@ export function formatDomainAggregate(agg: DomainAggregate): string {
     lines.push(`  ${slot.padEnd(7)}: ${rate}`);
   }
 
-  lines.push("", `--- top failing domains (worst first) ---`);
+  const more =
+    agg.failing_count > agg.top_failing.length
+      ? ` (showing top ${agg.top_failing.length} of ${agg.failing_count})`
+      : "";
+  lines.push("", `--- top failing domains (worst first)${more} ---`);
   if (agg.top_failing.length === 0) {
     lines.push("  none");
   } else {

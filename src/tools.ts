@@ -449,6 +449,7 @@ const AggregateOutputSchema = z.object({
   domains_tracked: z.number(),
   seen_never_fetched: z.number(),
   tiers: AllTiersOutputSchema,
+  failing_count: z.number(),
   top_failing: z.array(
     z.object({
       domain: z.string(),
