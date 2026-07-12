@@ -6,6 +6,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [3.14.0] - 2026-07-12
+
+### Added
+- **`domain_stats` MCP tool** — the domain capability database was previously reachable only via the `dump-domain` CLI (one host at a time). A new read-only `domain_stats` tool exposes it to agents: with `hostname`, one domain's per-tier success rates and capability flags; without, an aggregate across all tracked domains (per-tier success, worst failing domains, seen-but-never-fetched count). Registered via `server.registerTool` with an `outputSchema`, so it returns MCP **structured output** (`structuredContent`) that agents can threshold/compare without parsing prose, alongside the human-readable text block. Read-only, instrumented, and off the fetch/search hot path (bounded, capped, cursor-based `SCAN` with a `truncated` flag).
+- **Durable domain-db snapshots + restore** — the domain-db lives only in Valkey under a 90-day TTL and 30-day rolling windows, so a flush or TTL expiry erased capability learning that is expensive to re-acquire. New standalone `domain-db-maintenance` job (`pnpm domain-db-maintenance`) writes a dated JSON snapshot of all `domain:*` records (with count-based retention) and, when `OTEL_EXPORTER_OTLP_ENDPOINT` is set, emits domain-db aggregates as OTel gauges (`searxng_domains_tracked`, `searxng_domains_failing`, `searxng_domain_tier_success_ratio{tier}`) — force-flushed before exit so a short-lived run still exports. New `restore-domain-db` CLI (`pnpm restore-domain-db`) re-seeds the domain-db from the newest snapshot after a flush, restoring only missing or strictly-staler keys (compares `last_fetch`, never clobbers a fresher-or-equal live record). Run maintenance on a schedule (cron / PM2 cron-restart) — **not** as an in-process timer, since searxng-mcp runs as several concurrent per-agent stdio children.
+- **New env vars:** `DOMAIN_DB_SNAPSHOT_DIR` (default `./domain-db-snapshots`; set to a durable path in deployment) and `DOMAIN_DB_SNAPSHOT_RETENTION` (default `14`).
+- **github fast-path domain-db telemetry (SXNG-10)** — GitHub fast-path fetches (`raw.githubusercontent.com` / `api.github.com` / `github.com` README) previously bypassed `runTier()` and recorded no tier stats, so any aggregate under-counted them (this blind spot is what let `raw.githubusercontent.com` sit at 28 attempts / 0 successes invisibly). The dispatch is now routed through `runTier()` with a dedicated `github` slot in `tier_stats_30d`; `dump-domain` prints it alongside tier1-4. Bumps `DomainRecord.schema_version` 3→4 — existing v3 records are treated as stale and rebuilt fresh on next write, same migration approach as the 1→2 and 2→3 bumps.
+
+### Changed
+- **Domain-record tier-stats formatter extracted and shared** — the tier-stats rendering used by `dump-domain` now lives in `src/domain-stats.ts` (`formatDomainRecord`) and is reused by the `domain_stats` tool, so the CLI and the tool present identical output. Coverage floor ratcheted to the new measured baseline (lines 74 / statements 72 / functions 74 / branches 65).
+
+### Docs
+- **Hister compose documentation (closes SXNG-6)** — `docker-compose.full.yml` gains an optional-service comment block for Hister and `HISTER_URL`/`HISTER_TOKEN` in the MCP-client env block; `docker-compose.example.yml`'s env block gains the same two lines. Hister is a separate deployable (not shipped in the compose), so this documents pointing searxng-mcp at it. README documents the new `domain_stats` tool and a "Domain-db persistence" section.
+
 ## [3.13.0] - 2026-07-11
 
 ### Added

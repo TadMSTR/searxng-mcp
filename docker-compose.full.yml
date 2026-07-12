@@ -159,6 +159,14 @@ services:
     #   - ./nats.conf:/etc/nats/nats.conf:ro
     # command: ["-c", "/etc/nats/nats.conf"]
 
+  # ── Hister (optional — browsing-history fast path) ──────────────────────────
+  # Hister is a separate service (a browser-extension-fed history index), not
+  # shipped in this compose. Run it separately, then point searxng-mcp at it via
+  # HISTER_URL / HISTER_TOKEN (below). When both are set, fetch_url queries
+  # Hister before the tier cascade and serves login-walled / JS-heavy pages
+  # already rendered by the browser extension. Leave unset to disable (zero
+  # overhead). See README "Hister (optional)".
+
 networks:
   fetch-net:
   firecrawl-net:
@@ -184,6 +192,8 @@ volumes:
 #   WAYBACK_ENABLED         false
 #   ADBLOCK_PROXY_URL       http://localhost:8118
 #   NATS_URL                nats://localhost:4222
+#   HISTER_URL              http://localhost:4434   # optional — browsing-history fast path
+#   HISTER_TOKEN            <bearer token>          # optional — required when HISTER_URL is set
 #   CACHE_TTL_SECONDS       3600
 #   FETCH_CACHE_TTL_SECONDS 86400
 #   RERANK_RECENCY_WEIGHT   0.15

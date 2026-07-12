@@ -45,5 +45,7 @@ services:
 #   CACHE_TTL_SECONDS     3600                     # Search result cache TTL
 #   FETCH_CACHE_TTL_SECONDS 86400                  # Fetched page cache TTL
 #   NATS_URL                                       # NATS server for event publishing
+#   HISTER_URL            http://localhost:4434    # optional — browsing-history fast path
+#   HISTER_TOKEN          <bearer token>           # optional — required when HISTER_URL is set
 #   OTEL_EXPORTER_OTLP_ENDPOINT                   # OpenTelemetry endpoint
 #   RERANK_RECENCY_WEIGHT 0.15                     # Recency bias in reranking (0-1)
