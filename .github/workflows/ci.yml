@@ -55,11 +55,12 @@ jobs:
         with:
           node-version: "22"
 
-      - name: Install pnpm
-        run: corepack enable
-
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
+      # npmjs.org retired the audit endpoints `pnpm audit` depends on (410,
+      # even on latest pnpm) — npm's own audit already speaks the new bulk
+      # advisory endpoint, so generate a throwaway lockfile from package.json
+      # and audit with that instead. See SXNG-15.
+      - name: Generate npm lockfile for audit
+        run: npm install --package-lock-only
 
       - name: Audit dependencies
-        run: pnpm audit --prod
+        run: npm audit --omit=dev
