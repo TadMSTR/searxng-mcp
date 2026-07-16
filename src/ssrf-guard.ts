@@ -20,12 +20,16 @@ import { isIP } from "node:net";
 import { Agent, type Dispatcher } from "undici";
 
 export class SsrfBlockedError extends Error {
+  // The resolved `address` is kept as a property for programmatic use but is
+  // deliberately NOT interpolated into the message — surfacing the internal IP
+  // a hostname resolved to would leak network topology to the caller/telemetry
+  // (OE-02 parity with raw.ts's redirect handling).
   constructor(
     readonly hostname: string,
     readonly address: string,
   ) {
     super(
-      `Blocked request to ${hostname}: resolves to private/reserved address ${address}`,
+      `Blocked request to ${hostname}: resolves to a private/reserved address`,
     );
     this.name = "SsrfBlockedError";
   }
