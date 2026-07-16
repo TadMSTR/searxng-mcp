@@ -2,6 +2,7 @@ import { cacheGet, cacheSet } from "./cache.js";
 import { FETCH_CACHE_TTL_SECONDS } from "./config.js";
 import { recordLlmsFullProbe } from "./domain-db.js";
 import { getLlmsTxtAllowlist } from "./domains.js";
+import { safeFetch } from "./fetch-utils.js";
 
 const PROBE_PRESENT_TTL_SECONDS = 24 * 60 * 60;
 const PROBE_ABSENT_TTL_SECONDS = 7 * 24 * 60 * 60;
@@ -79,7 +80,7 @@ function llmsBodyCacheKey(origin: string): string {
 
 async function fetchLlmsFullTxt(origin: string): Promise<CachedLlmsFull> {
   try {
-    const res = await fetch(`${origin}/llms-full.txt`, {
+    const res = await safeFetch(`${origin}/llms-full.txt`, {
       headers: { "User-Agent": USER_AGENT },
       redirect: "follow",
       signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),

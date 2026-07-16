@@ -12,7 +12,7 @@ import {
   FIRECRAWL_URL,
 } from "./config.js";
 import { assertPublicUrl, fetchPage } from "./fetch.js";
-import { readBoundedText } from "./fetch-utils.js";
+import { readBoundedText, safeFetch } from "./fetch-utils.js";
 import { incCounter, recordHistogram } from "./observability.js";
 import { checkRobots, getRobotsForOrigin } from "./robots.js";
 
@@ -183,8 +183,10 @@ export function extractSitemapUrls(xml: string): string[] {
 
 async function fetchSitemapXml(url: string): Promise<string | null> {
   try {
-    assertPublicUrl(url); // SSRF guard — sitemap URLs can come from untrusted robots.txt
-    const res = await fetch(url, {
+    // SSRF guard — sitemap URLs can come from untrusted robots.txt. safeFetch
+    // applies the string check and the DNS-validating dispatcher (each redirect
+    // hop included).
+    const res = await safeFetch(url, {
       headers: { "User-Agent": "searxng-mcp" },
       signal: AbortSignal.timeout(10_000),
     });
@@ -340,8 +342,10 @@ export async function bfsCrawl(
       fetchedText = result.text;
 
       // Extract links from the raw response — re-fetch with raw tier for link
-      // extraction. fetchPage already cached the content; we need HTML for links.
-      const rawRes = await fetch(normalizedUrl, {
+      // extraction. fetchPage already cached the content; we need HTML for
+      // links. safeFetch guards this attacker-influenced URL (BFS discovers it
+      // from a crawled page) against private/reserved resolutions.
+      const rawRes = await safeFetch(normalizedUrl, {
         headers: { "User-Agent": "searxng-mcp" },
         signal: AbortSignal.timeout(10_000),
       });

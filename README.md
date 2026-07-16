@@ -28,10 +28,10 @@ For a full local topology including Firecrawl, Crawl4AI, Ollama, Kiwix, the adbl
 
 | Tool | Description | Key Parameters |
 |------|-------------|----------------|
-| `search` | Search via SearXNG with local reranking. Fetches a wider result pool, reranks by relevance, returns top N. | `query`, `num_results` (1–20), `category`, `time_range`, `domain_profile`, `expand`, `language` |
-| `search_and_fetch` | Search, rerank, then fetch full content of the top result(s) using the fetch cascade (Firecrawl → Crawl4AI → raw HTTP). | `query`, `category`, `time_range`, `fetch_count` (1–3), `domain_profile`, `expand`, `language` |
-| `search_and_summarize` | Search, fetch top results, then synthesize a summary with citations via Ollama (`OLLAMA_SUMMARIZE_MODEL`). Falls back to raw fetched content if Ollama is unavailable. | `query`, `fetch_count` (1–5), `category`, `time_range`, `domain_profile`, `expand`, `language` |
-| `fetch_url` | Fetch and extract readable markdown from any public URL. GitHub hosts (`github.com`, `raw.githubusercontent.com`, `api.github.com`) take the GitHub fast path; all others use the fetch cascade (Firecrawl → Crawl4AI → raw HTTP). Truncated to 8,000 characters. | `url`, `domain_profile` |
+| `search` | Search via SearXNG with local reranking. Fetches a wider result pool, reranks by relevance, returns top N. SearXNG's native direct answers, infoboxes, spelling corrections, and related suggestions are surfaced above the list and in `structuredContent`. | `query`, `num_results` (1–20), `category`, `time_range`, `domain_profile`, `expand`, `language`, `engines`, `site` |
+| `search_and_fetch` | Search, rerank, then fetch full content of the top result(s) using the fetch cascade (Firecrawl → Crawl4AI → raw HTTP). | `query`, `category`, `time_range`, `fetch_count` (1–3), `domain_profile`, `expand`, `language`, `engines`, `site` |
+| `search_and_summarize` | Search, fetch top results, then synthesize a summary with citations via Ollama (`OLLAMA_SUMMARIZE_MODEL`). Falls back to raw fetched content if Ollama is unavailable. | `query`, `fetch_count` (1–5), `category`, `time_range`, `domain_profile`, `expand`, `language`, `engines`, `site` |
+| `fetch_url` | Fetch and extract readable markdown from any public URL. GitHub hosts take the GitHub fast path; YouTube video URLs return the transcript and Reddit thread URLs return post+comments (both opt-in via robots, see below); all others use the fetch cascade (Firecrawl → Crawl4AI → raw HTTP). Trimmed to a token budget (default ~8,000 chars). | `url`, `domain_profile`, `max_tokens`, `target_selector`, `wait_for_selector` |
 | `crawl_site` | Crawl an entire site and return a manifest of URL/title/snippet for each page. Tries Firecrawl crawl first, falls back to sitemap parsing, then optional BFS. Full page content is cached in Valkey so follow-up `fetch_url` calls are zero-cost. | `url`, `max_pages` (default: `CRAWL_MAX_PAGES_DEFAULT`), `bfs` (bool, opt-in BFS) |
 | `clear_cache` | Purge the search cache, fetch cache, crawl manifest cache, or all. Useful when researching fast-moving topics where cached results may be stale. | `target` (`search`, `fetch`, `crawl`, `all`) |
 | `domain_stats` | Read-only view of the [domain capability database](#domain-capability-database). With `hostname`: one domain's per-tier success rates and capability flags. Without: an aggregate across all tracked domains (per-tier success, worst failing domains, seen-but-never-fetched count). Returns MCP structured output (`structuredContent`) for programmatic thresholding. | `hostname` (optional) |
@@ -49,6 +49,16 @@ For a full local topology including Firecrawl, Crawl4AI, Ollama, Kiwix, the adbl
 **`expand`** — when `true`, rewrites the query via Ollama (`OLLAMA_EXPAND_MODEL`) before searching to improve recall. Requires `OLLAMA_URL`. Defaults to the `EXPAND_QUERIES` env var value.
 
 **`language`** — BCP-47 language code (e.g. `en`, `de`) or `all` to restrict to a specific language. Omit to use the SearXNG instance default. Available on `search`, `search_and_fetch`, and `search_and_summarize`.
+
+**`engines`** — comma-separated SearXNG engine names to restrict the search to (e.g. `google,duckduckgo`). Forwarded verbatim; unknown/disabled engines degrade to fewer results rather than erroring. Available on all three search tools.
+
+**`site`** — restrict results to one domain or a list (e.g. `github.com` or `["github.com", "gitlab.com"]`). Applied best-effort as a `site:` query operator — most engines (Google, Bing, DDG, Brave) honor it, some ignore it. Available on all three search tools.
+
+**`max_tokens`** (`fetch_url`) — approximate token budget for returned content (chars ≈ tokens × 4). Omit for the ~2,000-token / 8,000-char default; max 10,000 tokens.
+
+**`target_selector`** (`fetch_url`) — CSS selector to scope extraction to a specific element (e.g. `article`, `main .content`). Honored natively by Firecrawl/Crawl4AI and applied client-side on the raw-HTTP tier; ignored by fast paths and when it matches nothing.
+
+**`wait_for_selector`** (`fetch_url`) — CSS selector to wait for before extracting, for JS-rendered pages. Honored by the rendering tiers (Firecrawl/Crawl4AI); ignored on raw HTTP (no JS).
 
 ## Architecture
 
@@ -255,6 +265,17 @@ unset the feature adds zero overhead — `isKiwixHost()` returns false immediate
 
 Set `KIWIX_URL` to your kiwix-serve base URL (e.g. `http://localhost:8292`).
 
+### YouTube & Reddit fast paths
+
+`fetch_url` recognises YouTube video URLs (`youtube.com`, `youtu.be`) and Reddit thread URLs and can serve them directly instead of scraping the rendered page:
+
+- **YouTube** — extracts the video's caption track from the watch page and returns the transcript. Enabled by `YOUTUBE_TRANSCRIPT_ENABLED` (default on).
+- **Reddit** — fetches the public `.json` view and returns the post plus top comments in the standard `{title, url, text}` shape; falls through on HTTP 429. Enabled by `REDDIT_FASTPATH_ENABLED` (default on).
+
+Both rely on **unofficial, undocumented endpoints** (YouTube's timedtext API, Reddit's `.json`) — best-effort with no SLA; either may break on an upstream change, hence the kill switches. On any miss the request falls through to the normal tier cascade (which can still get a YouTube page's title/description).
+
+**robots.txt:** both endpoints are disallowed by the sites' `robots.txt` (Reddit disallows everything; YouTube disallows `/api/`, where the transcript lives). By default these fast paths respect that and stay dormant, falling through to the cascade. On your own instance you can opt into direct fetching with `YOUTUBE_IGNORE_ROBOTS=true` / `REDDIT_IGNORE_ROBOTS=true`.
+
 ### Site crawling
 
 `crawl_site` crawls an entire site and returns a manifest of URL/title/snippet for each page found. It uses a three-phase strategy cascade:
@@ -445,6 +466,10 @@ All service URLs are configurable via environment variables.
 | `KIWIX_URL` | *(unset)* | kiwix-serve base URL (e.g. `http://localhost:8292`) — enables Kiwix fast path for Wikipedia, Stack Overflow, and Arch Wiki. Feature is disabled and zero-overhead when unset. |
 | `HISTER_URL` | *(unset)* | Hister browsing-history index base URL — enables Hister fast path before the tier cascade for login-walled and JS-heavy pages. Feature disabled and zero-overhead when unset. |
 | `HISTER_TOKEN` | *(unset)* | Bearer token for Hister API authentication. Required when `HISTER_URL` is set and the instance has token auth enabled. |
+| `YOUTUBE_TRANSCRIPT_ENABLED` | `true` | Enables the YouTube transcript fast path in `fetch_url`. Set to `false` to disable (e.g. if the unofficial timedtext endpoint breaks upstream). |
+| `YOUTUBE_IGNORE_ROBOTS` | `false` | Opt into fetching YouTube transcripts despite YouTube's `robots.txt` disallowing `/api/`. Default respects robots (fast path stays dormant, falls through to the cascade). |
+| `REDDIT_FASTPATH_ENABLED` | `true` | Enables the Reddit `.json` fast path in `fetch_url`. Set to `false` to disable. |
+| `REDDIT_IGNORE_ROBOTS` | `false` | Opt into fetching Reddit `.json` despite Reddit's `robots.txt` (`Disallow: /`). Default respects robots (fast path stays dormant, falls through to the cascade). |
 | `SEARXNG_MCP_TRANSPORT` | `stdio` | Transport mode: `stdio` (default, single-client) or `http` (shared HTTP/SSE server). |
 | `SEARXNG_MCP_PORT` | `3001` | HTTP listen port (HTTP transport mode only). |
 | `SEARXNG_MCP_HOST` | `127.0.0.1` | HTTP listen address (HTTP transport mode only). |
@@ -554,13 +579,18 @@ Unauthenticated requests are rate-limited to 60/hour. Set `GITHUB_TOKEN` to rais
 
 ## Security
 
-### URL safety
+### URL safety (SSRF)
 
-The `fetch_url` and `search_and_fetch` tools enforce a URL allowlist — private/internal IP ranges (`10.x`, `192.168.x`, `172.16-31.x`, `localhost`, `127.x`), IPv6 private ranges (`::1`, `fc00::/7`, `fe80::/10`), and non-HTTP protocols are blocked. This prevents the server from being used as an SSRF proxy into your local network.
+Every outbound fetch to a caller-influenced or discovered URL — the raw-HTTP tier, robots.txt / llms.txt / Wayback / sitemap probes, the BFS crawl link-fetch, and the GitHub fast path — is guarded two ways:
+
+1. **String check** (`assertPublicUrl`) — rejects non-HTTP(S) URLs and private/internal IP *literals*: RFC1918 (`10.x`, `192.168.x`, `172.16–31.x`), loopback (`127.x`, `::1`), link-local / cloud metadata (`169.254.x`), CGNAT (`100.64/10`), IPv6 ULA (`fc00::/7`) and link-local (`fe80::/10`), IPv4-mapped, and multicast/reserved ranges.
+2. **Connect-time DNS validation** — a shared undici dispatcher whose `connect.lookup` validates the *resolved* address (the exact one the socket connects to). This closes the DNS-rebinding / TOCTOU gap where a public hostname resolves to a private address, and it re-runs on **every redirect hop**, so a redirect chain cannot bounce into your internal network.
+
+Configured internal services (Firecrawl, Crawl4AI, SearXNG, Ollama, Reranker) are reached by their own URLs and are intentionally not guarded.
 
 ### Redirect protection
 
-HTTP redirects in raw fetch requests are blocked to prevent SSRF bypass via redirect chains to internal addresses.
+The raw-HTTP and GitHub fast-path fetches additionally use `redirect: "manual"` and reject 3xx responses outright (the `Location` header is never echoed back to the caller). Redirect-following probes (robots.txt, llms.txt, sitemap) are covered by the connect-time DNS validation above, which re-checks each hop.
 
 ### Dependency auditing
 

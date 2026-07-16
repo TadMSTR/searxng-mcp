@@ -1,4 +1,4 @@
-import { readBoundedText, type TierResult } from "../fetch-utils.js";
+import { readBoundedText, safeFetch, type TierResult } from "../fetch-utils.js";
 import { rawFetch } from "./raw.js";
 
 const CDX_URL = "https://archive.org/wayback/available";
@@ -11,7 +11,7 @@ export async function waybackFetch(
   maxChars = 8000,
 ): Promise<TierResult | null> {
   try {
-    const cdx = await fetch(`${CDX_URL}?url=${encodeURIComponent(url)}`, {
+    const cdx = await safeFetch(`${CDX_URL}?url=${encodeURIComponent(url)}`, {
       signal: AbortSignal.timeout(WAYBACK_TIMEOUT),
     });
     if (!cdx.ok) return null;

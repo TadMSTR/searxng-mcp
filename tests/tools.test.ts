@@ -9,21 +9,36 @@ vi.mock("../src/cache.js", () => ({
   searchCacheKey: vi.fn().mockReturnValue("key"),
 }));
 
+const EMPTY_META = {
+  answers: [],
+  infoboxes: [],
+  corrections: [],
+  suggestions: [],
+};
+
 vi.mock("../src/search.js", () => ({
-  searxSearch: vi.fn().mockResolvedValue([
-    {
-      title: "Result 1",
-      url: "https://example.com/1",
-      content: "Some content",
-      engines: ["google"],
+  searxSearch: vi.fn().mockResolvedValue({
+    results: [
+      {
+        title: "Result 1",
+        url: "https://example.com/1",
+        content: "Some content",
+        engines: ["google"],
+      },
+      {
+        title: "Result 2",
+        url: "https://example.com/2",
+        content: "More content",
+        engines: ["bing"],
+      },
+    ],
+    meta: {
+      answers: [],
+      infoboxes: [],
+      corrections: [],
+      suggestions: [],
     },
-    {
-      title: "Result 2",
-      url: "https://example.com/2",
-      content: "More content",
-      engines: ["bing"],
-    },
-  ]),
+  }),
 }));
 
 vi.mock("../src/reranker.js", () => ({
@@ -95,6 +110,8 @@ describe("handleSearch", () => {
       undefined,
       undefined,
       undefined,
+      undefined,
+      undefined,
     );
     expect(result.content[0].text).toContain("Result 1");
     expect(result.content[0].text).toContain("example.com/1");
@@ -114,13 +131,46 @@ describe("handleSearch", () => {
       undefined,
       undefined,
       "de",
+      undefined,
+      undefined,
     );
   });
 
   it("returns No results found when searxSearch returns empty", async () => {
-    vi.mocked(searxSearch).mockResolvedValueOnce([]);
+    vi.mocked(searxSearch).mockResolvedValueOnce({
+      results: [],
+      meta: EMPTY_META,
+    });
     const result = await handleSearch({ query: "nothing", num_results: 5 });
     expect(result.content[0].text).toBe("No results found.");
+  });
+
+  it("surfaces a direct answer above the results and in structuredContent", async () => {
+    vi.mocked(searxSearch).mockResolvedValueOnce({
+      results: [
+        {
+          title: "Result 1",
+          url: "https://example.com/1",
+          content: "Some content",
+          engines: ["google"],
+        },
+      ],
+      meta: {
+        answers: [{ answer: "42", url: "https://ref" }],
+        infoboxes: [],
+        corrections: [],
+        suggestions: ["related"],
+      },
+    });
+    const result = await handleSearch({ query: "answer me", num_results: 5 });
+    expect(result.content[0].text).toContain("Direct answer");
+    expect(result.content[0].text.indexOf("42")).toBeLessThan(
+      result.content[0].text.indexOf("Result 1"),
+    );
+    expect(result.structuredContent?.answers).toEqual([
+      { answer: "42", url: "https://ref" },
+    ]);
+    expect(result.structuredContent?.suggestions).toEqual(["related"]);
   });
 });
 
@@ -136,7 +186,10 @@ describe("handleSearchAndFetch", () => {
   });
 
   it("returns No results found when search returns empty", async () => {
-    vi.mocked(searxSearch).mockResolvedValueOnce([]);
+    vi.mocked(searxSearch).mockResolvedValueOnce({
+      results: [],
+      meta: EMPTY_META,
+    });
     const result = await handleSearchAndFetch({
       query: "nothing",
       fetch_count: 1,
@@ -167,7 +220,10 @@ describe("handleSearchAndSummarize", () => {
   });
 
   it("returns No results found when search returns empty", async () => {
-    vi.mocked(searxSearch).mockResolvedValueOnce([]);
+    vi.mocked(searxSearch).mockResolvedValueOnce({
+      results: [],
+      meta: EMPTY_META,
+    });
     const result = await handleSearchAndSummarize({
       query: "nothing",
       fetch_count: 2,
@@ -179,14 +235,49 @@ describe("handleSearchAndSummarize", () => {
 describe("handleFetchUrl", () => {
   it("fetches URL and returns formatted output with title and URL header", async () => {
     const result = await handleFetchUrl({ url: "https://example.com/page" });
+    // Default: 8000 chars, no domain profile, preferFit false, no tuning.
     expect(fetchPage).toHaveBeenCalledWith(
       "https://example.com/page",
       8000,
+      undefined,
+      false,
       undefined,
     );
     expect(result.content[0].text).toContain("Title: Fetched Page");
     expect(result.content[0].text).toContain("URL: https://example.com/1");
     expect(result.content[0].text).toContain("Page content here");
+  });
+
+  it("converts max_tokens to a char budget (chars ≈ tokens × 4)", async () => {
+    await handleFetchUrl({ url: "https://example.com/page", max_tokens: 3000 });
+    expect(fetchPage).toHaveBeenCalledWith(
+      "https://example.com/page",
+      12000,
+      undefined,
+      false,
+      undefined,
+    );
+  });
+
+  it("threads target_selector / wait_for_selector as fetch tuning", async () => {
+    await handleFetchUrl({
+      url: "https://example.com/page",
+      target_selector: "article",
+      wait_for_selector: ".loaded",
+    });
+    expect(fetchPage).toHaveBeenCalledWith(
+      "https://example.com/page",
+      8000,
+      undefined,
+      false,
+      { targetSelector: "article", waitForSelector: ".loaded" },
+    );
+  });
+
+  it("passes no tuning object when neither selector is provided", async () => {
+    await handleFetchUrl({ url: "https://example.com/page", max_tokens: 500 });
+    const lastCall = vi.mocked(fetchPage).mock.calls.at(-1);
+    expect(lastCall?.[4]).toBeUndefined();
   });
 
   it("propagates SSRF errors from fetchPage", async () => {

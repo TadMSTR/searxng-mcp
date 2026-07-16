@@ -55,6 +55,20 @@ export const DOMAIN_DB_SNAPSHOT_RETENTION = (() => {
   return Number.isNaN(v) || v < 1 ? 14 : v;
 })();
 export const ADBLOCK_PROXY_URL = process.env.ADBLOCK_PROXY_URL ?? null;
+// YouTube transcript fast path (unofficial timedtext endpoint — no SLA).
+// *_ENABLED is the feature kill switch. *_IGNORE_ROBOTS lets the operator opt
+// into fetching the transcript, which lives under YouTube's robots-disallowed
+// /api/ path; default false = respect robots (fast path stays dormant).
+export const YOUTUBE_TRANSCRIPT_ENABLED =
+  process.env.YOUTUBE_TRANSCRIPT_ENABLED !== "false";
+export const YOUTUBE_IGNORE_ROBOTS =
+  process.env.YOUTUBE_IGNORE_ROBOTS === "true";
+// Reddit fast path (public .json endpoint). Reddit's robots.txt currently
+// disallows all crawlers, so the fast path stays dormant unless the operator
+// opts into REDDIT_IGNORE_ROBOTS on their own instance.
+export const REDDIT_FASTPATH_ENABLED =
+  process.env.REDDIT_FASTPATH_ENABLED !== "false";
+export const REDDIT_IGNORE_ROBOTS = process.env.REDDIT_IGNORE_ROBOTS === "true";
 export const TRANSPORT = process.env.SEARXNG_MCP_TRANSPORT ?? "stdio"; // "stdio" | "http"
 export const HTTP_PORT = parseInt(process.env.SEARXNG_MCP_PORT ?? "3001", 10);
 export const HTTP_HOST = process.env.SEARXNG_MCP_HOST ?? "127.0.0.1";

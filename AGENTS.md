@@ -9,7 +9,7 @@ Exposes seven MCP tools:
 - **`search`** — queries SearXNG, reranks results with a local ML model, returns top N structured results
 - **`search_and_fetch`** — same as `search` but also fetches full content of the top result(s) via the fetch cascade
 - **`search_and_summarize`** — search, fetch, then synthesize a summary with citations via Ollama (default `qwen3:14b`, override with `OLLAMA_SUMMARIZE_MODEL`)
-- **`fetch_url`** — fetch and extract readable markdown from any public URL; GitHub URLs use the GitHub API
+- **`fetch_url`** — fetch and extract readable markdown from any public URL; GitHub URLs use the GitHub API, YouTube/Reddit URLs have opt-in fast paths; optional `target_selector`/`wait_for_selector` and `max_tokens` budget
 - **`crawl_site`** — crawl a site and return a page manifest (Firecrawl → sitemap → optional BFS); content cached for follow-up `fetch_url`
 - **`clear_cache`** — purge the Valkey result cache (search, fetch, crawl, or all)
 - **`domain_stats`** — read-only view of the domain capability database (single-domain or aggregate) with MCP structured output
@@ -21,8 +21,11 @@ src/
   index.ts        # Entry point — creates MCP server, registers tools
   tools.ts        # Tool definitions (schemas + handlers)
   search.ts       # SearXNG client
-  fetch.ts        # Fetch orchestrator: robots gate, tier cascade, caching, post-extract
-  fetch-utils.ts  # Shared primitives: USER_AGENT, assertPublicUrl, readBoundedText, TierResult
+  fetch.ts        # Fetch orchestrator: fast paths, robots gate, tier cascade, caching, post-extract
+  fetch-utils.ts  # Shared primitives: USER_AGENT, assertPublicUrl, safeFetch, FetchTuning, readBoundedText, TierResult
+  ssrf-guard.ts   # isPrivateOrReservedAddress + DNS-validating undici dispatcher (connect-time, redirect-hop safe)
+  youtube.ts      # YouTube transcript fast path (timedtext; opt-in via robots)
+  reddit.ts       # Reddit .json fast path (post + top comments; opt-in via robots)
   tiers/          # Tier handlers (one file per tier)
     firecrawl.ts  # Tier 1: Firecrawl JS-rendering scrape
     crawl4ai.ts   # Tier 2: Crawl4AI headless fetch + Readability comparison
@@ -44,7 +47,7 @@ src/
     domain-db-maintenance.ts # Standalone job: OTel gauges + durable snapshot (cron/PM2, single writer)
     restore-domain-db.ts     # Re-seed the domain-db from the newest snapshot after a flush
 tests/
-  *.test.ts       # Vitest unit tests (377 tests across 37 files)
+  *.test.ts       # Vitest unit tests (464 tests across 41 files)
 ```
 
 The domain-db maintenance/restore CLIs are standalone (`pnpm domain-db-maintenance`, `pnpm restore-domain-db`) — run the maintenance job on a schedule, **not** as an in-process timer, since searxng-mcp runs as several concurrent per-agent stdio children. Snapshot path/retention via `DOMAIN_DB_SNAPSHOT_DIR` / `DOMAIN_DB_SNAPSHOT_RETENTION`.
@@ -87,7 +90,7 @@ pnpm test         # vitest run --typecheck
 
 ## URL safety
 
-`fetch_url` and `search_and_fetch` block requests to private/internal IP ranges (localhost, RFC1918, link-local, IPv6 private). Redirects to internal addresses are also blocked. Do not remove these checks — they prevent SSRF against internal services.
+All outbound fetches to caller-influenced or discovered URLs go through `safeFetch` (`fetch-utils.ts`): a string-level guard (`assertPublicUrl` — private/internal IP literals + non-HTTP) plus a DNS-validating undici dispatcher (`ssrf-guard.ts`) that rejects any hostname resolving to a private/reserved address at connect time, re-checked on every redirect hop (closes DNS-rebinding/TOCTOU). Configured internal services (Firecrawl/Crawl4AI/SearXNG/Ollama/Reranker) are intentionally not guarded. Do not remove these checks — they prevent SSRF against internal services.
 
 ## Git workflow
 

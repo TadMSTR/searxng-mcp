@@ -1,5 +1,5 @@
 import { GITHUB_TOKEN } from "../config.js";
-import { assertPublicUrl, USER_AGENT } from "../fetch-utils.js";
+import { assertPublicUrl, safeFetch, USER_AGENT } from "../fetch-utils.js";
 import type { GitHubReadmeResponse } from "../types.js";
 
 /** Hostnames handled by this tier's fast path. */
@@ -43,7 +43,9 @@ async function fetchWithRedirectGuard(
   headers: Record<string, string>,
   errorPrefix: string,
 ): Promise<Response> {
-  const res = await fetch(url, {
+  // safeFetch routes through the DNS-validating dispatcher so the GITHUB_TOKEN
+  // is never sent to a private address if a GitHub host resolves internally.
+  const res = await safeFetch(url, {
     headers,
     redirect: "manual",
     signal: AbortSignal.timeout(10000),

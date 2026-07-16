@@ -167,6 +167,30 @@ describe("rawFetch", () => {
       "Raw fetch error: 404",
     );
   });
+
+  it("scopes extraction to target_selector, excluding out-of-selector content", async () => {
+    const html = `<html><body><nav>NAVNOISE menu links</nav><main><article><p>${"Real article body text. ".repeat(
+      20,
+    )}</p></article></main><footer>FOOTERNOISE copyright</footer></body></html>`;
+    vi.mocked(fetch).mockResolvedValueOnce(new Response(html, { status: 200 }));
+    const result = await rawFetch("https://example.com/a", 8000, {
+      targetSelector: "article",
+    });
+    expect(result.text).toContain("Real article body");
+    expect(result.text).not.toContain("NAVNOISE");
+    expect(result.text).not.toContain("FOOTERNOISE");
+  });
+
+  it("falls back to full-page extraction when target_selector matches nothing", async () => {
+    const html = `<html><head><title>T</title></head><body><article><p>${"Body content paragraph. ".repeat(
+      20,
+    )}</p></article></body></html>`;
+    vi.mocked(fetch).mockResolvedValueOnce(new Response(html, { status: 200 }));
+    const result = await rawFetch("https://example.com/b", 8000, {
+      targetSelector: ".no-such-element",
+    });
+    expect(result.text).toContain("Body content");
+  });
 });
 
 describe("isPdfUrl", () => {

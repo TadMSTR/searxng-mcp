@@ -6,6 +6,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [3.15.0] - 2026-07-16
+
+Feature bundle from a 2026-07-16 competitive review (mcp-searxng, Perplexica, SurfSense, Jina Reader, Tavily/Exa MCP). All additive — no breaking tool-schema changes. Plane: SXNG-21.
+
+### Added
+- **`fetch_url` CSS selector controls** — new optional `target_selector` (scope extraction to a matched element) and `wait_for_selector` (wait for a selector before extracting, for JS-rendered pages). Threaded to the tiers that honor them: Firecrawl (`includeTags` + a `wait` action), Crawl4AI (`css_selector` + `wait_for`), and the raw-HTTP tier applies `target_selector` client-side via jsdom before Readability. Selector fields are attached to Firecrawl/Crawl4AI requests only when supplied, so default fetches are byte-identical to before; a selector matching nothing falls back to full-page extraction rather than erroring.
+- **`fetch_url` token budget** — new optional `max_tokens` replaces the fixed 8000-char cutoff (chars ≈ tokens × 4). Omitting it preserves the ~2000-token / 8000-char default; larger budgets raise the internal fetch/store size up to a 40000-char ceiling.
+- **Native SearXNG answers/infoboxes surfaced** — `search`/`search_and_fetch`/`search_and_summarize` now read the `answers`, `infoboxes`, `corrections`, and `suggestions` fields SearXNG already returns (previously discarded) and render them above the ranked list. The `search` tool also returns them as MCP **structured output** (`structuredContent`) so callers can check for a direct answer without parsing prose. Surfaced alongside full results (no short-circuit) for v1.
+- **`engines` and `site` search params** — all three search tools take an optional comma-separated `engines` (forwarded to SearXNG's `engines`) and `site` (single domain or array, applied as a best-effort `site:` query operator). The result cache discriminates on both.
+- **YouTube transcript fast path** (`src/youtube.ts`) — for `youtube.com`/`youtu.be` video URLs, pulls captions via the watch page's `captionTracks` → timedtext endpoint and returns the transcript. Kill switch `YOUTUBE_TRANSCRIPT_ENABLED` (default on).
+- **Reddit fast path** (`src/reddit.ts`) — for Reddit thread URLs, fetches the public `.json` view and returns the post plus top comments in the standard `{title, url, text}` shape; falls through on 429. Kill switch `REDDIT_FASTPATH_ENABLED` (default on).
+- **New env vars:** `YOUTUBE_TRANSCRIPT_ENABLED`, `REDDIT_FASTPATH_ENABLED`, `YOUTUBE_IGNORE_ROBOTS`, `REDDIT_IGNORE_ROBOTS` (all default off for the `*_IGNORE_ROBOTS` pair; see Security).
+
+### Security
+- **DNS-rebinding / TOCTOU-safe SSRF guard (SXNG-21)** — the existing `assertPublicUrl` string check blocked private IP *literals* but a public hostname resolving to a private address (DNS rebinding) slipped past it, and pre-resolve-then-fetch has a TOCTOU gap. New `src/ssrf-guard.ts` adds `isPrivateOrReservedAddress` (RFC1918, loopback, link-local/IMDS `169.254`, CGNAT `100.64/10`, IPv6 ULA/link-local, IPv4-mapped, multicast/reserved) and a shared undici dispatcher whose connect-time `lookup` validates the *resolved* address — the exact one the socket connects to, re-checked on every redirect hop. All outbound fetches to caller-influenced or discovered URLs now route through `safeFetch` (string guard + DNS-validating dispatcher): the raw-HTTP tier, robots.txt / llms.txt / Wayback CDX / sitemap probes, the BFS crawl link-fetch (previously unguarded), and the GitHub fast path (protecting `GITHUB_TOKEN` from a poisoned resolution). Configured internal services (Firecrawl, Crawl4AI, SearXNG, Ollama, Reranker) are intentionally not guarded.
+- **Fast paths respect robots.txt by default** — the YouTube transcript (under YouTube's robots-disallowed `/api/`) and Reddit (`Disallow: /` for all crawlers) fast paths are gated on the site's robots.txt. Operators can opt into direct fetching on their own instance via `YOUTUBE_IGNORE_ROBOTS` / `REDDIT_IGNORE_ROBOTS` (default off); when off, both fall through to the normal cascade.
+
+### Notes
+- The YouTube timedtext and Reddit `.json` endpoints are unofficial/undocumented — best-effort, no SLA; both may break on upstream changes (hence the kill switches).
+- YouTube/Reddit fast paths record OTel hit/miss counters (`tier: "youtube"|"reddit"`) like the Kiwix/Hister fast paths; they intentionally do **not** add a domain-db `tier_stats_30d` slot (which would force a schema bump), consistent with the sibling fast paths.
+- After merge, the per-agent searxng-mcp processes need restarting to pick up the new version — sysadmin step, same as past releases.
+
 ## [3.14.1] - 2026-07-16
 
 ### Fixed

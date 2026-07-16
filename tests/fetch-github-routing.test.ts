@@ -7,6 +7,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("../src/config.js", () => ({
   FETCH_CACHE_TTL_SECONDS: 86400,
   WAYBACK_ENABLED: false,
+  YOUTUBE_TRANSCRIPT_ENABLED: false,
+  YOUTUBE_IGNORE_ROBOTS: false,
+  REDDIT_FASTPATH_ENABLED: false,
+  REDDIT_IGNORE_ROBOTS: false,
 }));
 
 vi.mock("../src/cache.js", () => ({

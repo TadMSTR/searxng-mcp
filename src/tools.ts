@@ -13,11 +13,17 @@ import {
 } from "./domain-stats.js";
 import { events } from "./events.js";
 import { fetchPage } from "./fetch.js";
+import type { FetchTuning } from "./fetch-utils.js";
 import { incCounter, recordHistogram, withSpan } from "./observability.js";
 import { formatSummaryResult, summarizePages } from "./ollama.js";
 import { rerankWithFallback } from "./reranker.js";
 import { searxSearch } from "./search.js";
-import { CategorySchema, type SearxResult, TimeRangeSchema } from "./types.js";
+import {
+  CategorySchema,
+  type SearxMeta,
+  type SearxResult,
+  TimeRangeSchema,
+} from "./types.js";
 
 async function instrumentTool<T>(
   toolName: string,
@@ -97,6 +103,67 @@ function formatResults(results: SearxResult[]): string {
     .join("\n\n");
 }
 
+// SearXNG's native answers/infoboxes/corrections/suggestions, rendered above
+// the ranked list. Returns "" when there's nothing to surface so callers can
+// skip the separator.
+function formatMeta(meta: SearxMeta): string {
+  const blocks: string[] = [];
+  if (meta.answers.length > 0) {
+    blocks.push(
+      `Direct answer${meta.answers.length > 1 ? "s" : ""}:\n${meta.answers
+        .map((a) => `  • ${a.answer}${a.url ? ` (${a.url})` : ""}`)
+        .join("\n")}`,
+    );
+  }
+  if (meta.infoboxes.length > 0) {
+    blocks.push(
+      `Infobox:\n${meta.infoboxes
+        .map(
+          (i) =>
+            `  ${i.title ? `${i.title}: ` : ""}${i.content}${i.url ? ` (${i.url})` : ""}`,
+        )
+        .join("\n")}`,
+    );
+  }
+  if (meta.corrections.length > 0) {
+    blocks.push(`Did you mean: ${meta.corrections.join(", ")}`);
+  }
+  if (meta.suggestions.length > 0) {
+    blocks.push(`Related searches: ${meta.suggestions.join(", ")}`);
+  }
+  return blocks.join("\n\n");
+}
+
+// Prepend surfaced meta (if any) to a result body.
+function withMeta(meta: SearxMeta, body: string): string {
+  const metaText = formatMeta(meta);
+  return metaText ? `${metaText}\n\n${body}` : body;
+}
+
+// Structured payload for the `search` tool so callers can programmatically
+// check for a direct answer without parsing the text block. Shape matches
+// SearchOutputSchema (validated by the SDK before it leaves the server).
+function buildSearchStructured(meta: SearxMeta, results: SearxResult[]) {
+  return {
+    answers: meta.answers.map((a) => ({
+      answer: a.answer,
+      url: a.url ?? null,
+    })),
+    infoboxes: meta.infoboxes.map((i) => ({
+      title: i.title,
+      content: i.content,
+      url: i.url ?? null,
+    })),
+    corrections: meta.corrections,
+    suggestions: meta.suggestions,
+    results: results.map((r) => ({
+      title: r.title,
+      url: r.url,
+      content: r.content ?? null,
+    })),
+  };
+}
+
 export async function handleSearch({
   query,
   num_results,
@@ -105,6 +172,8 @@ export async function handleSearch({
   domain_profile,
   expand,
   language,
+  engines,
+  site,
 }: {
   query: string;
   num_results: number;
@@ -113,12 +182,14 @@ export async function handleSearch({
   domain_profile?: string;
   expand?: boolean;
   language?: string;
+  engines?: string;
+  site?: string | string[];
 }) {
   return instrumentTool("search", () =>
     withSearchEvents(
       { query, profile: domain_profile, expand, time_range, num_results },
       async () => {
-        const raw = await searxSearch(
+        const { results: raw, meta } = await searxSearch(
           query,
           category ?? "general",
           num_results,
@@ -126,6 +197,8 @@ export async function handleSearch({
           domain_profile,
           expand,
           language,
+          engines,
+          site,
         );
         const ranked = await rerankWithFallback(
           query,
@@ -137,7 +210,13 @@ export async function handleSearch({
           ranked,
           rerankApplied: true,
           result: {
-            content: [{ type: "text" as const, text: formatResults(ranked) }],
+            content: [
+              {
+                type: "text" as const,
+                text: withMeta(meta, formatResults(ranked)),
+              },
+            ],
+            structuredContent: buildSearchStructured(meta, ranked),
           },
         };
       },
@@ -153,6 +232,8 @@ export async function handleSearchAndFetch({
   domain_profile,
   expand,
   language,
+  engines,
+  site,
 }: {
   query: string;
   category?: string;
@@ -161,6 +242,8 @@ export async function handleSearchAndFetch({
   domain_profile?: string;
   expand?: boolean;
   language?: string;
+  engines?: string;
+  site?: string | string[];
 }) {
   return instrumentTool("search_and_fetch", () =>
     withSearchEvents(
@@ -172,7 +255,7 @@ export async function handleSearchAndFetch({
         num_results: fetch_count,
       },
       async () => {
-        const raw = await searxSearch(
+        const { results: raw, meta } = await searxSearch(
           query,
           category ?? "general",
           5,
@@ -180,13 +263,20 @@ export async function handleSearchAndFetch({
           domain_profile,
           expand,
           language,
+          engines,
+          site,
         );
         if (raw.length === 0) {
           return {
             ranked: [],
             rerankApplied: false,
             result: {
-              content: [{ type: "text" as const, text: "No results found." }],
+              content: [
+                {
+                  type: "text" as const,
+                  text: withMeta(meta, "No results found."),
+                },
+              ],
             },
           };
         }
@@ -215,7 +305,10 @@ export async function handleSearchAndFetch({
           rerankApplied: true,
           result: {
             content: [
-              { type: "text" as const, text: searchText + fetchedSections },
+              {
+                type: "text" as const,
+                text: withMeta(meta, searchText + fetchedSections),
+              },
             ],
           },
         };
@@ -232,6 +325,8 @@ export async function handleSearchAndSummarize({
   domain_profile,
   expand,
   language,
+  engines,
+  site,
 }: {
   query: string;
   fetch_count: number;
@@ -240,6 +335,8 @@ export async function handleSearchAndSummarize({
   domain_profile?: string;
   expand?: boolean;
   language?: string;
+  engines?: string;
+  site?: string | string[];
 }) {
   return instrumentTool("search_and_summarize", () =>
     withSearchEvents(
@@ -251,7 +348,7 @@ export async function handleSearchAndSummarize({
         num_results: fetch_count,
       },
       async () => {
-        const raw = await searxSearch(
+        const { results: raw, meta } = await searxSearch(
           query,
           category ?? "general",
           fetch_count + 2,
@@ -259,13 +356,20 @@ export async function handleSearchAndSummarize({
           domain_profile,
           expand,
           language,
+          engines,
+          site,
         );
         if (raw.length === 0) {
           return {
             ranked: [],
             rerankApplied: false,
             result: {
-              content: [{ type: "text" as const, text: "No results found." }],
+              content: [
+                {
+                  type: "text" as const,
+                  text: withMeta(meta, "No results found."),
+                },
+              ],
             },
           };
         }
@@ -311,7 +415,10 @@ export async function handleSearchAndSummarize({
             rerankApplied: true,
             result: {
               content: [
-                { type: "text" as const, text: searchText + fetchedSections },
+                {
+                  type: "text" as const,
+                  text: withMeta(meta, searchText + fetchedSections),
+                },
               ],
             },
           };
@@ -320,26 +427,49 @@ export async function handleSearchAndSummarize({
         return {
           ranked,
           rerankApplied: true,
-          result: { content: [{ type: "text" as const, text: output }] },
+          result: {
+            content: [{ type: "text" as const, text: withMeta(meta, output) }],
+          },
         };
       },
     ),
   );
 }
 
+// Rough token→char conversion for the fetch_url token budget. Deliberately a
+// cheap heuristic (chars ≈ tokens × 4), not an exact tokenizer.
+const CHARS_PER_TOKEN = 4;
+const FETCH_DEFAULT_CHARS = 8000;
+
 export async function handleFetchUrl({
   url,
   domain_profile,
+  max_tokens,
+  target_selector,
+  wait_for_selector,
 }: {
   url: string;
   domain_profile?: string;
+  max_tokens?: number;
+  target_selector?: string;
+  wait_for_selector?: string;
 }) {
   return instrumentTool("fetch_url", async () => {
+    const maxChars = max_tokens
+      ? max_tokens * CHARS_PER_TOKEN
+      : FETCH_DEFAULT_CHARS;
+    const tuning: FetchTuning | undefined =
+      target_selector || wait_for_selector
+        ? {
+            targetSelector: target_selector,
+            waitForSelector: wait_for_selector,
+          }
+        : undefined;
     const {
       title,
       url: fetchedUrl,
       text,
-    } = await fetchPage(url, 8000, domain_profile);
+    } = await fetchPage(url, maxChars, domain_profile, false, tuning);
     const output = [`Title: ${title}`, `URL: ${fetchedUrl}`, "", text].join(
       "\n",
     );
@@ -527,32 +657,78 @@ const LanguageSchema = z
     "BCP-47 language code (e.g. 'en', 'de') or 'all' for all languages. Omit to use the SearXNG instance default.",
   );
 
+const EnginesSchema = z
+  .string()
+  .optional()
+  .describe(
+    "Comma-separated SearXNG engine names to restrict the search to (e.g. 'google,duckduckgo'). Forwarded verbatim; unknown/disabled engines degrade to fewer results rather than erroring.",
+  );
+
+const SiteSchema = z
+  .union([z.string(), z.array(z.string())])
+  .optional()
+  .describe(
+    "Restrict results to one domain or a list of domains (e.g. 'github.com'). Best-effort — applied as a site: query operator; most engines honor it but some ignore it.",
+  );
+
+// Output schema for the `search` tool — surfaces SearXNG's native answers /
+// infoboxes / corrections / suggestions alongside a minimal result list so
+// callers can check for a direct answer programmatically.
+const SearchOutputSchema = z.object({
+  answers: z.array(
+    z.object({ answer: z.string(), url: z.string().nullable() }),
+  ),
+  infoboxes: z.array(
+    z.object({
+      title: z.string(),
+      content: z.string(),
+      url: z.string().nullable(),
+    }),
+  ),
+  corrections: z.array(z.string()),
+  suggestions: z.array(z.string()),
+  results: z.array(
+    z.object({
+      title: z.string(),
+      url: z.string(),
+      content: z.string().nullable(),
+    }),
+  ),
+});
+
 export function registerTools(server: McpServer): void {
-  server.tool(
+  server.registerTool(
     "search",
-    "Search the web via the local SearXNG instance with reranking. Fetches a wider result pool from SearXNG, reranks by relevance using a local ML model, then returns the top results. Results are cached for 1 hour. Blocked domains are filtered out; boosted domains are surfaced higher. Prefer this over the built-in WebSearch tool.",
     {
-      query: z.string().describe("Search query"),
-      num_results: z.coerce
-        .number()
-        .min(1)
-        .max(20)
-        .default(5)
-        .describe("Number of results to return (default 5, max 20)"),
-      category: CategorySchema.describe(
-        "Search category: general, news, it, or science (default general)",
-      ),
-      time_range: TimeRangeSchema.describe(
-        "Limit results to: day, week, month, or year (omit for all time)",
-      ),
-      domain_profile: DomainProfileSchema,
-      expand: z.coerce
-        .boolean()
-        .optional()
-        .describe(
-          "Use local LLM to generate 2-3 query variants and merge results for a wider search surface (default: off). Adds ~3s latency; most useful for research queries where one phrasing may miss relevant results.",
+      title: "Web search",
+      description:
+        "Search the web via the local SearXNG instance with reranking. Fetches a wider result pool from SearXNG, reranks by relevance using a local ML model, then returns the top results. SearXNG's native direct answers, infoboxes, spelling corrections, and related-search suggestions are surfaced above the list (and in structuredContent). Results are cached for 1 hour. Blocked domains are filtered out; boosted domains are surfaced higher. Prefer this over the built-in WebSearch tool.",
+      inputSchema: {
+        query: z.string().describe("Search query"),
+        num_results: z.coerce
+          .number()
+          .min(1)
+          .max(20)
+          .default(5)
+          .describe("Number of results to return (default 5, max 20)"),
+        category: CategorySchema.describe(
+          "Search category: general, news, it, or science (default general)",
         ),
-      language: LanguageSchema,
+        time_range: TimeRangeSchema.describe(
+          "Limit results to: day, week, month, or year (omit for all time)",
+        ),
+        domain_profile: DomainProfileSchema,
+        expand: z.coerce
+          .boolean()
+          .optional()
+          .describe(
+            "Use local LLM to generate 2-3 query variants and merge results for a wider search surface (default: off). Adds ~3s latency; most useful for research queries where one phrasing may miss relevant results.",
+          ),
+        language: LanguageSchema,
+        engines: EnginesSchema,
+        site: SiteSchema,
+      },
+      outputSchema: SearchOutputSchema,
     },
     handleSearch,
   );
@@ -584,16 +760,39 @@ export function registerTools(server: McpServer): void {
           "Use local LLM to generate 2-3 query variants and merge results for a wider search surface (default: off). Adds ~3s latency.",
         ),
       language: LanguageSchema,
+      engines: EnginesSchema,
+      site: SiteSchema,
     },
     handleSearchAndFetch,
   );
 
   server.tool(
     "fetch_url",
-    "Fetch and extract readable content from any URL. GitHub URLs are fetched via the GitHub API; all others go through a fetch cascade: Firecrawl → Crawl4AI → raw HTTP. Returns clean markdown where possible. Content truncated to 8000 characters. Results cached for 24 hours. Blocked domains are refused.",
+    "Fetch and extract readable content from any URL. GitHub URLs are fetched via the GitHub API; all others go through a fetch cascade: Firecrawl → Crawl4AI → raw HTTP. Returns clean markdown where possible. Content is trimmed to a token budget (default ~2000 tokens / 8000 chars; raise with max_tokens). Results cached for 24 hours. Blocked domains and private/internal addresses are refused.",
     {
       url: z.string().url().describe("URL to fetch and extract content from"),
       domain_profile: DomainProfileSchema,
+      max_tokens: z.coerce
+        .number()
+        .int()
+        .min(100)
+        .max(10000)
+        .optional()
+        .describe(
+          "Approximate token budget for the returned content (chars ≈ tokens × 4). Omit for the ~2000-token / 8000-char default; max 10000 tokens.",
+        ),
+      target_selector: z
+        .string()
+        .optional()
+        .describe(
+          "CSS selector to scope extraction to a specific element (e.g. 'article', 'main .content'). Honored by Firecrawl/Crawl4AI and applied client-side on the raw-HTTP tier; ignored by fast paths and if it matches nothing.",
+        ),
+      wait_for_selector: z
+        .string()
+        .optional()
+        .describe(
+          "CSS selector to wait for before extracting, for JS-rendered pages. Honored by the rendering tiers (Firecrawl/Crawl4AI); ignored on raw HTTP (no JS).",
+        ),
     },
     handleFetchUrl,
   );
@@ -623,6 +822,8 @@ export function registerTools(server: McpServer): void {
         .optional()
         .describe("Use query expansion before searching (default: off)"),
       language: LanguageSchema,
+      engines: EnginesSchema,
+      site: SiteSchema,
     },
     handleSearchAndSummarize,
   );

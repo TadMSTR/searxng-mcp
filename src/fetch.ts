@@ -9,11 +9,17 @@ import {
 import { getBlockList, urlMatchesDomain } from "./domains.js";
 import { events } from "./events.js";
 import { postExtract } from "./extractors/post-extract.js";
-import { assertPublicUrl, isPdfUrl, type TierResult } from "./fetch-utils.js";
+import {
+  assertPublicUrl,
+  type FetchTuning,
+  isPdfUrl,
+  type TierResult,
+} from "./fetch-utils.js";
 import { histerFetch } from "./hister.js";
 import { isKiwixHost, kiwixFetch } from "./kiwix.js";
 import { tryLlmsTxtFetch } from "./llms-txt.js";
 import { incCounter, recordHistogram, withSpan } from "./observability.js";
+import { isRedditHost, redditFetch } from "./reddit.js";
 import { checkRobots } from "./robots.js";
 import { getTiers, TIER_NAME } from "./routing.js";
 import {
@@ -23,6 +29,7 @@ import {
   tier2 as pdfTier,
   waybackFetch,
 } from "./tiers/index.js";
+import { isYouTubeHost, youtubeFetch } from "./youtube.js";
 
 // Re-export for callers that import assertPublicUrl from this module.
 export { assertPublicUrl } from "./fetch-utils.js";
@@ -41,6 +48,7 @@ function applyPostExtract(
   fetched: TierResult,
   url: string,
   metadataHtml: string | null,
+  maxChars = 8000,
 ): TierResult {
   const html = metadataHtml ?? fetched.html ?? null;
   if (!html) return fetched;
@@ -49,7 +57,7 @@ function applyPostExtract(
     html,
     baselineTitle: fetched.title,
     baselineText: fetched.text,
-    maxChars: 8000,
+    maxChars,
   });
 
   // Sample what we saw in the metadata HTML for the domain DB. Cheap regex
@@ -99,15 +107,30 @@ async function runTier<T extends TierResult | null>(
   }
 }
 
+// The fetch cache stores content at this size and callers slice it down on
+// read. A caller requesting more than the historical 8000-char default (e.g. a
+// large fetch_url max_tokens budget) raises the store size up to this hard
+// ceiling; smaller requests still store 8000 so entries stay reusable.
+const DEFAULT_FETCH_CHARS = 8000;
+const FETCH_STORE_CEILING = 40000;
+
 export async function fetchPage(
   url: string,
-  maxChars = 8000,
+  maxChars = DEFAULT_FETCH_CHARS,
   domainProfile?: string,
   preferFit = false,
+  tuning?: FetchTuning,
 ): Promise<{ title: string; url: string; text: string }> {
   return withSpan("fetch", { "fetch.url": url }, async () => {
     const t_total = Date.now();
     assertPublicUrl(url);
+    // How much to actually fetch/store: at least the default (keeps cache
+    // entries reusable), at most the hard ceiling, but never less than what the
+    // caller asked to read back.
+    const storeChars = Math.min(
+      Math.max(maxChars, DEFAULT_FETCH_CHARS),
+      FETCH_STORE_CEILING,
+    );
     events.fetchRequested({ url, max_chars: maxChars, prefer_fit: preferFit });
 
     // Refuse to fetch blocked domains
@@ -154,7 +177,7 @@ export async function fetchPage(
       // attempt, and returns null, so we translate that back into a throw for
       // the caller.
       const gh = await runTier<TierResult | null>("github", url, () =>
-        githubFetch(url, maxChars),
+        githubFetch(url, storeChars),
       );
       if (!gh) {
         events.error({
@@ -170,7 +193,7 @@ export async function fetchPage(
       // llms.txt fast path — for whitelisted docs domains, try fetching the
       // section from a pre-cached llms-full.txt before invoking any tier.
       const llms = await withSpan("llms_full_txt", { "fetch.url": url }, () =>
-        tryLlmsTxtFetch(url, 8000),
+        tryLlmsTxtFetch(url, storeChars),
       );
       if (llms) {
         incCounter("fetch", { tier: "llms_full_txt", outcome: "hit" });
@@ -195,7 +218,7 @@ export async function fetchPage(
       // requests and serves from local Kiwix before the tier cascade.
       if (isKiwixHost(url)) {
         const kiwix = await withSpan("kiwix", { "fetch.url": url }, () =>
-          kiwixFetch(url, 8000),
+          kiwixFetch(url, storeChars),
         );
         if (kiwix) {
           incCounter("fetch", { tier: "kiwix", outcome: "hit" });
@@ -227,7 +250,7 @@ export async function fetchPage(
       // cascade. Serves pages that are login-walled or JS-heavy (already rendered
       // by Firefox) and avoids re-fetching stable docs that are indexed here.
       const hister = await withSpan("hister", { "fetch.url": url }, () =>
-        histerFetch(url, 8000),
+        histerFetch(url, storeChars),
       );
       if (hister) {
         incCounter("fetch", { tier: "hister", outcome: "hit" });
@@ -248,6 +271,61 @@ export async function fetchPage(
         return { ...persisted, text: persisted.text.slice(0, maxChars) };
       }
       incCounter("fetch", { tier: "hister", outcome: "miss" });
+
+      // YouTube transcript fast path — timedtext captions for known video URLs.
+      // Robots-gated by default (see youtubeFetch); on miss, falls through so
+      // the cascade can still fetch the watch page's title/description.
+      if (isYouTubeHost(url)) {
+        const yt = await withSpan("youtube", { "fetch.url": url }, () =>
+          youtubeFetch(url, storeChars),
+        );
+        if (yt) {
+          incCounter("fetch", { tier: "youtube", outcome: "hit" });
+          const persisted = { title: yt.title, url: yt.url, text: yt.text };
+          await cacheSet(
+            key,
+            JSON.stringify(persisted),
+            FETCH_CACHE_TTL_SECONDS,
+          );
+          events.fetchCompleted({
+            url,
+            tier_served: "youtube",
+            title: yt.title,
+            text_len: yt.text.length,
+            latency_ms: Date.now() - t_total,
+            source: "youtube",
+          });
+          return { ...persisted, text: persisted.text.slice(0, maxChars) };
+        }
+        incCounter("fetch", { tier: "youtube", outcome: "miss" });
+      }
+
+      // Reddit fast path — public .json for post + top comments. Robots-gated by
+      // default (see redditFetch); on miss, falls through to the cascade.
+      if (isRedditHost(url)) {
+        const rd = await withSpan("reddit", { "fetch.url": url }, () =>
+          redditFetch(url, storeChars),
+        );
+        if (rd) {
+          incCounter("fetch", { tier: "reddit", outcome: "hit" });
+          const persisted = { title: rd.title, url: rd.url, text: rd.text };
+          await cacheSet(
+            key,
+            JSON.stringify(persisted),
+            FETCH_CACHE_TTL_SECONDS,
+          );
+          events.fetchCompleted({
+            url,
+            tier_served: "reddit",
+            title: rd.title,
+            text_len: rd.text.length,
+            latency_ms: Date.now() - t_total,
+            source: "reddit",
+          });
+          return { ...persisted, text: persisted.text.slice(0, maxChars) };
+        }
+        incCounter("fetch", { tier: "reddit", outcome: "miss" });
+      }
 
       // robots.txt gate — skips fetch on disallow (cached 24h per origin)
       const robots = await checkRobots(url, "searxng-mcp");
@@ -280,7 +358,7 @@ export async function fetchPage(
       // PDF fast path — Firecrawl can't extract PDF text; route directly to tier2.
       if (isPdfUrl(url)) {
         const pdfResult = await runTier("tier2_crawl4ai", url, () =>
-          pdfTier.fetch(url, 8000, preferFit),
+          pdfTier.fetch(url, storeChars, preferFit),
         );
         if (!pdfResult) {
           throw new Error(
@@ -309,7 +387,7 @@ export async function fetchPage(
       let fetched: TierResult | null = null;
       for (const tier of activeTiers) {
         fetched = await runTier(tier.name, url, () =>
-          tier.fetch(url, 8000, preferFit),
+          tier.fetch(url, storeChars, preferFit, tuning),
         );
         if (fetched) {
           tierServed = tier.name;
@@ -324,7 +402,7 @@ export async function fetchPage(
       if (!fetched && WAYBACK_ENABLED) {
         console.error(`[searxng-mcp] fetch tier4_wayback attempt url=${url}`);
         fetched = await runTier("tier4_wayback", url, () =>
-          waybackFetch(url, 8000),
+          waybackFetch(url, storeChars),
         );
         if (fetched) {
           tierServed = "tier4_wayback";
@@ -348,7 +426,7 @@ export async function fetchPage(
       const metadataHtml = await metadataHtmlPromise;
       recordMetadataFetchAttempt(url, metadataHtml !== null).catch(() => {});
       result = await withSpan("post_extract", { "fetch.url": url }, () =>
-        applyPostExtract(tierFetched, url, metadataHtml),
+        applyPostExtract(tierFetched, url, metadataHtml, storeChars),
       );
     }
 

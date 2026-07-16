@@ -7,7 +7,7 @@ import {
   preferReadability,
   runReadability,
 } from "../extractors/readability.js";
-import type { TierResult } from "../fetch-utils.js";
+import type { FetchTuning, TierResult } from "../fetch-utils.js";
 
 export async function pollCrawl4aiTask(
   taskId: string,
@@ -55,6 +55,7 @@ export async function crawl4aiFetch(
   url: string,
   maxChars = 8000,
   preferFit = false,
+  tuning?: FetchTuning,
 ): Promise<TierResult | null> {
   if (!CRAWL4AI_URL) return null;
 
@@ -67,6 +68,15 @@ export async function crawl4aiFetch(
     };
     if (CRAWL4AI_API_TOKEN)
       crawlHeaders.Authorization = `Bearer ${CRAWL4AI_API_TOKEN}`;
+    // crawler_config is only attached when a selector is requested, so default
+    // crawls send the exact same body as before. Crawl4AI honors css_selector
+    // (scope extraction) and wait_for (CSS selector) natively.
+    const crawlerConfig: Record<string, string> = {};
+    if (tuning?.targetSelector)
+      crawlerConfig.css_selector = tuning.targetSelector;
+    if (tuning?.waitForSelector) {
+      crawlerConfig.wait_for = `css:${tuning.waitForSelector}`;
+    }
     const resp = await fetch(`${CRAWL4AI_URL}/crawl`, {
       method: "POST",
       headers: crawlHeaders,
@@ -74,6 +84,9 @@ export async function crawl4aiFetch(
         urls: [url],
         ...(ADBLOCK_PROXY_URL
           ? { proxy_config: { server: ADBLOCK_PROXY_URL } }
+          : {}),
+        ...(Object.keys(crawlerConfig).length > 0
+          ? { crawler_config: crawlerConfig }
           : {}),
       }),
       signal: controller.signal,

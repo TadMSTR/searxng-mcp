@@ -1,6 +1,7 @@
 import robotsParserModule from "robots-parser";
 import { cacheGet, cacheSet } from "./cache.js";
 import { recordRobotsProbe } from "./domain-db.js";
+import { safeFetch } from "./fetch-utils.js";
 
 interface RobotsParserResult {
   isAllowed(url: string, userAgent?: string): boolean | undefined;
@@ -33,7 +34,9 @@ function robotsCacheKey(origin: string): string {
 async function fetchRobotsTxt(origin: string): Promise<CachedRobots> {
   const robotsUrl = `${origin}/robots.txt`;
   try {
-    const res = await fetch(robotsUrl, {
+    // safeFetch: robots.txt follows redirects, so the DNS-validating dispatcher
+    // re-checks each hop against private/reserved addresses.
+    const res = await safeFetch(robotsUrl, {
       headers: { "User-Agent": "searxng-mcp" },
       redirect: "follow",
       signal: AbortSignal.timeout(ROBOTS_FETCH_TIMEOUT_MS),

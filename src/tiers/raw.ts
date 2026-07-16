@@ -3,8 +3,9 @@ import { JSDOM } from "jsdom";
 import { ProxyAgent } from "undici";
 import { ADBLOCK_PROXY_URL } from "../config.js";
 import {
-  assertPublicUrl,
+  type FetchTuning,
   readBoundedText,
+  safeFetch,
   type TierResult,
   USER_AGENT,
 } from "../fetch-utils.js";
@@ -16,12 +17,13 @@ const proxyAgent = ADBLOCK_PROXY_URL ? new ProxyAgent(ADBLOCK_PROXY_URL) : null;
 export async function rawFetch(
   url: string,
   maxChars = 8000,
+  tuning?: FetchTuning,
 ): Promise<TierResult> {
-  // Defensive SSRF guard — all current callers go through fetchPage which
-  // also calls this, but rawFetch is exported so the guard protects against
-  // future direct callers (SSRF-08).
-  assertPublicUrl(url);
-
+  // SSRF guard: safeFetch applies the string-level check (protecting future
+  // direct callers, SSRF-08) and, absent the adblock proxy, routes through the
+  // DNS-validating dispatcher so a public host resolving to a private address
+  // is rejected at connect time. redirect: "manual" means we never follow a
+  // redirect to an internal target — 3xx is thrown below.
   const fetchOptions: Parameters<typeof fetch>[1] & {
     dispatcher?: ProxyAgent;
   } = {
@@ -31,7 +33,7 @@ export async function rawFetch(
   };
   if (proxyAgent) fetchOptions.dispatcher = proxyAgent;
 
-  const res = await fetch(url, fetchOptions);
+  const res = await safeFetch(url, fetchOptions);
 
   if (res.headers.get("content-type")?.includes("application/pdf")) {
     throw new Error(
@@ -49,10 +51,27 @@ export async function rawFetch(
 
   const html = await readBoundedText(res);
   const dom = new JSDOM(html, { url }); // runScripts not set — script execution disabled
-  const reader = new Readability(dom.window.document);
+
+  // Client-side target_selector: scope extraction to the matched subtree.
+  // wait_for_selector is a no-op here (raw HTTP renders no JS). If the selector
+  // matches nothing, fall through to full-page extraction rather than erroring.
+  let doc = dom.window.document;
+  let selectorFallback: string | null = null;
+  if (tuning?.targetSelector) {
+    const el = doc.querySelector(tuning.targetSelector);
+    if (el) {
+      selectorFallback = el.textContent;
+      doc = new JSDOM(el.outerHTML, { url }).window.document;
+    }
+  }
+
+  const reader = new Readability(doc);
   const article = reader.parse();
 
-  const text = (article?.textContent ?? html).slice(0, maxChars);
+  const text = (article?.textContent ?? selectorFallback ?? html).slice(
+    0,
+    maxChars,
+  );
   const title = article?.title ?? url;
   return { title, url, text, html };
 }
@@ -65,11 +84,11 @@ export async function fetchRawHtmlForMetadata(
   // can strip JSON-LD scripts; the unrendered HTML is more reliable for
   // post-extraction. Bounded by RAW_HTML_MAX_BYTES so large pages can't
   // amplify into a JSDOM-memory hazard (IV-14).
-  // Defensive SSRF guard — function is exported, so protect against future
-  // direct callers with an internal URL (SSRF-08 parity with rawFetch).
+  // SSRF guard via safeFetch (string check + DNS-validating dispatcher);
+  // exported, so protect against future direct callers with an internal URL
+  // (SSRF-08 parity with rawFetch).
   try {
-    assertPublicUrl(url);
-    const res = await fetch(url, {
+    const res = await safeFetch(url, {
       headers: { "User-Agent": USER_AGENT },
       redirect: "manual",
       signal: AbortSignal.timeout(8000),
