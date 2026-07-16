@@ -14,8 +14,8 @@ import type { Tier } from "./types.js";
 export const tier1: Tier = {
   name: "tier1_firecrawl",
   slot: "tier1",
-  async fetch(url, maxChars) {
-    const r = await firecrawlScrape(url, maxChars);
+  async fetch(url, maxChars, _preferFit, tuning) {
+    const r = await firecrawlScrape(url, maxChars, tuning);
     return r?.text ? r : null;
   },
 };
@@ -24,8 +24,8 @@ export const tier1: Tier = {
 export const tier2: Tier = {
   name: "tier2_crawl4ai",
   slot: "tier2",
-  async fetch(url, maxChars, preferFit = false) {
-    const r = await crawl4aiFetch(url, maxChars, preferFit);
+  async fetch(url, maxChars, preferFit = false, tuning) {
+    const r = await crawl4aiFetch(url, maxChars, preferFit, tuning);
     return r ? applyTier2Readability(r, url) : null;
   },
 };
@@ -34,8 +34,8 @@ export const tier2: Tier = {
 export const tier3: Tier = {
   name: "tier3_rawfetch",
   slot: "tier3",
-  async fetch(url, maxChars) {
-    return rawFetch(url, maxChars);
+  async fetch(url, maxChars, _preferFit, tuning) {
+    return rawFetch(url, maxChars, tuning);
   },
 };
 

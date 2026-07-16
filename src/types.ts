@@ -29,8 +29,43 @@ export interface SearxResult {
   publishedDate?: string;
 }
 
+// SearXNG's raw JSON carries these alongside `results`. Their shapes vary a bit
+// across versions (answers/corrections have been both strings and objects), so
+// the raw types below are permissive and normalizeSearxMeta() collapses them.
 export interface SearxResponse {
   results: SearxResult[];
+  answers?: Array<string | { answer?: string; content?: string; url?: string }>;
+  infoboxes?: Array<{
+    infobox?: string;
+    content?: string;
+    urls?: Array<{ url?: string; title?: string }>;
+  }>;
+  corrections?: Array<string | { title?: string; url?: string }>;
+  suggestions?: string[];
+}
+
+// Normalized, caller-facing shapes for the surfaced meta.
+export interface SearxAnswer {
+  answer: string;
+  url?: string;
+}
+
+export interface SearxInfobox {
+  title: string;
+  content: string;
+  url?: string;
+}
+
+export interface SearxMeta {
+  answers: SearxAnswer[];
+  infoboxes: SearxInfobox[];
+  corrections: string[];
+  suggestions: string[];
+}
+
+export interface SearxSearchResult {
+  results: SearxResult[];
+  meta: SearxMeta;
 }
 
 export interface FirecrawlScrapeResponse {

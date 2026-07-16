@@ -53,7 +53,7 @@ function mockSearxResponse(results: object[]) {
 import { cacheGet, cacheSet } from "../src/cache.js";
 import { recordSearchAppearance } from "../src/domain-db.js";
 import { applyDomainFilters } from "../src/domains.js";
-import { searxSearch } from "../src/search.js";
+import { normalizeSearxMeta, searxSearch } from "../src/search.js";
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -72,7 +72,7 @@ describe("searxSearch", () => {
         makeResult("https://b.com"),
       ]),
     );
-    const results = await searxSearch("query", "general", 2);
+    const { results } = await searxSearch("query", "general", 2);
     expect(mockFetch).toHaveBeenCalledTimes(1);
     expect(cacheSet).toHaveBeenCalledOnce();
     expect(results).toHaveLength(2);
@@ -81,7 +81,7 @@ describe("searxSearch", () => {
   it("returns cached results on cache hit without calling SearXNG", async () => {
     const cached = JSON.stringify([makeResult("https://cached.com")]);
     vi.mocked(cacheGet).mockResolvedValue(cached);
-    const results = await searxSearch("query", "general", 5);
+    const { results } = await searxSearch("query", "general", 5);
     expect(mockFetch).not.toHaveBeenCalled();
     expect(results).toHaveLength(1);
     expect(results[0].url).toBe("https://cached.com");
@@ -133,7 +133,7 @@ describe("searxSearch", () => {
         makeResult("https://orig.com"),
       ]),
     );
-    const results = await searxSearch(
+    const { results } = await searxSearch(
       "query",
       "general",
       5,
@@ -187,6 +187,112 @@ describe("searxSearch", () => {
     );
     await searxSearch("query", "general", 5, undefined, undefined, true);
     expect(recordSearchAppearance).toHaveBeenCalledWith("expanded.com");
+  });
+
+  it("forwards the engines param to the SearXNG URL", async () => {
+    mockFetch.mockResolvedValue(mockSearxResponse([]));
+    await searxSearch(
+      "query",
+      "general",
+      5,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      "google,brave",
+    );
+    const calledUrl = mockFetch.mock.calls[0][0] as string;
+    expect(calledUrl).toContain("engines=google");
+  });
+
+  it("applies a single site: filter to the query", async () => {
+    mockFetch.mockResolvedValue(mockSearxResponse([]));
+    await searxSearch(
+      "query",
+      "general",
+      5,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      "github.com",
+    );
+    const calledUrl = mockFetch.mock.calls[0][0] as string;
+    // URLSearchParams encodes "site:github.com query" — colon → %3A, space → +
+    expect(calledUrl).toContain("site%3Agithub.com");
+  });
+
+  it("applies an array of site: filters with OR", async () => {
+    mockFetch.mockResolvedValue(mockSearxResponse([]));
+    await searxSearch(
+      "query",
+      "general",
+      5,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      ["a.com", "b.com"],
+    );
+    const calledUrl = mockFetch.mock.calls[0][0] as string;
+    expect(calledUrl).toContain("site%3Aa.com");
+    expect(calledUrl).toContain("site%3Ab.com");
+    expect(calledUrl).toContain("OR");
+  });
+
+  it("surfaces normalized meta from the SearXNG response", async () => {
+    mockFetch.mockResolvedValue({
+      ok: true,
+      json: () =>
+        Promise.resolve({
+          results: [makeResult("https://a.com")],
+          answers: ["42", { answer: "the answer", url: "https://x.com" }],
+          infoboxes: [
+            { infobox: "Pi", content: "3.14159", urls: [{ url: "https://p" }] },
+          ],
+          corrections: ["corrected query"],
+          suggestions: ["related one", "related two"],
+        }),
+    });
+    const { meta } = await searxSearch("query", "general", 5);
+    expect(meta.answers).toEqual([
+      { answer: "42" },
+      { answer: "the answer", url: "https://x.com" },
+    ]);
+    expect(meta.infoboxes).toEqual([
+      { title: "Pi", content: "3.14159", url: "https://p" },
+    ]);
+    expect(meta.corrections).toEqual(["corrected query"]);
+    expect(meta.suggestions).toEqual(["related one", "related two"]);
+  });
+});
+
+describe("normalizeSearxMeta", () => {
+  it("returns empty arrays when the response has no meta fields", () => {
+    const meta = normalizeSearxMeta({ results: [] });
+    expect(meta).toEqual({
+      answers: [],
+      infoboxes: [],
+      corrections: [],
+      suggestions: [],
+    });
+  });
+
+  it("drops empty answers and infoboxes", () => {
+    const meta = normalizeSearxMeta({
+      results: [],
+      answers: ["", { answer: "" }, { content: "kept" }],
+      infoboxes: [
+        { infobox: "", content: "" },
+        { infobox: "T", content: "" },
+      ],
+    });
+    expect(meta.answers).toEqual([{ answer: "kept", url: undefined }]);
+    expect(meta.infoboxes).toEqual([
+      { title: "T", content: "", url: undefined },
+    ]);
   });
 });
 

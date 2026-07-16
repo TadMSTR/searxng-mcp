@@ -71,6 +71,26 @@ describe("crawl4aiFetch", () => {
     const result = await crawl4aiFetch(URL);
     expect(result).toBeNull();
   });
+
+  it("omits crawler_config from the request body by default", async () => {
+    mockFetch.mockResolvedValueOnce(syncResponse());
+    await crawl4aiFetch(URL);
+    const body = JSON.parse(mockFetch.mock.calls[0][1].body);
+    expect(body.crawler_config).toBeUndefined();
+  });
+
+  it("maps selectors into crawler_config (css_selector + wait_for)", async () => {
+    mockFetch.mockResolvedValueOnce(syncResponse());
+    await crawl4aiFetch(URL, 8000, false, {
+      targetSelector: "main",
+      waitForSelector: "#ready",
+    });
+    const body = JSON.parse(mockFetch.mock.calls[0][1].body);
+    expect(body.crawler_config).toEqual({
+      css_selector: "main",
+      wait_for: "css:#ready",
+    });
+  });
 });
 
 describe("pollCrawl4aiTask", () => {

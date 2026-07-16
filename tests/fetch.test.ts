@@ -98,6 +98,20 @@ describe("assertPublicUrl", () => {
       "Only http/https URLs are supported",
     );
   });
+
+  // Alternate IPv4 literal encodings are normalized to canonical dotted-decimal
+  // by the WHATWG URL parser before the isIP()/classify check runs, so they must
+  // still be blocked. Guards against a future URL-parsing change silently
+  // reopening the bypass (audit INFO).
+  it.each([
+    "http://0x7f000001/", // hex → 127.0.0.1
+    "http://2130706433/", // decimal integer → 127.0.0.1
+    "http://0177.0.0.1/", // octal first octet → 127.0.0.1
+  ])("throws on alternate IPv4 literal %s", (url) => {
+    expect(() => assertPublicUrl(url)).toThrow(
+      "Internal/private addresses are not allowed",
+    );
+  });
 });
 
 describe("rawFetch", () => {
@@ -166,6 +180,30 @@ describe("rawFetch", () => {
     await expect(rawFetch("https://example.com/missing")).rejects.toThrow(
       "Raw fetch error: 404",
     );
+  });
+
+  it("scopes extraction to target_selector, excluding out-of-selector content", async () => {
+    const html = `<html><body><nav>NAVNOISE menu links</nav><main><article><p>${"Real article body text. ".repeat(
+      20,
+    )}</p></article></main><footer>FOOTERNOISE copyright</footer></body></html>`;
+    vi.mocked(fetch).mockResolvedValueOnce(new Response(html, { status: 200 }));
+    const result = await rawFetch("https://example.com/a", 8000, {
+      targetSelector: "article",
+    });
+    expect(result.text).toContain("Real article body");
+    expect(result.text).not.toContain("NAVNOISE");
+    expect(result.text).not.toContain("FOOTERNOISE");
+  });
+
+  it("falls back to full-page extraction when target_selector matches nothing", async () => {
+    const html = `<html><head><title>T</title></head><body><article><p>${"Body content paragraph. ".repeat(
+      20,
+    )}</p></article></body></html>`;
+    vi.mocked(fetch).mockResolvedValueOnce(new Response(html, { status: 200 }));
+    const result = await rawFetch("https://example.com/b", 8000, {
+      targetSelector: ".no-such-element",
+    });
+    expect(result.text).toContain("Body content");
   });
 });
 

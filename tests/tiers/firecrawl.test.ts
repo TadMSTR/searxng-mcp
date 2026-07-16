@@ -80,4 +80,23 @@ describe("firecrawlScrape", () => {
     const result = await firecrawlScrape(URL);
     expect(result.title).toBe(URL);
   });
+
+  it("omits selector fields from the request body by default", async () => {
+    mockFetch.mockResolvedValueOnce(mockSuccess());
+    await firecrawlScrape(URL);
+    const body = JSON.parse(mockFetch.mock.calls[0][1].body);
+    expect(body.includeTags).toBeUndefined();
+    expect(body.actions).toBeUndefined();
+  });
+
+  it("maps target_selector → includeTags and wait_for_selector → wait action", async () => {
+    mockFetch.mockResolvedValueOnce(mockSuccess());
+    await firecrawlScrape(URL, 8000, {
+      targetSelector: "article",
+      waitForSelector: ".loaded",
+    });
+    const body = JSON.parse(mockFetch.mock.calls[0][1].body);
+    expect(body.includeTags).toEqual(["article"]);
+    expect(body.actions).toEqual([{ type: "wait", selector: ".loaded" }]);
+  });
 });

@@ -2,6 +2,13 @@
 // (tier handlers). Kept here to avoid circular imports — fetch.ts imports
 // from ./tiers/index.js, so tier files cannot import back from ./fetch.js.
 
+import { isIP } from "node:net";
+import type { Dispatcher } from "undici";
+import {
+  isPrivateOrReservedAddress,
+  ssrfGuardedDispatcher,
+} from "./ssrf-guard.js";
+
 export const USER_AGENT =
   "searxng-mcp/3.7.0 (+https://github.com/TadMSTR/searxng-mcp; personal research)";
 
@@ -18,35 +25,69 @@ export interface TierResult {
   html?: string;
 }
 
+// Hostnames that never resolve to a public address. Literal IPs are handled by
+// isPrivateOrReservedAddress; these are name-only cases DNS resolution wouldn't
+// necessarily catch on every host.
+const BLOCKED_HOSTNAMES = [
+  /^localhost$/i,
+  /\.localhost$/i,
+  /^host\.docker\.internal$/i,
+];
+
+/**
+ * String-level SSRF guard: reject non-http(s) URLs and any hostname that is a
+ * private/reserved IP literal or a known-internal name. This is the first line
+ * of defence; the connect-time DNS guard (safeFetch / ssrfGuardedDispatcher)
+ * catches public hostnames that resolve to private addresses.
+ */
 export function assertPublicUrl(url: string): void {
-  const { protocol } = new URL(url);
-  // Strip IPv6 brackets so patterns like /^::1$/ match [::1] addresses correctly
-  const hostname = new URL(url).hostname.replace(/^\[|\]$/g, "");
-  // http:// is intentionally permitted: Wayback Machine snapshots, some legacy sites,
-  // and local service integrations (Kiwix, Firecrawl) may use non-TLS URLs.
-  // Private/RFC-1918 addresses are blocked below regardless of scheme.
-  if (!/^https?:$/.test(protocol)) {
+  const parsed = new URL(url);
+  // http:// is intentionally permitted: Wayback Machine snapshots, some legacy
+  // sites, and local service integrations (Kiwix, Firecrawl) may use non-TLS
+  // URLs. Private addresses are blocked below regardless of scheme.
+  if (!/^https?:$/.test(parsed.protocol)) {
     throw new Error(`Only http/https URLs are supported`);
   }
-  const blocked = [
-    /^localhost$/i,
-    /^127\./,
-    /^0\.0\.0\.0$/,
-    /^10\./,
-    /^192\.168\./,
-    /^172\.(1[6-9]|2[0-9]|3[01])\./,
-    /^host\.docker\.internal$/i,
-    /^fc[0-9a-f]{2}:/i,
-    /^fe[89ab][0-9a-f]:/i,
-    /^::1$/,
-    /^0:0:0:0:0:0:0:1$/,
-    /^fd[0-9a-f]{2}:/i,
-    /^169\.254\./, // RFC 3927 link-local / AWS IMDS (F-04)
-    /^100\.(6[4-9]|[7-9][0-9]|1[01][0-9]|12[0-7])\./, // RFC 6598 CGNAT (F-04)
-  ];
-  if (blocked.some((r) => r.test(hostname))) {
+  // Strip IPv6 brackets so isIP / classification see the bare address.
+  const hostname = parsed.hostname.replace(/^\[|\]$/g, "");
+  if (isIP(hostname)) {
+    if (isPrivateOrReservedAddress(hostname)) {
+      throw new Error(`Internal/private addresses are not allowed`);
+    }
+    return;
+  }
+  if (BLOCKED_HOSTNAMES.some((r) => r.test(hostname))) {
     throw new Error(`Internal/private addresses are not allowed`);
   }
+}
+
+// Optional CSS-selector tuning passed through fetch_url to the tiers that can
+// honor it. Tiers that cannot (fast paths, raw HTTP wait_for) ignore the
+// fields rather than erroring.
+export interface FetchTuning {
+  targetSelector?: string;
+  waitForSelector?: string;
+}
+
+type SafeFetchOptions = Parameters<typeof fetch>[1] & {
+  dispatcher?: Dispatcher;
+};
+
+/**
+ * fetch() wrapper for outbound requests to caller-influenced or discovered
+ * URLs. Applies the string-level guard, then routes through the DNS-validating
+ * dispatcher (which also re-validates every redirect hop) unless the caller
+ * supplied its own dispatcher (e.g. the adblock proxy, which resolves at the
+ * proxy — the string guard still applies there).
+ */
+export async function safeFetch(
+  url: string,
+  options: SafeFetchOptions = {},
+): Promise<Response> {
+  assertPublicUrl(url);
+  const opts: SafeFetchOptions = { ...options };
+  if (!opts.dispatcher) opts.dispatcher = ssrfGuardedDispatcher;
+  return fetch(url, opts);
 }
 
 export function isPdfUrl(url: string): boolean {

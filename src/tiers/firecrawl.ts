@@ -1,18 +1,31 @@
 import { FIRECRAWL_API_KEY, FIRECRAWL_URL } from "../config.js";
-import type { TierResult } from "../fetch-utils.js";
+import type { FetchTuning, TierResult } from "../fetch-utils.js";
 import type { FirecrawlScrapeResponse } from "../types.js";
 
 export async function firecrawlScrape(
   url: string,
   maxChars = 8000,
+  tuning?: FetchTuning,
 ): Promise<TierResult> {
+  const body: Record<string, unknown> = {
+    url,
+    formats: ["markdown", "html"],
+  };
+  // Only add selector fields when requested, so default scrapes are byte-for-
+  // byte identical to before. target_selector → includeTags (keep only the
+  // matching subtree); wait_for_selector → a wait action before extraction.
+  if (tuning?.targetSelector) body.includeTags = [tuning.targetSelector];
+  if (tuning?.waitForSelector) {
+    body.actions = [{ type: "wait", selector: tuning.waitForSelector }];
+  }
+
   const res = await fetch(`${FIRECRAWL_URL}/v1/scrape`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
       Authorization: `Bearer ${FIRECRAWL_API_KEY}`,
     },
-    body: JSON.stringify({ url, formats: ["markdown", "html"] }),
+    body: JSON.stringify(body),
     signal: AbortSignal.timeout(15000),
   });
 

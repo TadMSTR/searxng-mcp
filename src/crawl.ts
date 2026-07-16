@@ -12,9 +12,10 @@ import {
   FIRECRAWL_URL,
 } from "./config.js";
 import { assertPublicUrl, fetchPage } from "./fetch.js";
-import { readBoundedText } from "./fetch-utils.js";
+import { readBoundedText, safeFetch } from "./fetch-utils.js";
 import { incCounter, recordHistogram } from "./observability.js";
 import { checkRobots, getRobotsForOrigin } from "./robots.js";
+import { assertResolvedPublic } from "./ssrf-guard.js";
 
 export interface CrawlPage {
   url: string;
@@ -183,8 +184,10 @@ export function extractSitemapUrls(xml: string): string[] {
 
 async function fetchSitemapXml(url: string): Promise<string | null> {
   try {
-    assertPublicUrl(url); // SSRF guard — sitemap URLs can come from untrusted robots.txt
-    const res = await fetch(url, {
+    // SSRF guard — sitemap URLs can come from untrusted robots.txt. safeFetch
+    // applies the string check and the DNS-validating dispatcher (each redirect
+    // hop included).
+    const res = await safeFetch(url, {
       headers: { "User-Agent": "searxng-mcp" },
       signal: AbortSignal.timeout(10_000),
     });
@@ -340,8 +343,10 @@ export async function bfsCrawl(
       fetchedText = result.text;
 
       // Extract links from the raw response — re-fetch with raw tier for link
-      // extraction. fetchPage already cached the content; we need HTML for links.
-      const rawRes = await fetch(normalizedUrl, {
+      // extraction. fetchPage already cached the content; we need HTML for
+      // links. safeFetch guards this attacker-influenced URL (BFS discovers it
+      // from a crawled page) against private/reserved resolutions.
+      const rawRes = await safeFetch(normalizedUrl, {
         headers: { "User-Agent": "searxng-mcp" },
         signal: AbortSignal.timeout(10_000),
       });
@@ -401,6 +406,10 @@ export async function crawlSite(
   excludePath?: string,
 ): Promise<CrawlManifest> {
   assertPublicUrl(url); // SSRF guard — validate before any strategy dispatch (F-01)
+  // Firecrawl (phase 1) resolves and fetches the target itself, so pre-resolve
+  // the hostname here to reject a DNS-rebind to an internal address before the
+  // URL is handed off (parity with fetchPage's tier1/tier2 guard).
+  await assertResolvedPublic(url);
   const t0 = Date.now();
   const cacheKey = crawlManifestCacheKey(
     url,
