@@ -1,5 +1,5 @@
 import { REDDIT_FASTPATH_ENABLED, REDDIT_IGNORE_ROBOTS } from "./config.js";
-import { safeFetch, type TierResult } from "./fetch-utils.js";
+import { readBoundedText, safeFetch, type TierResult } from "./fetch-utils.js";
 import { checkRobots } from "./robots.js";
 
 const REDDIT_HOSTS = new Set([
@@ -114,7 +114,9 @@ export async function redditFetch(
     // erroring so the standard cascade can try.
     if (res.status === 429 || !res.ok) return null;
 
-    const data = (await res.json()) as unknown;
+    // Bounded read (2 MB cap) before JSON.parse so an oversized/adversarial
+    // thread response can't consume unbounded memory (audit LOW).
+    const data = JSON.parse(await readBoundedText(res)) as unknown;
     const parsed = parseThread(data);
     if (!parsed) return null;
 

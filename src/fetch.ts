@@ -22,6 +22,7 @@ import { incCounter, recordHistogram, withSpan } from "./observability.js";
 import { isRedditHost, redditFetch } from "./reddit.js";
 import { checkRobots } from "./robots.js";
 import { getTiers, TIER_NAME } from "./routing.js";
+import { assertResolvedPublic } from "./ssrf-guard.js";
 import {
   fetchRawHtmlForMetadata,
   githubFetch,
@@ -354,6 +355,15 @@ export async function fetchPage(
           `[searxng-mcp] fetch ${slot} skipped url=${url} reason=${reason}`,
         );
       }
+
+      // Tier1 (Firecrawl) and tier2 (Crawl4AI) resolve and fetch the URL on our
+      // behalf, so the connect-time DNS guard can't cover them. Pre-resolve the
+      // hostname here (once, before any external-fetcher dispatch) so a public
+      // hostname that DNS-rebinds to an internal address is rejected before it's
+      // handed to those services — the string-level assertPublicUrl above only
+      // catches literal private IPs. Throws SsrfBlockedError on a private
+      // resolution (surfaces to the caller as a fetch error).
+      await assertResolvedPublic(url);
 
       // PDF fast path — Firecrawl can't extract PDF text; route directly to tier2.
       if (isPdfUrl(url)) {

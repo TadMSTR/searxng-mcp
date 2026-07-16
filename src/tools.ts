@@ -783,12 +783,14 @@ export function registerTools(server: McpServer): void {
         ),
       target_selector: z
         .string()
+        .max(500)
         .optional()
         .describe(
           "CSS selector to scope extraction to a specific element (e.g. 'article', 'main .content'). Honored by Firecrawl/Crawl4AI and applied client-side on the raw-HTTP tier; ignored by fast paths and if it matches nothing.",
         ),
       wait_for_selector: z
         .string()
+        .max(500)
         .optional()
         .describe(
           "CSS selector to wait for before extracting, for JS-rendered pages. Honored by the rendering tiers (Firecrawl/Crawl4AI); ignored on raw HTTP (no JS).",

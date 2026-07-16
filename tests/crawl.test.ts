@@ -16,6 +16,13 @@ vi.mock("../src/robots.js", () => ({
   getRobotsForOrigin: vi.fn().mockResolvedValue({ body: null, fetched: "" }),
 }));
 
+// crawlSite/bfsCrawl pre-resolve hostnames via the SSRF guard — stub DNS to a
+// public address so tests don't make real DNS queries. Plain function (not a
+// vi.fn) so the test suite's mock resets don't wipe the resolved value.
+vi.mock("node:dns/promises", () => ({
+  lookup: () => Promise.resolve([{ address: "93.184.216.34", family: 4 }]),
+}));
+
 vi.mock("../src/fetch.js", () => ({
   fetchPage: vi.fn(),
   assertPublicUrl: vi.fn(),

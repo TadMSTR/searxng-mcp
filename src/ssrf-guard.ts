@@ -16,6 +16,7 @@
 // (which assertPublicUrl lives in) without an import cycle.
 
 import { lookup as dnsLookup, type LookupAddress } from "node:dns";
+import { lookup as dnsLookupAsync } from "node:dns/promises";
 import { isIP } from "node:net";
 import { Agent, type Dispatcher } from "undici";
 
@@ -99,6 +100,10 @@ function isPrivateV4(b: number[]): boolean {
   if (a === 192 && second === 0 && third === 0) return true; // 192.0.0.0/24 IETF
   if (a === 100 && second >= 64 && second <= 127) return true; // 100.64.0.0/10 CGNAT
   if (a === 198 && (second === 18 || second === 19)) return true; // 198.18.0.0/15 benchmark
+  if (a === 192 && second === 0 && third === 2) return true; // 192.0.2.0/24 TEST-NET-1
+  if (a === 198 && second === 51 && third === 100) return true; // 198.51.100.0/24 TEST-NET-2
+  if (a === 203 && second === 0 && third === 113) return true; // 203.0.113.0/24 TEST-NET-3
+  if (a === 192 && second === 88 && third === 99) return true; // 192.88.99.0/24 6to4 relay (deprecated)
   if (a >= 224) return true; // 224.0.0.0/4 multicast + 240.0.0.0/4 reserved + 255.255.255.255
   return false;
 }
@@ -194,3 +199,41 @@ export const ssrfGuardedDispatcher: Dispatcher = new Agent({
     lookup: makeGuardedLookup() as any,
   },
 });
+
+/**
+ * Resolve a URL's hostname and throw if any resolved address is
+ * private/reserved. Use this before handing a URL to an **external fetcher**
+ * (Firecrawl/Crawl4AI) that resolves and connects on our behalf and therefore
+ * can't be covered by {@link ssrfGuardedDispatcher} (which only guards our own
+ * connections). Unlike the connect-time guard this has a TOCTOU window — the
+ * external service re-resolves later and could get a different answer — but it
+ * closes the common DNS-rebinding case (a hostname that stably resolves to an
+ * internal address) that the string-level `assertPublicUrl` misses. A
+ * resolution failure is not treated as a block: let the downstream fetch
+ * surface its own DNS error rather than masking it here.
+ */
+export async function assertResolvedPublic(url: string): Promise<void> {
+  let hostname: string;
+  try {
+    hostname = new URL(url).hostname.replace(/^\[|\]$/g, "");
+  } catch {
+    throw new Error("Invalid URL");
+  }
+  if (isIP(hostname)) {
+    if (isPrivateOrReservedAddress(hostname)) {
+      throw new SsrfBlockedError(hostname, hostname);
+    }
+    return;
+  }
+  let results: LookupAddress[];
+  try {
+    results = await dnsLookupAsync(hostname, { all: true });
+  } catch {
+    return; // resolution failure — not an SSRF block
+  }
+  for (const r of results) {
+    if (isPrivateOrReservedAddress(r.address)) {
+      throw new SsrfBlockedError(hostname, r.address);
+    }
+  }
+}

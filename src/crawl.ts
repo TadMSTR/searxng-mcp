@@ -15,6 +15,7 @@ import { assertPublicUrl, fetchPage } from "./fetch.js";
 import { readBoundedText, safeFetch } from "./fetch-utils.js";
 import { incCounter, recordHistogram } from "./observability.js";
 import { checkRobots, getRobotsForOrigin } from "./robots.js";
+import { assertResolvedPublic } from "./ssrf-guard.js";
 
 export interface CrawlPage {
   url: string;
@@ -405,6 +406,10 @@ export async function crawlSite(
   excludePath?: string,
 ): Promise<CrawlManifest> {
   assertPublicUrl(url); // SSRF guard — validate before any strategy dispatch (F-01)
+  // Firecrawl (phase 1) resolves and fetches the target itself, so pre-resolve
+  // the hostname here to reject a DNS-rebind to an internal address before the
+  // URL is handed off (parity with fetchPage's tier1/tier2 guard).
+  await assertResolvedPublic(url);
   const t0 = Date.now();
   const cacheKey = crawlManifestCacheKey(
     url,

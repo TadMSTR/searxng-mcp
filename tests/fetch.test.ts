@@ -98,6 +98,20 @@ describe("assertPublicUrl", () => {
       "Only http/https URLs are supported",
     );
   });
+
+  // Alternate IPv4 literal encodings are normalized to canonical dotted-decimal
+  // by the WHATWG URL parser before the isIP()/classify check runs, so they must
+  // still be blocked. Guards against a future URL-parsing change silently
+  // reopening the bypass (audit INFO).
+  it.each([
+    "http://0x7f000001/", // hex → 127.0.0.1
+    "http://2130706433/", // decimal integer → 127.0.0.1
+    "http://0177.0.0.1/", // octal first octet → 127.0.0.1
+  ])("throws on alternate IPv4 literal %s", (url) => {
+    expect(() => assertPublicUrl(url)).toThrow(
+      "Internal/private addresses are not allowed",
+    );
+  });
 });
 
 describe("rawFetch", () => {

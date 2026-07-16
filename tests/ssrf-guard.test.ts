@@ -1,6 +1,11 @@
 import type { LookupAddress } from "node:dns";
 import { describe, expect, it, vi } from "vitest";
+
+vi.mock("node:dns/promises", () => ({ lookup: vi.fn() }));
+
+import { lookup as dnsLookupAsync } from "node:dns/promises";
 import {
+  assertResolvedPublic,
   isPrivateOrReservedAddress,
   makeGuardedLookup,
   SsrfBlockedError,
@@ -119,5 +124,49 @@ describe("makeGuardedLookup", () => {
       guarded("nope.example", opts, (e) => resolve(e)),
     );
     expect(err).toBe(dnsErr);
+  });
+});
+
+describe("assertResolvedPublic", () => {
+  const mockLookup = vi.mocked(dnsLookupAsync);
+
+  it("rejects a literal private IP without resolving", async () => {
+    await expect(
+      assertResolvedPublic("http://10.0.0.1/admin"),
+    ).rejects.toBeInstanceOf(SsrfBlockedError);
+    expect(mockLookup).not.toHaveBeenCalled();
+  });
+
+  it("allows a literal public IP without resolving", async () => {
+    await expect(
+      assertResolvedPublic("http://93.184.216.34/"),
+    ).resolves.toBeUndefined();
+    expect(mockLookup).not.toHaveBeenCalled();
+  });
+
+  it("blocks a hostname that resolves to a private address (DNS rebind)", async () => {
+    mockLookup.mockResolvedValueOnce([
+      { address: "93.184.216.34", family: 4 },
+      { address: "10.0.0.5", family: 4 },
+    ] as LookupAddress[]);
+    await expect(
+      assertResolvedPublic("https://rebind.evil/"),
+    ).rejects.toBeInstanceOf(SsrfBlockedError);
+  });
+
+  it("allows a hostname that resolves only to public addresses", async () => {
+    mockLookup.mockResolvedValueOnce([
+      { address: "93.184.216.34", family: 4 },
+    ] as LookupAddress[]);
+    await expect(
+      assertResolvedPublic("https://example.com/"),
+    ).resolves.toBeUndefined();
+  });
+
+  it("does not treat a DNS resolution failure as a block", async () => {
+    mockLookup.mockRejectedValueOnce(new Error("ENOTFOUND"));
+    await expect(
+      assertResolvedPublic("https://nope.example/"),
+    ).resolves.toBeUndefined();
   });
 });

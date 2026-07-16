@@ -13,6 +13,13 @@ vi.mock("../src/config.js", () => ({
   REDDIT_IGNORE_ROBOTS: false,
 }));
 
+// Pre-resolve SSRF guard resolves hostnames before the tier cascade — stub it
+// to a public address so tests don't make real DNS queries. Plain function so
+// mock resets don't wipe the resolved value.
+vi.mock("node:dns/promises", () => ({
+  lookup: () => Promise.resolve([{ address: "93.184.216.34", family: 4 }]),
+}));
+
 vi.mock("../src/cache.js", () => ({
   cacheGet: vi.fn().mockResolvedValue(null),
   cacheSet: vi.fn().mockResolvedValue(undefined),
