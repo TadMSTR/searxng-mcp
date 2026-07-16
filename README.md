@@ -586,6 +586,8 @@ Every outbound fetch to a caller-influenced or discovered URL — the raw-HTTP t
 1. **String check** (`assertPublicUrl`) — rejects non-HTTP(S) URLs and private/internal IP *literals*: RFC1918 (`10.x`, `192.168.x`, `172.16–31.x`), loopback (`127.x`, `::1`), link-local / cloud metadata (`169.254.x`), CGNAT (`100.64/10`), IPv6 ULA (`fc00::/7`) and link-local (`fe80::/10`), IPv4-mapped, and multicast/reserved ranges.
 2. **Connect-time DNS validation** — a shared undici dispatcher whose `connect.lookup` validates the *resolved* address (the exact one the socket connects to). This closes the DNS-rebinding / TOCTOU gap where a public hostname resolves to a private address, and it re-runs on **every redirect hop**, so a redirect chain cannot bounce into your internal network.
 
+Firecrawl (tier1) and Crawl4AI (tier2) resolve and fetch the target URL themselves, so the connect-time dispatcher above can't cover them. `fetchPage` and `crawlSite` call `assertResolvedPublic(url)` — a one-time hostname resolution rejecting any private/reserved result — immediately before dispatching to either service, closing the common DNS-rebinding case on that path (narrower TOCTOU window than the connect-time guard, since the service re-resolves).
+
 Configured internal services (Firecrawl, Crawl4AI, SearXNG, Ollama, Reranker) are reached by their own URLs and are intentionally not guarded.
 
 ### Redirect protection
