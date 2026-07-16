@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [3.14.1] - 2026-07-16
+
+### Fixed
+- **HTTP transport rejected every concurrent client but the first (SXNG-14)** — the process created a single `StreamableHTTPServerTransport` and reused it for every request; only the first client's `initialize` succeeded, every later client got `HTTP 400 "Server already initialized"`. This broke the shared HTTP service (port 8504) for every agent but whichever connected first, blocking the stdio→HTTP cutover across all six agent manifests. New `src/http-transport.ts` routes each request by the `Mcp-Session-Id` header, creating a new transport (and MCP server) per session per the SDK's documented stateful multi-session pattern.
+
 ## [3.14.0] - 2026-07-12
 
 ### Added
