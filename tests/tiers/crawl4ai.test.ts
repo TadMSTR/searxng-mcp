@@ -18,10 +18,10 @@ beforeEach(() => {
 
 const URL = "https://example.com/page";
 
-const syncResponse = (text = "# Page Content\n\nSome text") => ({
-  ok: true,
-  json: () =>
-    Promise.resolve({
+// Real Response so crawl4aiFetch's readBoundedText(resp) has a body to read.
+const syncResponse = (text = "# Page Content\n\nSome text") =>
+  new Response(
+    JSON.stringify({
       results: [
         {
           markdown: { raw_markdown: text },
@@ -30,7 +30,8 @@ const syncResponse = (text = "# Page Content\n\nSome text") => ({
         },
       ],
     }),
-});
+    { status: 200 },
+  );
 
 describe("crawl4aiFetch", () => {
   it("returns result immediately on synchronous response", async () => {
@@ -55,10 +56,11 @@ describe("crawl4aiFetch", () => {
   });
 
   it("returns null for invalid task_id format (path traversal guard)", async () => {
-    mockFetch.mockResolvedValueOnce({
-      ok: true,
-      json: () => Promise.resolve({ task_id: "../../etc/passwd" }),
-    });
+    mockFetch.mockResolvedValueOnce(
+      new Response(JSON.stringify({ task_id: "../../etc/passwd" }), {
+        status: 200,
+      }),
+    );
     const result = await crawl4aiFetch(URL);
     expect(result).toBeNull();
   });
@@ -95,10 +97,9 @@ describe("crawl4aiFetch", () => {
 
 describe("pollCrawl4aiTask", () => {
   it("returns result when status is completed", async () => {
-    mockFetch.mockResolvedValueOnce({
-      ok: true,
-      json: () =>
-        Promise.resolve({
+    mockFetch.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
           status: "completed",
           result: {
             markdown: { raw_markdown: "page content" },
@@ -106,7 +107,9 @@ describe("pollCrawl4aiTask", () => {
             html: null,
           },
         }),
-    });
+        { status: 200 },
+      ),
+    );
 
     vi.useFakeTimers();
     const controller = new AbortController();
@@ -122,10 +125,9 @@ describe("pollCrawl4aiTask", () => {
   });
 
   it("returns null when status is failed", async () => {
-    mockFetch.mockResolvedValueOnce({
-      ok: true,
-      json: () => Promise.resolve({ status: "failed" }),
-    });
+    mockFetch.mockResolvedValueOnce(
+      new Response(JSON.stringify({ status: "failed" }), { status: 200 }),
+    );
 
     vi.useFakeTimers();
     const controller = new AbortController();

@@ -1,5 +1,9 @@
 import { FIRECRAWL_API_KEY, FIRECRAWL_URL } from "../config.js";
-import type { FetchTuning, TierResult } from "../fetch-utils.js";
+import {
+  type FetchTuning,
+  readBoundedText,
+  type TierResult,
+} from "../fetch-utils.js";
 import type { FirecrawlScrapeResponse } from "../types.js";
 
 export async function firecrawlScrape(
@@ -33,7 +37,11 @@ export async function firecrawlScrape(
     throw new Error(`Firecrawl error: ${res.status} ${res.statusText}`);
   }
 
-  const data = (await res.json()) as FirecrawlScrapeResponse;
+  // Bounded read (2 MB cap) before JSON.parse — consistency with the rest of
+  // the fetch layer; caps memory even on an unexpected oversized response.
+  const data = JSON.parse(
+    await readBoundedText(res),
+  ) as FirecrawlScrapeResponse;
 
   if (!data.success || !data.data) {
     throw new Error(data.error ?? "Firecrawl returned no data");

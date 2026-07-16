@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [3.15.1] - 2026-07-16
+
+### Security
+- **Bounded reads in the Firecrawl/Crawl4AI tiers (SXNG-23)** — `src/tiers/firecrawl.ts` and `src/tiers/crawl4ai.ts` now read responses via `readBoundedText` (2 MB cap) before `JSON.parse` instead of unbounded `res.json()`, matching the tier-3 / robots / llms / sitemap / Reddit fetches. Follow-up to the SXNG-21 audit LOW finding (the Reddit case was fixed in 3.15.0); consistency/defense-in-depth against an unexpectedly large response from those internal services.
+
 ## [3.15.0] - 2026-07-16
 
 Feature bundle from a 2026-07-16 competitive review (mcp-searxng, Perplexica, SurfSense, Jina Reader, Tavily/Exa MCP). All additive — no breaking tool-schema changes. Plane: SXNG-21.

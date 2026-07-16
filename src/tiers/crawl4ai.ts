@@ -7,7 +7,11 @@ import {
   preferReadability,
   runReadability,
 } from "../extractors/readability.js";
-import type { FetchTuning, TierResult } from "../fetch-utils.js";
+import {
+  type FetchTuning,
+  readBoundedText,
+  type TierResult,
+} from "../fetch-utils.js";
 
 export async function pollCrawl4aiTask(
   taskId: string,
@@ -26,7 +30,10 @@ export async function pollCrawl4aiTask(
       const resp = await fetch(`${CRAWL4AI_URL}/task/${taskId}`, { signal });
       if (!resp.ok) return null;
 
-      const data = (await resp.json()) as Record<string, unknown>;
+      const data = JSON.parse(await readBoundedText(resp)) as Record<
+        string,
+        unknown
+      >;
       if (data.status === "completed") {
         const result = data.result as Record<string, unknown> | null;
         const md = result?.markdown as Record<string, string> | null;
@@ -93,7 +100,12 @@ export async function crawl4aiFetch(
     });
 
     if (!resp.ok) return null;
-    const data = (await resp.json()) as Record<string, unknown>;
+    // Bounded read (2 MB cap) before JSON.parse — consistency with the rest of
+    // the fetch layer; caps memory even on an unexpected oversized response.
+    const data = JSON.parse(await readBoundedText(resp)) as Record<
+      string,
+      unknown
+    >;
 
     // Synchronous response — results returned directly
     if (Array.isArray(data.results) && data.results.length > 0) {
