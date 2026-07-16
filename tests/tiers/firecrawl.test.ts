@@ -11,23 +11,23 @@ beforeEach(() => {
 
 const URL = "https://example.com/page";
 
+// Real Response so firecrawlScrape's readBoundedText(res) has a body to read.
 function mockSuccess(overrides?: object) {
-  return {
-    ok: true,
-    json: () =>
-      Promise.resolve({
-        success: true,
-        data: {
-          markdown: "# Title\n\nContent here",
-          html: "<h1>Title</h1><p>Content here</p>",
-          metadata: {
-            title: "Title",
-            sourceURL: URL,
-          },
-          ...overrides,
+  return new Response(
+    JSON.stringify({
+      success: true,
+      data: {
+        markdown: "# Title\n\nContent here",
+        html: "<h1>Title</h1><p>Content here</p>",
+        metadata: {
+          title: "Title",
+          sourceURL: URL,
         },
-      }),
-  };
+        ...overrides,
+      },
+    }),
+    { status: 200 },
+  );
 }
 
 describe("firecrawlScrape", () => {
@@ -56,11 +56,12 @@ describe("firecrawlScrape", () => {
   });
 
   it("throws when success is false with error message", async () => {
-    mockFetch.mockResolvedValueOnce({
-      ok: true,
-      json: () =>
-        Promise.resolve({ success: false, error: "bot-blocked", data: null }),
-    });
+    mockFetch.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({ success: false, error: "bot-blocked", data: null }),
+        { status: 200 },
+      ),
+    );
     await expect(firecrawlScrape(URL)).rejects.toThrow("bot-blocked");
   });
 
