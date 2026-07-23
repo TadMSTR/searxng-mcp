@@ -7,7 +7,7 @@ import {
   CACHE_URL,
 } from "./config.js";
 import { events } from "./events.js";
-import { logThrottled } from "./log.js";
+import { logThrottled, redactUrlCredentials } from "./log.js";
 import { incCounter } from "./observability.js";
 
 function namespaceOf(key: string): string {
@@ -44,7 +44,7 @@ export async function getValkey(): Promise<Valkey | null> {
   } catch (err) {
     logThrottled(
       "cache:connect-failed",
-      `cache connect failed (${CACHE_URL}) — serving live, cache disabled: ${err instanceof Error ? err.message : String(err)}`,
+      `cache connect failed (${redactUrlCredentials(CACHE_URL)}) — serving live, cache disabled: ${err instanceof Error ? err.message : String(err)}`,
     );
     return null;
   }

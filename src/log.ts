@@ -37,3 +37,18 @@ export function logThrottled(
 export function resetLogThrottle(): void {
   lastLoggedAt.clear();
 }
+
+/**
+ * Redact the password from a connection URL before logging it. Forge's cache
+ * URL carries an inline password (`redis://:<pw>@host`), so logging it verbatim
+ * would leak the secret into the PM2 log. Keeps host/port/db for diagnostics.
+ */
+export function redactUrlCredentials(url: string): string {
+  try {
+    const u = new URL(url);
+    if (u.password) u.password = "***";
+    return u.toString();
+  } catch {
+    return "<url>";
+  }
+}
