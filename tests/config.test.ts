@@ -9,6 +9,11 @@ const CONFIG_ENV = [
   "RERANK_RECENCY_WEIGHT",
   "KIWIX_URL",
   "HISTER_URL",
+  "CACHE_COMMAND_TIMEOUT_MS",
+  "CACHE_CONNECT_TIMEOUT_MS",
+  "CACHE_MAX_RETRIES_PER_REQUEST",
+  "HTTP_SESSION_IDLE_TIMEOUT_MS",
+  "HTTP_MAX_SESSIONS",
 ];
 
 function clearConfigEnv() {
@@ -124,6 +129,58 @@ describe("RERANK_RECENCY_WEIGHT parsing/fallback", () => {
     expect(warnSpy).toHaveBeenCalledWith(
       expect.stringContaining("exceeds 1.0"),
     );
+  });
+});
+
+describe("cache resilience timeouts (positiveIntEnv)", () => {
+  it("defaults to 2500/3000/2 when unset", async () => {
+    const {
+      CACHE_COMMAND_TIMEOUT_MS,
+      CACHE_CONNECT_TIMEOUT_MS,
+      CACHE_MAX_RETRIES_PER_REQUEST,
+    } = await import("../src/config.js");
+    expect(CACHE_COMMAND_TIMEOUT_MS).toBe(2500);
+    expect(CACHE_CONNECT_TIMEOUT_MS).toBe(3000);
+    expect(CACHE_MAX_RETRIES_PER_REQUEST).toBe(2);
+  });
+
+  it("parses a valid custom command timeout", async () => {
+    process.env.CACHE_COMMAND_TIMEOUT_MS = "1500";
+    const { CACHE_COMMAND_TIMEOUT_MS } = await import("../src/config.js");
+    expect(CACHE_COMMAND_TIMEOUT_MS).toBe(1500);
+  });
+
+  it("falls back to the default on a non-numeric value (never NaN)", async () => {
+    process.env.CACHE_COMMAND_TIMEOUT_MS = "not-a-number";
+    const { CACHE_COMMAND_TIMEOUT_MS } = await import("../src/config.js");
+    expect(CACHE_COMMAND_TIMEOUT_MS).toBe(2500);
+    expect(Number.isNaN(CACHE_COMMAND_TIMEOUT_MS)).toBe(false);
+  });
+
+  it("falls back to the default on a non-positive value", async () => {
+    process.env.CACHE_COMMAND_TIMEOUT_MS = "0";
+    const { CACHE_COMMAND_TIMEOUT_MS } = await import("../src/config.js");
+    expect(CACHE_COMMAND_TIMEOUT_MS).toBe(2500);
+  });
+});
+
+describe("HTTP session lifecycle knobs", () => {
+  it("defaults idle timeout to 600000ms and max sessions to 256", async () => {
+    const { HTTP_SESSION_IDLE_TIMEOUT_MS, HTTP_MAX_SESSIONS } = await import(
+      "../src/config.js"
+    );
+    expect(HTTP_SESSION_IDLE_TIMEOUT_MS).toBe(600_000);
+    expect(HTTP_MAX_SESSIONS).toBe(256);
+  });
+
+  it("parses custom values", async () => {
+    process.env.HTTP_SESSION_IDLE_TIMEOUT_MS = "120000";
+    process.env.HTTP_MAX_SESSIONS = "8";
+    const { HTTP_SESSION_IDLE_TIMEOUT_MS, HTTP_MAX_SESSIONS } = await import(
+      "../src/config.js"
+    );
+    expect(HTTP_SESSION_IDLE_TIMEOUT_MS).toBe(120_000);
+    expect(HTTP_MAX_SESSIONS).toBe(8);
   });
 });
 

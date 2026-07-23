@@ -18,6 +18,34 @@ export const FETCH_CACHE_TTL_SECONDS = parseInt(
   process.env.FETCH_CACHE_TTL_SECONDS ?? "86400",
   10,
 );
+
+// Positive-integer env parse with a safe default — an invalid or non-positive
+// value falls back rather than silently becoming NaN (a NaN commandTimeout would
+// disable the very timeout this build adds).
+function positiveIntEnv(name: string, fallback: number): number {
+  const raw = process.env[name];
+  if (raw === undefined) return fallback;
+  const v = parseInt(raw, 10);
+  return Number.isNaN(v) || v <= 0 ? fallback : v;
+}
+
+// Valkey cache client resilience (see src/cache.ts). A CPU-spiked dragonfly
+// still answers its ping healthcheck but stalls on real commands; cacheGet() is
+// the first await in every search, so with no command timeout it hangs until the
+// MCP host's 300s idle-abort. These bound the hang; the cache stays fail-soft
+// (timeout → cache miss → serve live, never throw).
+export const CACHE_COMMAND_TIMEOUT_MS = positiveIntEnv(
+  "CACHE_COMMAND_TIMEOUT_MS",
+  2500,
+);
+export const CACHE_CONNECT_TIMEOUT_MS = positiveIntEnv(
+  "CACHE_CONNECT_TIMEOUT_MS",
+  3000,
+);
+export const CACHE_MAX_RETRIES_PER_REQUEST = positiveIntEnv(
+  "CACHE_MAX_RETRIES_PER_REQUEST",
+  2,
+);
 export const OLLAMA_URL = process.env.OLLAMA_URL ?? "";
 export const OLLAMA_API_KEY = process.env.OLLAMA_API_KEY ?? "";
 export const OLLAMA_EXPAND_MODEL =
@@ -72,6 +100,15 @@ export const REDDIT_IGNORE_ROBOTS = process.env.REDDIT_IGNORE_ROBOTS === "true";
 export const TRANSPORT = process.env.SEARXNG_MCP_TRANSPORT ?? "stdio"; // "stdio" | "http"
 export const HTTP_PORT = parseInt(process.env.SEARXNG_MCP_PORT ?? "3001", 10);
 export const HTTP_HOST = process.env.SEARXNG_MCP_HOST ?? "127.0.0.1";
+// Bound the HTTP transport session map. Sessions are normally removed on
+// transport.onclose, but an agent killed mid-turn never fires it, leaking the
+// transport + its MCP server. Idle sessions are swept after this timeout, and a
+// hard cap evicts the least-recently-used session if the map ever grows past it.
+export const HTTP_SESSION_IDLE_TIMEOUT_MS = positiveIntEnv(
+  "HTTP_SESSION_IDLE_TIMEOUT_MS",
+  600_000,
+);
+export const HTTP_MAX_SESSIONS = positiveIntEnv("HTTP_MAX_SESSIONS", 256);
 export const CRAWL_MANIFEST_TTL_SECONDS = parseInt(
   process.env.CRAWL_MANIFEST_TTL_SECONDS ?? "21600",
   10,

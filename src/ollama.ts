@@ -8,6 +8,7 @@ import {
   OLLAMA_SUMMARIZE_MODEL,
   OLLAMA_URL,
 } from "./config.js";
+import { logThrottled } from "./log.js";
 import type {
   Citation,
   OllamaChatResponse,
@@ -132,8 +133,12 @@ export async function expandQuery(query: string): Promise<string[]> {
       .map((line) => line.trim())
       .filter((line) => line.length > 0 && line !== query)
       .slice(0, 3);
-  } catch {
-    // Timeout, connection refused, or any error — fall back to original query
+  } catch (err) {
+    // Timeout, connection refused, or any error — fall back to original query.
+    logThrottled(
+      "degrade:ollama-expand",
+      `query expansion unavailable — searching the original query only: ${err instanceof Error ? err.message : String(err)}`,
+    );
     return [];
   }
 }
@@ -209,8 +214,12 @@ export async function summarizePages(
       summary: typeof parsed.summary === "string" ? parsed.summary : "",
       citations,
     };
-  } catch {
-    // Ollama unavailable, timeout, or parse error — return null to signal fallback
+  } catch (err) {
+    // Ollama unavailable, timeout, or parse error — signal fallback to raw pages.
+    logThrottled(
+      "degrade:ollama-summarize",
+      `summarization unavailable — returning raw pages instead of a synthesis: ${err instanceof Error ? err.message : String(err)}`,
+    );
     return { summary: "", citations: [] };
   }
 }

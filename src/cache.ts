@@ -1,7 +1,13 @@
 import { createHash } from "node:crypto";
 import { Redis as Valkey } from "iovalkey";
-import { CACHE_URL } from "./config.js";
+import {
+  CACHE_COMMAND_TIMEOUT_MS,
+  CACHE_CONNECT_TIMEOUT_MS,
+  CACHE_MAX_RETRIES_PER_REQUEST,
+  CACHE_URL,
+} from "./config.js";
 import { events } from "./events.js";
+import { logThrottled } from "./log.js";
 import { incCounter } from "./observability.js";
 
 function namespaceOf(key: string): string {
@@ -17,15 +23,29 @@ export async function getValkey(): Promise<Valkey | null> {
     const client = new Valkey(CACHE_URL, {
       lazyConnect: true,
       enableReadyCheck: false,
+      // Resilience: a stalled backend now rejects commands instead of hanging
+      // cacheGet() (the first await in every search) forever. Fail-soft catches
+      // below degrade the rejection to a cache miss. See config.ts for defaults.
+      commandTimeout: CACHE_COMMAND_TIMEOUT_MS,
+      connectTimeout: CACHE_CONNECT_TIMEOUT_MS,
+      maxRetriesPerRequest: CACHE_MAX_RETRIES_PER_REQUEST,
     });
-    client.on("error", () => {
+    client.on("error", (err: unknown) => {
+      logThrottled(
+        "cache:client-error",
+        `cache client error — serving live until it recovers: ${err instanceof Error ? err.message : String(err)}`,
+      );
       client.disconnect();
       valkey = null;
     });
     await client.connect();
     valkey = client;
     return valkey;
-  } catch {
+  } catch (err) {
+    logThrottled(
+      "cache:connect-failed",
+      `cache connect failed (${CACHE_URL}) — serving live, cache disabled: ${err instanceof Error ? err.message : String(err)}`,
+    );
     return null;
   }
 }
@@ -49,6 +69,10 @@ export async function cacheGet(key: string): Promise<string | null> {
     const client = await getValkey();
     if (!client) {
       incCounter("cache", { namespace, outcome: "unavailable" });
+      logThrottled(
+        `cache:unavailable:${namespace}`,
+        `cache unavailable (namespace=${namespace}) — serving live (cache miss)`,
+      );
       return null;
     }
     const value = await client.get(key);
@@ -60,8 +84,12 @@ export async function cacheGet(key: string): Promise<string | null> {
       events.cacheMiss({ key_type: "get", namespace });
     }
     return value;
-  } catch {
+  } catch (err) {
     incCounter("cache", { namespace, outcome: "error" });
+    logThrottled(
+      `cache:error:${namespace}`,
+      `cache get failed (namespace=${namespace}) — serving live (cache miss): ${err instanceof Error ? err.message : String(err)}`,
+    );
     return null;
   }
 }
@@ -132,5 +160,18 @@ export async function cacheClear(pattern: string): Promise<number> {
     return keys.length;
   } catch {
     return 0;
+  }
+}
+
+// Bounded liveness probe for the /health endpoint. Uses the same short command
+// timeout as every other cache op (via getValkey), so a stalled backend fails
+// fast and the health check itself can never hang.
+export async function cachePing(): Promise<boolean> {
+  try {
+    const client = await getValkey();
+    if (!client) return false;
+    return (await client.ping()) === "PONG";
+  } catch {
+    return false;
   }
 }
