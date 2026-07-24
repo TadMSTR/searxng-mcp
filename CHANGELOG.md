@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [3.16.0] - 2026-07-23
+
 Cache-resilience + observability hardening (build `searxng-cache-resilience-2026-07`, vikunja#143). Root cause: the Valkey cache client had no command timeout and `cacheGet()` is the first `await` in every search, so a CPU-spiked dragonfly made searches hang until the MCP host's 300s idle-abort — with nothing logged. This is now a single long-lived PM2 HTTP process serving all agents, so an unhandled fault or a session leak takes searxng down for everyone silently.
 
 ### Fixed
