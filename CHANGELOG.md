@@ -6,6 +6,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [3.16.0] - 2026-07-23
+
+Cache-resilience + observability hardening (build `searxng-cache-resilience-2026-07`, vikunja#143). Root cause: the Valkey cache client had no command timeout and `cacheGet()` is the first `await` in every search, so a CPU-spiked dragonfly made searches hang until the MCP host's 300s idle-abort — with nothing logged. This is now a single long-lived PM2 HTTP process serving all agents, so an unhandled fault or a session leak takes searxng down for everyone silently.
+
+### Fixed
+- **Valkey cache client can no longer hang a search (the core fix)** — `getValkey()` now sets `commandTimeout` (2500 ms), `connectTimeout` (3000 ms), and `maxRetriesPerRequest` (2). A stalled/CPU-spiked cache backend now rejects the command instead of hanging forever; the existing fail-soft catches degrade the rejection to a cache miss (serve live), never throwing out of `searxSearch`. Tunable via `CACHE_COMMAND_TIMEOUT_MS` / `CACHE_CONNECT_TIMEOUT_MS` / `CACHE_MAX_RETRIES_PER_REQUEST` (invalid/non-positive values fall back to the defaults rather than becoming a NaN that would disable the timeout).
+- **HTTP transport session leak bounded** — sessions were removed only on `transport.onclose`, which an agent killed mid-turn never fires, leaking the transport + its MCP server on the long-lived process. Added an idle-session sweep (`HTTP_SESSION_IDLE_TIMEOUT_MS`, default 10 min) plus an LRU hard-cap backstop (`HTTP_MAX_SESSIONS`, default 256). Sessions with an in-flight request are exempt from both, so a single long-running call (e.g. a large `crawl_site`) is never closed mid-request; the in-flight count is released even on abrupt disconnect, so a genuinely leaked session still becomes evictable. Evictions are logged. (Audit LOW.)
+
+### Added
+- **The cache path now logs.** `src/cache.ts` was entirely silent (zero `console.*`; OTel/NATS sinks unset on the running process). Cache connect failures, client errors, unavailable, and per-command errors now emit a throttled `[searxng-mcp]` stderr line (deduped to one per interval per key so a sustained outage leaves a periodic breadcrumb, not a flood). stderr is the only telemetry sink wired on the running PM2 process.
+- **Process crash handlers** (`src/index.ts`) — `uncaughtException` logs then exits 1 (clean PM2 restart); `unhandledRejection` logs and continues. Previously a fault anywhere took searxng down for all agents with nothing logged (the 2026-07-16 crash-loop left 10 core dumps and zero log lines).
+- **`GET /health` endpoint** — pings Valkey through the new bounded command timeout (so it can never itself hang) and returns `200 {status:"ok",cache:"up"}` or `503 {status:"degraded",cache:"degraded"}`, plus the live session count. Gives sysadmin monitoring a way to detect a degraded cache from the MCP side.
+- **NATS username/password auth** (`src/events.ts`) — `initEvents()` now accepts `NATS_USER`/`NATS_PASSWORD` (`opts.user`/`opts.pass`) in addition to the existing `NATS_CREDS` JWT file (creds wins if both set). Forge's `searxng-mcp` NATS user is bcrypt username/password with no `.creds` file, so events could never authenticate before this — the reason NATS telemetry never fired.
+- **Graceful-degradation warnings** — the reranker fallback (`src/reranker.ts`) and the ollama/LLM expand + summarize fallbacks (`src/ollama.ts`) now emit one throttled stderr line each when they silently degrade quality, so "why did ranking/summarize get worse" is answerable.
+
+### Changed
+- **Version is single-sourced** from `package.json` via the new `src/version.ts` (read at runtime). The `McpServer` version, OTel tracer/meter version, and outbound `USER_AGENT` were independently hardcoded to `3.10.0` / `3.5.0` / `3.7.0` and had drifted from `package.json`; they now all track the real version.
+- Removed ~285 MB of orphaned `core.*` crash dumps from the repo root (gitignored, untracked; from the 2026-07-16 crash-loop). The new crash handlers now yield a log line instead of a binary dump if crashes recur.
+
 ## [3.15.1] - 2026-07-16
 
 ### Security

@@ -8,6 +8,7 @@ import type {
   Span,
   Tracer,
 } from "@opentelemetry/api";
+import { VERSION } from "./version.js";
 
 type SpanStatusCode = 1 | 2; // 1 = OK, 2 = ERROR
 type AttributeValue = string | number | boolean;
@@ -66,8 +67,8 @@ export async function initObservability(): Promise<void> {
     nodeSdk.start();
     sdk = nodeSdk;
 
-    tracer = otelApi.trace.getTracer("searxng-mcp", "3.5.0");
-    meter = otelApi.metrics.getMeter("searxng-mcp", "3.5.0");
+    tracer = otelApi.trace.getTracer("searxng-mcp", VERSION);
+    meter = otelApi.metrics.getMeter("searxng-mcp", VERSION);
 
     counters.search = meter.createCounter("searxng_search_total");
     counters.fetch = meter.createCounter("searxng_fetch_total");

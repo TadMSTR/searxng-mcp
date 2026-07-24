@@ -36,6 +36,13 @@ export async function initEvents(): Promise<void> {
       opts.authenticator = credsAuthenticator(
         readFileSync(process.env.NATS_CREDS),
       );
+    } else if (process.env.NATS_USER && process.env.NATS_PASSWORD) {
+      // Forge's searxng-mcp NATS user is bcrypt username/password (no .creds
+      // file exists), so the JWT creds authenticator above could never
+      // authenticate it — this is why NATS events have never fired. Creds-file
+      // auth still wins when both are configured.
+      opts.user = process.env.NATS_USER;
+      opts.pass = process.env.NATS_PASSWORD;
     }
     nc = await connect(opts);
   } catch (err) {
