@@ -300,6 +300,13 @@ After any tier returns content with raw HTML, a post-extraction pass improves ti
 - **Title cascade** — falls back through `og:title` → `twitter:title` → `<title>` (with publisher-suffix stripping) → first `<h1>` → URL.
 - **Tier-2 Readability comparison** — when Crawl4AI returns markdown, JSDOM+Readability also runs over its raw HTML and is preferred when its text is longer (or unconditionally when Crawl4AI returns less than 500 chars).
 
+### Resilience
+
+- **Cache never hangs a search.** The Valkey client is bounded by `CACHE_COMMAND_TIMEOUT_MS`/`CACHE_CONNECT_TIMEOUT_MS`/`CACHE_MAX_RETRIES_PER_REQUEST` (see [Configuration](#configuration)). A stalled or CPU-spiked cache backend now rejects the command instead of hanging forever — the existing fail-soft handling degrades that rejection to a cache miss (serve live) rather than throwing. Cache connect failures, client errors, and per-command errors emit a throttled `[searxng-mcp]` stderr line (deduped per key so a sustained outage leaves a periodic breadcrumb, not a flood) — stderr is the only telemetry sink wired on the deployed PM2 process.
+- **Process crash handlers** — `uncaughtException` logs then exits 1 (clean PM2 restart); `unhandledRejection` logs and continues rather than crashing the shared process silently.
+- **Graceful-degradation warnings** — the reranker fallback and the Ollama/LLM expand + summarize fallbacks emit one throttled stderr line each when they silently degrade quality (reranker unavailable, LLM backend unreachable).
+- **Version is single-sourced** from `package.json` at runtime (`src/version.ts`) — the `McpServer` version, OTel tracer/meter version, and outbound `USER_AGENT` all track it, so they can't drift independently.
+
 ### Observability (opt-in)
 
 Tracing, metrics, and event publishing are entirely opt-in — with none of the env vars below set, the server has zero observability overhead and never loads the OpenTelemetry or NATS packages at runtime.
@@ -312,7 +319,7 @@ Tracing, metrics, and event publishing are entirely opt-in — with none of the 
 
 Standard OTEL env vars apply (`OTEL_SERVICE_NAME` defaults to `searxng-mcp`).
 
-**NATS events** — set `NATS_URL` (e.g. `nats://localhost:4222`) and the server publishes a structured event on every search, fetch, cache hit/miss, robots skip, and error. Subjects:
+**NATS events** — set `NATS_URL` (e.g. `nats://localhost:4222`) and the server publishes a structured event on every search, fetch, cache hit/miss, robots skip, and error. Authenticates via `NATS_CREDS` (a JWT creds file) or `NATS_USER`/`NATS_PASSWORD` (bcrypt username/password) — creds-file auth wins if both are set. Subjects:
 
 | Subject | When |
 |---------|------|
@@ -350,6 +357,22 @@ claude mcp add-json searxng --scope user '{
   "url": "http://localhost:3001/mcp"
 }'
 ```
+
+Sessions are keyed by the `Mcp-Session-Id` header, so multiple clients can connect to the same shared process concurrently. Idle sessions are swept after `HTTP_SESSION_IDLE_TIMEOUT_MS` and hard-capped at `HTTP_MAX_SESSIONS` — see [Configuration](#configuration).
+
+**`GET /health`** — unauthenticated liveness probe, localhost-bound alongside the MCP endpoint. Pings Valkey through the bounded cache command timeout (so the check itself can never hang) and returns:
+
+```json
+{"status": "ok", "cache": "up", "sessions": 3}
+```
+
+or, when the cache backend is unreachable:
+
+```json
+{"status": "degraded", "cache": "degraded", "sessions": 3}
+```
+
+`sessions` is the live HTTP session count. Useful for sysadmin monitoring to detect a degraded cache from the MCP side without instrumenting the cache backend directly.
 
 ## Prerequisites
 
@@ -450,6 +473,9 @@ All service URLs are configurable via environment variables.
 | `LLM_API_KEY` | *(unset)* | Bearer token for the OpenAI-compatible backend — adds `Authorization: Bearer <key>` when set. |
 | `LLM_DISABLE_THINKING` | `true` | Sends `chat_template_kwargs.enable_thinking: false` so reasoning models (e.g. Qwen3) return direct output. Set to `false` for servers that reject that field. |
 | `CACHE_URL` | `redis://localhost:6381` | Redis-compatible URL — enables result caching. Also accepts `VALKEY_URL` or `REDIS_URL` as aliases. Works with Redis, Valkey, and Dragonfly. Server degrades gracefully if unavailable. |
+| `CACHE_COMMAND_TIMEOUT_MS` | `2500` | Valkey command timeout — a stalled/CPU-spiked cache backend rejects instead of hanging (`cacheGet()` is the first `await` in every search). Invalid/non-positive values fall back to the default rather than becoming a NaN that would disable the timeout. |
+| `CACHE_CONNECT_TIMEOUT_MS` | `3000` | Valkey connection timeout. Same fallback behavior as `CACHE_COMMAND_TIMEOUT_MS`. |
+| `CACHE_MAX_RETRIES_PER_REQUEST` | `2` | Max retries per Valkey command before it rejects. Same fallback behavior as `CACHE_COMMAND_TIMEOUT_MS`. |
 | `CACHE_TTL_SECONDS` | `3600` | Search result cache TTL in seconds |
 | `FETCH_CACHE_TTL_SECONDS` | `86400` | Fetched page cache TTL in seconds |
 | `CRAWL_MANIFEST_TTL_SECONDS` | `21600` | Crawl manifest and page content cache TTL in seconds (6 hours) |
@@ -473,6 +499,10 @@ All service URLs are configurable via environment variables.
 | `SEARXNG_MCP_TRANSPORT` | `stdio` | Transport mode: `stdio` (default, single-client) or `http` (shared HTTP/SSE server). |
 | `SEARXNG_MCP_PORT` | `3001` | HTTP listen port (HTTP transport mode only). |
 | `SEARXNG_MCP_HOST` | `127.0.0.1` | HTTP listen address (HTTP transport mode only). |
+| `HTTP_SESSION_IDLE_TIMEOUT_MS` | `600000` | HTTP transport only. A session idle longer than this is evicted by a background sweep (sessions with an in-flight request are exempt, so a long `crawl_site` call is never closed mid-request). Bounds session-map growth from clients killed mid-turn, which never fire `transport.onclose`. |
+| `HTTP_MAX_SESSIONS` | `256` | HTTP transport only. Hard-cap backstop — if the session map ever exceeds this, the least-recently-used idle session is evicted regardless of the idle timeout. |
+| `NATS_USER` | *(unset)* | NATS username for bcrypt username/password auth, used alongside `NATS_PASSWORD`. Ignored if `NATS_CREDS` is also set (creds-file JWT auth wins). |
+| `NATS_PASSWORD` | *(unset)* | NATS password — see `NATS_USER`. |
 
 ## Install
 
