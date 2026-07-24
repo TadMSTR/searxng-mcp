@@ -77,4 +77,34 @@ describe("HTTP session eviction (max-sessions backstop)", () => {
     });
     expect(res.status).toBe(404);
   });
+
+  it("does not evict a session with an in-flight request when the cap is exceeded", async () => {
+    const sessionA = await initSession();
+
+    // Hold an in-flight request open on A (a GET opens the long-lived SSE
+    // stream, so its handler stays pending → inFlight[A] > 0).
+    const ac = new AbortController();
+    const held = fetch(`http://127.0.0.1:${port}/`, {
+      method: "GET",
+      headers: { ...MCP_HEADERS, "mcp-session-id": sessionA },
+      signal: ac.signal,
+    }).catch(() => {});
+    await new Promise((r) => setTimeout(r, 150));
+
+    // Opening B exceeds the cap of 1, but A is busy so the LRU backstop must
+    // skip it rather than close it mid-request.
+    await initSession();
+    await new Promise((r) => setTimeout(r, 150));
+
+    const res = await fetch(`http://127.0.0.1:${port}/`, {
+      method: "POST",
+      headers: { ...MCP_HEADERS, "mcp-session-id": sessionA },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 99, method: "ping" }),
+    });
+    // A survived: a known session is routed (not the 404 an evicted one gets).
+    expect(res.status).not.toBe(404);
+
+    ac.abort();
+    await held;
+  });
 });

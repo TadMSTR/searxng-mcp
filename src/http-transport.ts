@@ -49,14 +49,29 @@ export function createHttpRequestListener(
 ): (req: IncomingMessage, res: ServerResponse) => void {
   const transports = new Map<string, StreamableHTTPServerTransport>();
   const lastActivity = new Map<string, number>();
+  // In-flight request count per session. `lastActivity` is stamped at request
+  // start, so a single call that runs longer than the idle timeout (e.g. a large
+  // crawl_site) would otherwise be swept mid-flight; a session with a request
+  // in flight is never idle, so eviction skips it. Decremented in a `finally`
+  // that also runs when the socket closes on an abrupt client disconnect, so a
+  // genuinely leaked session still drops to zero and becomes evictable.
+  const inFlight = new Map<string, number>();
 
   const touch = (sessionId: string): void => {
     lastActivity.set(sessionId, Date.now());
   };
 
+  const isBusy = (sessionId: string): boolean =>
+    (inFlight.get(sessionId) ?? 0) > 0;
+
+  const forget = (sessionId: string): void => {
+    lastActivity.delete(sessionId);
+    inFlight.delete(sessionId);
+  };
+
   const evict = (sessionId: string, reason: string): void => {
     const transport = transports.get(sessionId);
-    lastActivity.delete(sessionId);
+    forget(sessionId);
     if (!transport) return;
     logWarn(`evicting HTTP session ${sessionId} (${reason})`);
     // close() fires transport.onclose, which removes it from `transports`.
@@ -69,7 +84,7 @@ export function createHttpRequestListener(
   const sweep = setInterval(() => {
     const now = Date.now();
     for (const [sessionId, ts] of lastActivity) {
-      if (now - ts > HTTP_SESSION_IDLE_TIMEOUT_MS) {
+      if (now - ts > HTTP_SESSION_IDLE_TIMEOUT_MS && !isBusy(sessionId)) {
         evict(sessionId, `idle ${Math.round((now - ts) / 1000)}s`);
       }
     }
@@ -104,9 +119,18 @@ export function createHttpRequestListener(
         const existing =
           typeof sessionId === "string" ? transports.get(sessionId) : undefined;
 
-        if (existing) {
-          if (typeof sessionId === "string") touch(sessionId);
-          await existing.handleRequest(req, res);
+        if (existing && typeof sessionId === "string") {
+          const sid = sessionId;
+          touch(sid);
+          inFlight.set(sid, (inFlight.get(sid) ?? 0) + 1);
+          try {
+            await existing.handleRequest(req, res);
+          } finally {
+            inFlight.set(sid, Math.max(0, (inFlight.get(sid) ?? 1) - 1));
+            // Re-stamp on completion so idle is measured from last-activity-END,
+            // not START — only if the session wasn't closed during the request.
+            if (transports.has(sid)) touch(sid);
+          }
           return;
         }
 
@@ -134,7 +158,7 @@ export function createHttpRequestListener(
               let oldestId: string | undefined;
               let oldestTs = Number.POSITIVE_INFINITY;
               for (const [sid, ts] of lastActivity) {
-                if (sid !== id && ts < oldestTs) {
+                if (sid !== id && !isBusy(sid) && ts < oldestTs) {
                   oldestTs = ts;
                   oldestId = sid;
                 }
@@ -148,7 +172,7 @@ export function createHttpRequestListener(
         transport.onclose = () => {
           if (transport.sessionId) {
             transports.delete(transport.sessionId);
-            lastActivity.delete(transport.sessionId);
+            forget(transport.sessionId);
           }
         };
 
