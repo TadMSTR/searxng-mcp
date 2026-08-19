@@ -1,5 +1,5 @@
 import { JSDOM } from "jsdom";
-import { extractJsonLdArticle } from "./jsonld.js";
+import { scanJsonLd } from "./jsonld.js";
 import { extractTitle } from "./title.js";
 
 export interface PostExtractInput {
@@ -14,6 +14,11 @@ export interface PostExtractResult {
   title: string;
   text: string;
   source: "json_ld" | "baseline";
+  // Whether the page carries JSON-LD Article schema at all. Distinct from
+  // `source === "json_ld"`, which additionally requires a substantive
+  // articleBody — see scanJsonLd. Callers sampling for the domain DB want this
+  // one; conflating them reported presence on 0 of 111 sampled pages.
+  jsonLdPresent: boolean;
 }
 
 const MIN_JSONLD_BODY_CHARS = 300;
@@ -39,12 +44,13 @@ export function postExtract(input: PostExtractInput): PostExtractResult {
       title: baselineTitle || url,
       text: baselineText.slice(0, maxChars),
       source: "baseline",
+      jsonLdPresent: false,
     };
   }
 
   // JSON-LD Article schema wins unconditionally when its articleBody is substantive.
   // (Per build plan 1A: "applies to raw HTML regardless of which tier served it".)
-  const jsonLd = extractJsonLdArticle(dom);
+  const { present: jsonLdPresent, article: jsonLd } = scanJsonLd(dom);
   const jsonLdBodyUsable =
     !!jsonLd?.text && jsonLd.text.length >= MIN_JSONLD_BODY_CHARS;
 
@@ -53,6 +59,7 @@ export function postExtract(input: PostExtractInput): PostExtractResult {
       title: jsonLd.title || extractTitle(dom, baselineTitle || url),
       text: jsonLd.text.slice(0, maxChars),
       source: "json_ld",
+      jsonLdPresent,
     };
   }
 
@@ -71,5 +78,6 @@ export function postExtract(input: PostExtractInput): PostExtractResult {
     title,
     text: baselineText.slice(0, maxChars),
     source: "baseline",
+    jsonLdPresent,
   };
 }

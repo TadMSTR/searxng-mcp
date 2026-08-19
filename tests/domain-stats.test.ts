@@ -24,7 +24,7 @@ function mkRecord(
   capabilities: DomainRecord["capabilities"] = {},
 ): DomainRecord {
   return {
-    schema_version: 4,
+    schema_version: 5,
     domain,
     first_seen: "2026-05-01T00:00:00Z",
     last_fetch: "2026-06-01T00:00:00Z",
@@ -158,6 +158,80 @@ describe("enumerateDomains", () => {
     const { records } = await enumerateDomains();
     expect(records).toEqual([]);
     expect(mget).not.toHaveBeenCalled();
+  });
+});
+
+describe("aggregateDomainStats — 30d window cutoff", () => {
+  const EXPIRED = NOW - 31 * 24 * 60 * 60 * 1000;
+  const expired = (attempts: number, ok: number, fail: number): TierStat => ({
+    attempts,
+    ok,
+    fail,
+    window_start_ms: EXPIRED,
+  });
+
+  it("excludes out-of-window attempts from tier totals", () => {
+    const agg = aggregateDomainStats(
+      [
+        mkRecord("fresh.com", { tier1: stat(10, 8, 2) }),
+        mkRecord("stale.com", { tier1: expired(40, 1, 39) }),
+      ],
+      false,
+      NOW,
+    );
+    // Only fresh.com's numbers survive; stale.com's 40 attempts are outside the
+    // window the field claims to report.
+    expect(agg.tiers.tier1.attempts).toBe(10);
+    expect(agg.tiers.tier1.ok).toBe(8);
+    expect(agg.tiers.tier1.success_rate).toBe(0.8);
+  });
+
+  it("drops stale domains from top_failing", () => {
+    // The reported symptom: grep.app's 0/10 was 26 days old and still driving
+    // the failing-domains list.
+    const agg = aggregateDomainStats(
+      [mkRecord("grep.app", { tier1: expired(10, 0, 10) })],
+      false,
+      NOW,
+    );
+    expect(agg.failing_count).toBe(0);
+    expect(agg.top_failing).toEqual([]);
+  });
+
+  it("still reports a domain failing inside the window", () => {
+    // Control: same counts, current window.
+    const agg = aggregateDomainStats(
+      [mkRecord("grep.app", { tier1: stat(10, 0, 10) })],
+      false,
+      NOW,
+    );
+    expect(agg.failing_count).toBe(1);
+    expect(agg.top_failing[0]).toMatchObject({
+      domain: "grep.app",
+      attempts: 10,
+      ok: 0,
+    });
+  });
+
+  it("counts a domain with only expired stats as seen-never-fetched", () => {
+    // Once the window drops its attempts the domain genuinely has no fetch
+    // record in the reporting period, and must be classified as such rather
+    // than silently vanishing from both buckets.
+    const agg = aggregateDomainStats(
+      [
+        mkRecord(
+          "idle.com",
+          { tier1: expired(10, 5, 5) },
+          {
+            seen_in_search: { count: 3, last_seen_at: "2026-06-01T00:00:00Z" },
+          },
+        ),
+      ],
+      false,
+      NOW,
+    );
+    expect(agg.seen_never_fetched).toBe(1);
+    expect(agg.failing_count).toBe(0);
   });
 });
 

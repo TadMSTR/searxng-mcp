@@ -3,7 +3,11 @@
 // observed success rate (Phase 4 stats). Falls back to the full cascade
 // during cold start (<10 attempts).
 
-import { getDomainRecord, type TierName } from "./domain-db.js";
+import {
+  currentWindowStat,
+  getDomainRecord,
+  type TierName,
+} from "./domain-db.js";
 import { getOperatorTierSkips } from "./domains.js";
 import { ALL_TIERS, type Tier } from "./tiers/index.js";
 import type { TierSlot } from "./types.js";
@@ -39,7 +43,9 @@ export async function computeTierSkips(
   if (record) {
     for (const slot of ["tier1", "tier2", "tier3"] as const) {
       if (decisions.has(slot)) continue;
-      const stat = record.tier_stats_30d[slot];
+      // Read through the window cutoff: a tier must not stay skipped on the
+      // strength of failures from outside the window it claims to measure.
+      const stat = currentWindowStat(record.tier_stats_30d[slot]);
       if (stat.attempts < MIN_ATTEMPTS_FOR_DECISION) continue;
       const successRate = stat.ok / stat.attempts;
       if (successRate < LOW_SUCCESS_THRESHOLD) {

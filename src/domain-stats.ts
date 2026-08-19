@@ -10,14 +10,12 @@
 
 import { getValkey } from "./cache.js";
 import {
+  currentWindowStat,
   type DomainRecord,
   parseDomainRecord,
   type TierStat,
+  TIER_STATS_WINDOW_MS as WINDOW_MS,
 } from "./domain-db.js";
-
-// Window length for the "resets in ~Nd" hint in the human formatter. Mirrors
-// domain-db's WINDOW_MS (30d rolling stats window).
-const WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
 
 const DOMAIN_KEY_PATTERN = "domain:*";
 // SCAN batch hint — how many keys Valkey returns per cursor step. Not a hard
@@ -155,6 +153,7 @@ export async function enumerateDomains(
 export function aggregateDomainStats(
   records: DomainRecord[],
   truncated = false,
+  now: number = Date.now(),
 ): DomainAggregate {
   const tiers: Record<TierSlotName, TierAggregate> = {
     tier1: emptyTierAggregate(),
@@ -172,8 +171,11 @@ export function aggregateDomainStats(
     for (const slot of TIER_SLOTS) {
       // Defensive: a same-schema but malformed record could lack a slot. Skip
       // rather than throw — the enumeration contract is best-effort.
-      const stat = record.tier_stats_30d?.[slot];
-      if (!stat) continue;
+      if (!record.tier_stats_30d?.[slot]) continue;
+      // Out-of-window stats read as empty, so "top failing domains" reflects
+      // the last 30 days rather than whatever a domain last recorded before it
+      // stopped being fetched.
+      const stat = currentWindowStat(record.tier_stats_30d[slot], now);
       const agg = tiers[slot];
       agg.attempts += stat.attempts;
       agg.ok += stat.ok;
@@ -230,7 +232,8 @@ export interface SingleDomainSummary {
   };
 }
 
-function tierAggregateOf(stat: TierStat): TierAggregate {
+function tierAggregateOf(raw: TierStat, now: number): TierAggregate {
+  const stat = currentWindowStat(raw, now);
   return {
     attempts: stat.attempts,
     ok: stat.ok,
@@ -246,6 +249,7 @@ function tierAggregateOf(stat: TierStat): TierAggregate {
  */
 export function summarizeDomainRecord(
   record: DomainRecord,
+  now: number = Date.now(),
 ): SingleDomainSummary {
   const t = record.tier_stats_30d;
   const meta = record.capabilities.metadata_fetch;
@@ -255,11 +259,11 @@ export function summarizeDomainRecord(
     last_fetch: record.last_fetch,
     preferred_strategy: record.preferred_strategy ?? null,
     tiers: {
-      tier1: tierAggregateOf(t.tier1),
-      tier2: tierAggregateOf(t.tier2),
-      tier3: tierAggregateOf(t.tier3),
-      tier4: tierAggregateOf(t.tier4),
-      github: tierAggregateOf(t.github),
+      tier1: tierAggregateOf(t.tier1, now),
+      tier2: tierAggregateOf(t.tier2, now),
+      tier3: tierAggregateOf(t.tier3, now),
+      tier4: tierAggregateOf(t.tier4, now),
+      github: tierAggregateOf(t.github, now),
     },
     capabilities: {
       llms_full_txt: record.capabilities.llms_full_txt?.present ?? false,
@@ -275,7 +279,9 @@ export function summarizeDomainRecord(
 
 // ── Human-readable formatters (shared by the dump-domain CLI and the tool) ───
 
-function tierLine(label: string, stat: TierStat, now: number): string {
+function tierLine(label: string, raw: TierStat, now: number): string {
+  const stat = currentWindowStat(raw, now);
+  const expired = stat !== raw;
   const successRate =
     stat.attempts > 0
       ? `${Math.round((stat.ok / stat.attempts) * 100)}% ok (${stat.ok}/${stat.attempts})`
@@ -284,10 +290,17 @@ function tierLine(label: string, stat: TierStat, now: number): string {
     0,
     Math.round((WINDOW_MS - (now - stat.window_start_ms)) / 86400000),
   );
-  const failNote = stat.last_fail_reason
-    ? ` | last fail: ${stat.last_fail_reason}`
-    : "";
-  return `  ${label}: ${successRate} | window resets in ~${daysLeft}d${failNote}`;
+  // Say so explicitly when counts were dropped. "no data" alone would read as
+  // "never attempted", which is a materially different fact for an operator
+  // deciding whether a domain is broken or simply idle.
+  const window = expired
+    ? "window expired — counts reset on next fetch"
+    : `window resets in ~${daysLeft}d`;
+  const failNote =
+    !expired && stat.last_fail_reason
+      ? ` | last fail: ${stat.last_fail_reason}`
+      : "";
+  return `  ${label}: ${successRate} | ${window}${failNote}`;
 }
 
 /**

@@ -1,17 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-vi.mock("../../src/domain-db.js", () => ({
+// Partial mock: only the Valkey-backed read is stubbed. The pure helpers —
+// normalizeHostname and currentWindowStat — come from the real module, so the
+// formatter assertions below exercise the shipped window logic rather than a
+// local re-implementation that could drift away from it.
+vi.mock("../../src/domain-db.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../src/domain-db.js")>()),
   getDomainRecord: vi.fn(),
-  normalizeHostname: vi.fn((input: string) => {
-    try {
-      const host = input.includes("://")
-        ? new URL(input).hostname
-        : input.trim();
-      return host.replace(/^www\./i, "").toLowerCase() || null;
-    } catch {
-      return null;
-    }
-  }),
 }));
 
 import { main } from "../../src/cli/dump-domain.js";
@@ -38,7 +33,7 @@ describe("dump-domain CLI — present-domain case", () => {
     const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
     process.argv[2] = "docs.example.com";
     getDomainRecordMock.mockResolvedValueOnce({
-      schema_version: 4,
+      schema_version: 5,
       domain: "docs.example.com",
       first_seen: "2026-05-01T00:00:00Z",
       last_fetch: "2026-06-01T00:00:00Z",
@@ -89,7 +84,7 @@ describe("dump-domain CLI — present-domain case", () => {
     const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
     process.argv[2] = "sparse.example.com";
     getDomainRecordMock.mockResolvedValueOnce({
-      schema_version: 4,
+      schema_version: 5,
       domain: "sparse.example.com",
       first_seen: "2026-05-01T00:00:00Z",
       last_fetch: "2026-06-01T00:00:00Z",
@@ -116,7 +111,7 @@ describe("dump-domain CLI — present-domain case", () => {
     const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
     process.argv[2] = "flaky.example.com";
     getDomainRecordMock.mockResolvedValueOnce({
-      schema_version: 4,
+      schema_version: 5,
       domain: "flaky.example.com",
       first_seen: "2026-05-01T00:00:00Z",
       last_fetch: "2026-06-01T00:00:00Z",

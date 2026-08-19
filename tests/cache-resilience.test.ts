@@ -10,6 +10,7 @@ const h = vi.hoisted(() => {
     getResult: null as string | null,
     pingResult: "PONG" as string,
     pingError: null as Error | null,
+    definedCommands: [] as string[],
   };
   class MockRedis {
     constructor(_url: string, options: Record<string, unknown>) {
@@ -17,6 +18,12 @@ const h = vi.hoisted(() => {
     }
     on(): this {
       return this;
+    }
+    // getValkey registers the compare-and-set Lua script on every new client.
+    // Without this the constructor path throws and every case below degrades
+    // into the connect-failed branch.
+    defineCommand(name: string, _def: Record<string, unknown>): void {
+      state.definedCommands.push(name);
     }
     async connect(): Promise<void> {
       if (state.connectError) throw state.connectError;
@@ -46,6 +53,7 @@ beforeEach(() => {
   h.state.getResult = null;
   h.state.pingResult = "PONG";
   h.state.pingError = null;
+  h.state.definedCommands.length = 0;
   errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
 });
 
@@ -65,6 +73,16 @@ describe("cache resilience", () => {
       lazyConnect: true,
       enableReadyCheck: false,
     });
+  });
+
+  it("registers the compare-and-set script on each new client", async () => {
+    // The client error handler drops the singleton so the next call rebuilds
+    // it. Registration therefore has to live inside getValkey — hoisting it to
+    // module scope would leave every post-reconnect client without the script,
+    // and cacheAtomicUpdate would fail soft (i.e. silently) from then on.
+    const { cacheGet } = await import("../src/cache.js");
+    await cacheGet("search:abc");
+    expect(h.state.definedCommands).toEqual(["casSet"]);
   });
 
   it("cacheGet fails soft (returns null) and logs when a command times out", async () => {

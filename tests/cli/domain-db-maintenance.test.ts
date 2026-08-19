@@ -30,7 +30,7 @@ function recordJson(
   tiers: Record<string, ReturnType<typeof stat>> = {},
 ) {
   return JSON.stringify({
-    schema_version: 4,
+    schema_version: 5,
     domain,
     first_seen: "2026-05-01T00:00:00Z",
     last_fetch: "2026-06-01T00:00:00Z",

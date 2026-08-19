@@ -158,6 +158,57 @@ describe("rawFetch", () => {
     expect(result.text).toContain("html");
   });
 
+  it("renders a JSON body as a fenced block instead of running Readability", async () => {
+    // Readability over JSON finds no article, falls through to returning the
+    // raw string, and reports the URL as the title — so the caller paid for a
+    // DOM parse to get an unformatted blob back.
+    vi.mocked(fetch).mockResolvedValueOnce(
+      new Response('{"name":"express","dist-tags":{"latest":"5.0.0"}}', {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }),
+    );
+    const result = await rawFetch("https://registry.npmjs.org/express");
+    expect(result.text).toContain("```json");
+    expect(result.text).toContain('"name": "express"'); // re-indented
+    expect(result.html).toBeUndefined(); // no HTML for post-extraction to sample
+  });
+
+  it("fences xml and passes plain text through bare", async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(
+      new Response("<rss><channel/></rss>", {
+        status: 200,
+        headers: { "content-type": "application/rss+xml" },
+      }),
+    );
+    expect((await rawFetch("https://example.com/feed")).text).toBe(
+      "```xml\n<rss><channel/></rss>\n```",
+    );
+
+    vi.mocked(fetch).mockResolvedValueOnce(
+      new Response("User-agent: *\nDisallow:", {
+        status: 200,
+        headers: { "content-type": "text/plain" },
+      }),
+    );
+    expect((await rawFetch("https://example.com/robots.txt")).text).toBe(
+      "User-agent: *\nDisallow:",
+    );
+  });
+
+  it("still parses HTML that a server mislabels as text/plain", async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(
+      new Response(
+        `<html><head><title>Mislabelled</title></head><body><article><p>Article content here with enough text to parse.</p></article></body></html>`,
+        { status: 200, headers: { "content-type": "text/plain" } },
+      ),
+    );
+    const result = await rawFetch("https://example.com/mislabelled");
+    expect(result.title).toBe("Mislabelled");
+    expect(result.text).toContain("Article content");
+    expect(result.text).not.toContain("```");
+  });
+
   it("throws on redirect", async () => {
     vi.mocked(fetch).mockResolvedValueOnce(
       new Response(null, {

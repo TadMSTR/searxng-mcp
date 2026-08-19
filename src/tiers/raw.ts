@@ -3,6 +3,11 @@ import { JSDOM } from "jsdom";
 import { ProxyAgent } from "undici";
 import { ADBLOCK_PROXY_URL } from "../config.js";
 import {
+  classifyContentType,
+  looksLikeHtml,
+  renderStructured,
+} from "../content-type.js";
+import {
   type FetchTuning,
   readBoundedText,
   safeFetch,
@@ -49,7 +54,29 @@ export async function rawFetch(
   if (!res.ok)
     throw new Error(`Raw fetch error: ${res.status} ${res.statusText}`);
 
-  const html = await readBoundedText(res);
+  const body = await readBoundedText(res);
+
+  // Structured payloads short-circuit before JSDOM. Readability over a JSON
+  // document finds no article, falls through to returning the raw string, and
+  // reports the URL as the title — so the caller got an unformatted blob and
+  // paid for a DOM parse to get it. Applies however tier3 was reached, not just
+  // via the content-type fast path in fetchPage.
+  const declared = classifyContentType(res.headers.get("content-type"));
+  // A text/plain header over an HTML body is a server misconfiguration, not a
+  // routing instruction — parse it as the markup it is.
+  const structured =
+    declared === "text" && looksLikeHtml(body) ? null : declared;
+  if (structured) {
+    return {
+      title: url,
+      url,
+      text: renderStructured(body, structured).slice(0, maxChars),
+      // No html: post-extraction (JSON-LD, og:title) is meaningless here, and
+      // handing a JSON body to JSDOM downstream would repeat the mistake.
+    };
+  }
+
+  const html = body;
   const dom = new JSDOM(html, { url }); // runScripts not set — script execution disabled
 
   // Client-side target_selector: scope extraction to the matched subtree.
