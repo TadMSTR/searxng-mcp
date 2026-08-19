@@ -2,10 +2,16 @@
 import { createServer } from "node:http";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { HTTP_HOST, HTTP_PORT, TRANSPORT } from "./config.js";
+import {
+  HTTP_AUTH_TOKEN,
+  HTTP_HOST,
+  HTTP_PORT,
+  isLoopbackHost,
+  TRANSPORT,
+} from "./config.js";
 import { initEvents, shutdownEvents } from "./events.js";
 import { createHttpRequestListener } from "./http-transport.js";
-import { logError } from "./log.js";
+import { logError, logWarn } from "./log.js";
 import { initObservability, shutdownObservability } from "./observability.js";
 import { registerTools } from "./tools.js";
 import { VERSION } from "./version.js";
@@ -69,9 +75,17 @@ if (TRANSPORT === "http") {
     console.error(
       `[searxng-mcp] HTTP transport listening on http://${HTTP_HOST}:${HTTP_PORT}`,
     );
-    if (HTTP_HOST !== "127.0.0.1") {
-      console.error(
-        `[searxng-mcp] WARNING: HTTP transport bound to ${HTTP_HOST}:${HTTP_PORT} — no built-in auth; ensure network-level protection`,
+    // The misconfiguration this whole transport-auth feature exists to prevent:
+    // reachable off-host with nothing checking credentials. Make it loud rather
+    // than leaving it to be discovered by an audit.
+    if (!isLoopbackHost(HTTP_HOST) && HTTP_AUTH_TOKEN === "") {
+      logWarn(
+        `WARNING: bound to ${HTTP_HOST}:${HTTP_PORT}, which is not loopback, with SEARXNG_MCP_AUTH_TOKEN unset — every tool is reachable unauthenticated, including arbitrary-URL fetch_url and destructive clear_cache. Set SEARXNG_MCP_AUTH_TOKEN.`,
+      );
+    }
+    if (HTTP_AUTH_TOKEN !== "" && HTTP_AUTH_TOKEN.length < 32) {
+      logWarn(
+        "WARNING: SEARXNG_MCP_AUTH_TOKEN is shorter than 32 characters — generate one with `openssl rand -hex 32`.",
       );
     }
   });

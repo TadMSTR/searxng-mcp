@@ -1,0 +1,39 @@
+# .dockerignore does not inherit .gitignore — every entry here is deliberate.
+
+# Rebuilt inside the image; a host copy would shadow it with the wrong
+# architecture or a stale tree.
+node_modules/
+build/
+
+# Not needed at build or runtime.
+coverage/
+tests/
+docs/
+.github/
+.git/
+.gitignore
+.vscode/
+.idea/
+*.md
+biome.json
+vitest.config.ts
+
+# npm's lockfile is gitignored; the image resolves from pnpm-lock.yaml only.
+package-lock.json
+
+# Never bake secrets or local state into an image layer.
+.env
+*.env
+run.sh
+domain-db-snapshots/
+
+# Core dumps (see vikunja#206 — the container sets `ulimits: core: 0`, but an
+# old host dump must not be copied in regardless).
+core.*
+*.core
+
+# The compose files here describe dependencies for a host-run server; the
+# deployed stack lives outside the repo.
+docker-compose*.yml
+Dockerfile
+.dockerignore

@@ -14,6 +14,7 @@ const CONFIG_ENV = [
   "CACHE_MAX_RETRIES_PER_REQUEST",
   "HTTP_SESSION_IDLE_TIMEOUT_MS",
   "HTTP_MAX_SESSIONS",
+  "SEARXNG_MCP_AUTH_TOKEN",
 ];
 
 function clearConfigEnv() {
@@ -205,5 +206,54 @@ describe("URL trailing-slash normalization for KIWIX_URL/HISTER_URL", () => {
   it("defaults HISTER_URL to empty string when unset", async () => {
     const { HISTER_URL } = await import("../src/config.js");
     expect(HISTER_URL).toBe("");
+  });
+});
+
+describe("HTTP_AUTH_TOKEN", () => {
+  it("defaults to empty, which disables the transport auth check", async () => {
+    const { HTTP_AUTH_TOKEN } = await import("../src/config.js");
+    expect(HTTP_AUTH_TOKEN).toBe("");
+  });
+
+  it("reads SEARXNG_MCP_AUTH_TOKEN verbatim", async () => {
+    process.env.SEARXNG_MCP_AUTH_TOKEN = "s3cret";
+    const { HTTP_AUTH_TOKEN } = await import("../src/config.js");
+    expect(HTTP_AUTH_TOKEN).toBe("s3cret");
+  });
+});
+
+describe("isLoopbackHost", () => {
+  it("treats loopback binds as loopback", async () => {
+    const { isLoopbackHost } = await import("../src/config.js");
+    for (const host of [
+      "127.0.0.1",
+      "127.0.0.53",
+      "localhost",
+      "LOCALHOST",
+      "::1",
+      "[::1]",
+      " 127.0.0.1 ",
+    ]) {
+      expect(isLoopbackHost(host), host).toBe(true);
+    }
+  });
+
+  it("treats wildcard and routable binds as NOT loopback", async () => {
+    // 0.0.0.0 is the containerised case and the whole reason the startup guard
+    // exists — misclassifying it as loopback would silence the warning exactly
+    // where it matters.
+    const { isLoopbackHost } = await import("../src/config.js");
+    for (const host of [
+      "0.0.0.0",
+      "::",
+      "[::]",
+      "192.168.0.1",
+      "203.0.113.10",
+      "127.0.0.1.evil.com",
+      "searxng-mcp",
+      "",
+    ]) {
+      expect(isLoopbackHost(host), host).toBe(false);
+    }
   });
 });

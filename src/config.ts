@@ -100,6 +100,27 @@ export const REDDIT_IGNORE_ROBOTS = process.env.REDDIT_IGNORE_ROBOTS === "true";
 export const TRANSPORT = process.env.SEARXNG_MCP_TRANSPORT ?? "stdio"; // "stdio" | "http"
 export const HTTP_PORT = parseInt(process.env.SEARXNG_MCP_PORT ?? "3001", 10);
 export const HTTP_HOST = process.env.SEARXNG_MCP_HOST ?? "127.0.0.1";
+// Optional bearer token for the HTTP transport. Empty (the default) disables the
+// check entirely, so stdio users and existing loopback-bound HTTP deployments are
+// unaffected. Set it whenever HTTP_HOST is not loopback — binding 0.0.0.0 (e.g.
+// inside a container, so the service resolves by name) removes the only control
+// that was protecting an otherwise unauthenticated `fetch_url` / `clear_cache`.
+// `GET /health` is deliberately exempt: it is the container healthcheck and
+// carries no secrets. See README "HTTP transport authentication".
+export const HTTP_AUTH_TOKEN = process.env.SEARXNG_MCP_AUTH_TOKEN ?? "";
+
+/**
+ * True when `host` only accepts connections from this machine. Used by the
+ * startup guard to decide whether an unset SEARXNG_MCP_AUTH_TOKEN is a problem.
+ *
+ * Wildcard binds (`0.0.0.0`, `::`) are deliberately NOT loopback — they are the
+ * containerised case, and the case that needs the token. IPv6 hosts may arrive
+ * bracketed from a URL-shaped config value.
+ */
+export function isLoopbackHost(host: string): boolean {
+  const h = host.trim().replace(/^\[/, "").replace(/\]$/, "").toLowerCase();
+  return h === "localhost" || h === "::1" || /^127\.\d+\.\d+\.\d+$/.test(h);
+}
 // Bound the HTTP transport session map. Sessions are normally removed on
 // transport.onclose, but an agent killed mid-turn never fires it, leaking the
 // transport + its MCP server. Idle sessions are swept after this timeout, and a

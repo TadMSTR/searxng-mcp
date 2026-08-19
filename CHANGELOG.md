@@ -6,6 +6,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [3.18.0] - 2026-08-19
+
+Bearer auth on the HTTP transport, and the container image that made it necessary (build `searxng-mcp-containerize-2026-08`, vikunja#321). The transport authenticated nothing, which was survivable only because it binds `127.0.0.1` by default — the launcher comment said as much. Containerising forces a `0.0.0.0` bind so the service resolves by container name, deleting the only control protecting an arbitrary-URL `fetch_url` and a destructive `clear_cache`. So the auth ships in the same release as the Dockerfile, not after it.
+
+### Added
+- **Optional bearer auth on the HTTP transport** — `SEARXNG_MCP_AUTH_TOKEN`. When set, every request except `GET /health` must carry `Authorization: Bearer <token>` or receive `401` with `WWW-Authenticate: Bearer`; the response is identical for a missing, malformed and wrong credential, and never echoes what was presented. Tokens are compared as SHA-256 digests, so the check is constant-time and total for any input — a raw `timingSafeEqual` throws on a length mismatch, which would have turned a wrong-length token into a 500. Unset (the default) disables the check entirely, so stdio users and existing loopback-bound deployments are unaffected. The gate sits ahead of session routing, so an unauthenticated caller can neither create a session nor drive one whose ID it has learned. `GET /health` is exempt by design: it is the container healthcheck and returns no secrets.
+- **Startup guard for the misconfiguration this exists to prevent** — binding a non-loopback address with no token now logs a loud warning naming the two tools that make it dangerous (`fetch_url` is an arbitrary-URL fetch primitive; `clear_cache` is destructive). A token shorter than 32 characters also warns. This replaces the previous unconditional "no built-in auth" warning on any non-`127.0.0.1` bind, which is no longer true when a token is set.
+- **`Dockerfile` + `.dockerignore`** — multi-stage `node:22-alpine` (pinned by index digest), pnpm with `--frozen-lockfile` in both the build and prod-deps stages, runtime as uid 1000 with production dependencies only, and a `HEALTHCHECK` against `/health`. The image defaults to `SEARXNG_MCP_TRANSPORT=http` and `SEARXNG_MCP_HOST=0.0.0.0`, because that is the only configuration in which a container is useful — which is precisely why it warns when no token is set.
+- **CI `docker` job** — builds the image and smoke-tests the deployed contract on every PR: `/health` answers without credentials, `/mcp` returns 401 unauthenticated and with a wrong token, 200 with the right one, and the runtime uid is 1000. The compose examples rotted because nothing exercised them; this stops the Dockerfile going the same way.
+
+### Changed
+- `AGENTS.md` described `cache.ts` as a "WATCH/MULTI/EXEC atomic update". 3.17.0 replaced that with a Lua compare-and-set — the line was describing the bug that release fixed.
+
 ## [3.17.0] - 2026-08-19
 
 Domain-DB write loss + the correctness defects it was masking (build `searxng-mcp-domain-db-writeloss-2026-08`, vikunja#415). Root cause: `cacheAtomicUpdate` implemented optimistic locking with `WATCH`/`MULTI`/`EXEC`, but `getValkey()` returns a module-level singleton connection and `WATCH` is connection-scoped. Concurrent callers interleaved as `WATCH,WATCH,GET,GET,EXEC,EXEC`; both reads saw the same base document and the first `EXEC` cleared the connection's entire watch set, so the second committed unconditionally over stale data. `results !== null` read as a successful commit, so the retry loop never fired and the losing write disappeared with no error. Measured on a real Valkey against the pre-fix code: **50 concurrent writers to one key landed 1 attempt.** In production this left 553 of 572 tracked domains holding only `seen_in_search`, `capabilities.metadata_fetch` populated on **0 of 572** records, and data-driven tier routing — the feature the DB exists to feed — fired exactly once in its lifetime.
@@ -371,7 +384,19 @@ Feature bundle from a 2026-07-16 competitive review (mcp-searxng, Perplexica, Su
 - Result reranking using a local ML model with fallback to raw SearXNG ordering when the reranker is unavailable
 - Category filtering: `general`, `news`, `it`, `science`
 
-[Unreleased]: https://github.com/TadMSTR/searxng-mcp/compare/v3.8.0...HEAD
+[Unreleased]: https://github.com/TadMSTR/searxng-mcp/compare/v3.18.0...HEAD
+[3.18.0]: https://github.com/TadMSTR/searxng-mcp/compare/v3.17.0...v3.18.0
+[3.17.0]: https://github.com/TadMSTR/searxng-mcp/compare/v3.16.0...v3.17.0
+[3.16.0]: https://github.com/TadMSTR/searxng-mcp/compare/v3.15.1...v3.16.0
+[3.15.1]: https://github.com/TadMSTR/searxng-mcp/compare/v3.15.0...v3.15.1
+[3.15.0]: https://github.com/TadMSTR/searxng-mcp/compare/v3.14.1...v3.15.0
+[3.14.1]: https://github.com/TadMSTR/searxng-mcp/compare/v3.14.0...v3.14.1
+[3.14.0]: https://github.com/TadMSTR/searxng-mcp/compare/v3.13.0...v3.14.0
+[3.13.0]: https://github.com/TadMSTR/searxng-mcp/compare/v3.12.0...v3.13.0
+[3.12.0]: https://github.com/TadMSTR/searxng-mcp/compare/v3.11.0...v3.12.0
+[3.11.0]: https://github.com/TadMSTR/searxng-mcp/compare/v3.10.0...v3.11.0
+[3.10.0]: https://github.com/TadMSTR/searxng-mcp/compare/v3.9.0...v3.10.0
+[3.9.0]: https://github.com/TadMSTR/searxng-mcp/compare/v3.8.0...v3.9.0
 [3.8.0]: https://github.com/TadMSTR/searxng-mcp/compare/v3.7.0...v3.8.0
 [3.7.0]: https://github.com/TadMSTR/searxng-mcp/compare/v3.6.0...v3.7.0
 [3.6.0]: https://github.com/TadMSTR/searxng-mcp/compare/v3.5.0...v3.6.0
