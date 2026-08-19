@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [3.17.0] - 2026-08-19
+
 Domain-DB write loss + the correctness defects it was masking (build `searxng-mcp-domain-db-writeloss-2026-08`, vikunja#415). Root cause: `cacheAtomicUpdate` implemented optimistic locking with `WATCH`/`MULTI`/`EXEC`, but `getValkey()` returns a module-level singleton connection and `WATCH` is connection-scoped. Concurrent callers interleaved as `WATCH,WATCH,GET,GET,EXEC,EXEC`; both reads saw the same base document and the first `EXEC` cleared the connection's entire watch set, so the second committed unconditionally over stale data. `results !== null` read as a successful commit, so the retry loop never fired and the losing write disappeared with no error. Measured on a real Valkey against the pre-fix code: **50 concurrent writers to one key landed 1 attempt.** In production this left 553 of 572 tracked domains holding only `seen_in_search`, `capabilities.metadata_fetch` populated on **0 of 572** records, and data-driven tier routing — the feature the DB exists to feed — fired exactly once in its lifetime.
 
 ### Fixed
