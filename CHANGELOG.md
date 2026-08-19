@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [3.18.0] - 2026-08-19
+
+Bearer auth on the HTTP transport, and the container image that made it necessary (build `searxng-mcp-containerize-2026-08`, vikunja#321). The transport authenticated nothing, which was survivable only because it binds `127.0.0.1` by default — the launcher comment said as much. Containerising forces a `0.0.0.0` bind so the service resolves by container name, deleting the only control protecting an arbitrary-URL `fetch_url` and a destructive `clear_cache`. So the auth ships in the same release as the Dockerfile, not after it.
+
 ### Added
 - **Optional bearer auth on the HTTP transport** — `SEARXNG_MCP_AUTH_TOKEN`. When set, every request except `GET /health` must carry `Authorization: Bearer <token>` or receive `401` with `WWW-Authenticate: Bearer`; the response is identical for a missing, malformed and wrong credential, and never echoes what was presented. Tokens are compared as SHA-256 digests, so the check is constant-time and total for any input — a raw `timingSafeEqual` throws on a length mismatch, which would have turned a wrong-length token into a 500. Unset (the default) disables the check entirely, so stdio users and existing loopback-bound deployments are unaffected. The gate sits ahead of session routing, so an unauthenticated caller can neither create a session nor drive one whose ID it has learned. `GET /health` is exempt by design: it is the container healthcheck and returns no secrets.
 - **Startup guard for the misconfiguration this exists to prevent** — binding a non-loopback address with no token now logs a loud warning naming the two tools that make it dangerous (`fetch_url` is an arbitrary-URL fetch primitive; `clear_cache` is destructive). A token shorter than 32 characters also warns. This replaces the previous unconditional "no built-in auth" warning on any non-`127.0.0.1` bind, which is no longer true when a token is set.
@@ -380,7 +384,19 @@ Feature bundle from a 2026-07-16 competitive review (mcp-searxng, Perplexica, Su
 - Result reranking using a local ML model with fallback to raw SearXNG ordering when the reranker is unavailable
 - Category filtering: `general`, `news`, `it`, `science`
 
-[Unreleased]: https://github.com/TadMSTR/searxng-mcp/compare/v3.8.0...HEAD
+[Unreleased]: https://github.com/TadMSTR/searxng-mcp/compare/v3.18.0...HEAD
+[3.18.0]: https://github.com/TadMSTR/searxng-mcp/compare/v3.17.0...v3.18.0
+[3.17.0]: https://github.com/TadMSTR/searxng-mcp/compare/v3.16.0...v3.17.0
+[3.16.0]: https://github.com/TadMSTR/searxng-mcp/compare/v3.15.1...v3.16.0
+[3.15.1]: https://github.com/TadMSTR/searxng-mcp/compare/v3.15.0...v3.15.1
+[3.15.0]: https://github.com/TadMSTR/searxng-mcp/compare/v3.14.1...v3.15.0
+[3.14.1]: https://github.com/TadMSTR/searxng-mcp/compare/v3.14.0...v3.14.1
+[3.14.0]: https://github.com/TadMSTR/searxng-mcp/compare/v3.13.0...v3.14.0
+[3.13.0]: https://github.com/TadMSTR/searxng-mcp/compare/v3.12.0...v3.13.0
+[3.12.0]: https://github.com/TadMSTR/searxng-mcp/compare/v3.11.0...v3.12.0
+[3.11.0]: https://github.com/TadMSTR/searxng-mcp/compare/v3.10.0...v3.11.0
+[3.10.0]: https://github.com/TadMSTR/searxng-mcp/compare/v3.9.0...v3.10.0
+[3.9.0]: https://github.com/TadMSTR/searxng-mcp/compare/v3.8.0...v3.9.0
 [3.8.0]: https://github.com/TadMSTR/searxng-mcp/compare/v3.7.0...v3.8.0
 [3.7.0]: https://github.com/TadMSTR/searxng-mcp/compare/v3.6.0...v3.7.0
 [3.6.0]: https://github.com/TadMSTR/searxng-mcp/compare/v3.5.0...v3.6.0
