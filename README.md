@@ -360,6 +360,36 @@ claude mcp add-json searxng --scope user '{
 
 Sessions are keyed by the `Mcp-Session-Id` header, so multiple clients can connect to the same shared process concurrently. Idle sessions are swept after `HTTP_SESSION_IDLE_TIMEOUT_MS` and hard-capped at `HTTP_MAX_SESSIONS` — see [Configuration](#configuration).
 
+### HTTP transport authentication
+
+The HTTP transport is **unauthenticated by default**, which is safe only because it binds `127.0.0.1` by default. If you change `SEARXNG_MCP_HOST` to anything else — including `0.0.0.0`, which is what running in a container requires — set `SEARXNG_MCP_AUTH_TOKEN` as well:
+
+```bash
+SEARXNG_MCP_AUTH_TOKEN=$(openssl rand -hex 32)
+```
+
+When it is set, every request except `GET /health` must carry the token as an [RFC 6750](https://datatracker.ietf.org/doc/html/rfc6750) bearer credential:
+
+```
+Authorization: Bearer <token>
+```
+
+Anything else — no header, a different scheme, a wrong token — gets `401` with `WWW-Authenticate: Bearer` and a JSON-RPC error body. The response is identical in all three cases and never echoes the presented credential. Tokens are compared as SHA-256 digests, so the comparison is constant-time and leaks no length information.
+
+Registering an authenticated server with Claude Code:
+
+```bash
+claude mcp add-json searxng --scope user '{
+  "type": "http",
+  "url": "http://localhost:3001/mcp",
+  "headers": {"Authorization": "Bearer <token>"}
+}'
+```
+
+Leaving the variable unset preserves the previous behaviour exactly, so stdio users and existing loopback-bound HTTP deployments need no change. There is no per-caller authorization model — a single token authenticates *access to the server*, not a particular client identity. On startup, a non-loopback bind with no token logs a warning.
+
+**`GET /health` is deliberately exempt** from the check. It is the container healthcheck and the monitoring liveness probe, it takes no input, and its response (`status`, `cache`, `sessions`) carries no secrets.
+
 **`GET /health`** — unauthenticated liveness probe, localhost-bound alongside the MCP endpoint. Pings Valkey through the bounded cache command timeout (so the check itself can never hang) and returns:
 
 ```json
@@ -499,6 +529,7 @@ All service URLs are configurable via environment variables.
 | `SEARXNG_MCP_TRANSPORT` | `stdio` | Transport mode: `stdio` (default, single-client) or `http` (shared HTTP/SSE server). |
 | `SEARXNG_MCP_PORT` | `3001` | HTTP listen port (HTTP transport mode only). |
 | `SEARXNG_MCP_HOST` | `127.0.0.1` | HTTP listen address (HTTP transport mode only). |
+| `SEARXNG_MCP_AUTH_TOKEN` | *(unset)* | HTTP transport only. When set, every request except `GET /health` must send `Authorization: Bearer <token>` or get a `401`. Unset (the default) disables the check entirely. **Set this whenever `SEARXNG_MCP_HOST` is not loopback** — see [HTTP transport authentication](#http-transport-authentication). |
 | `HTTP_SESSION_IDLE_TIMEOUT_MS` | `600000` | HTTP transport only. A session idle longer than this is evicted by a background sweep (sessions with an in-flight request are exempt, so a long `crawl_site` call is never closed mid-request). Bounds session-map growth from clients killed mid-turn, which never fire `transport.onclose`. |
 | `HTTP_MAX_SESSIONS` | `256` | HTTP transport only. Hard-cap backstop — if the session map ever exceeds this, the least-recently-used idle session is evicted regardless of the idle timeout. |
 | `NATS_USER` | *(unset)* | NATS username for bcrypt username/password auth, used alongside `NATS_PASSWORD`. Ignored if `NATS_CREDS` is also set (creds-file JWT auth wins). |
@@ -623,6 +654,10 @@ Configured internal services (Firecrawl, Crawl4AI, SearXNG, Ollama, Reranker) ar
 ### Redirect protection
 
 The raw-HTTP and GitHub fast-path fetches additionally use `redirect: "manual"` and reject 3xx responses outright (the `Location` header is never echoed back to the caller). Redirect-following probes (robots.txt, llms.txt, sitemap) are covered by the connect-time DNS validation above, which re-checks each hop.
+
+### Transport exposure
+
+stdio has no network surface. The HTTP transport binds `127.0.0.1` by default and is unauthenticated in that configuration; moving it off loopback without setting `SEARXNG_MCP_AUTH_TOKEN` exposes every tool — including arbitrary-URL `fetch_url` and destructive `clear_cache` — to anything that can route to the port. See [HTTP transport authentication](#http-transport-authentication).
 
 ### Dependency auditing
 

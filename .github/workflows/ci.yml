@@ -43,6 +43,73 @@ jobs:
         if: matrix.node-version == '22'
         run: pnpm coverage
 
+  docker:
+    name: Docker image
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      # Plain `docker build` rather than docker/build-push-action: buildx ships
+      # on the runner, nothing is pushed, and this adds no third-party action to
+      # pin. Without this job the Dockerfile rots the way the compose examples
+      # did — nothing exercised them on a PR.
+      - name: Build image
+        run: docker build -t searxng-mcp:ci .
+
+      # A green build only proves it compiled. These assert the two properties
+      # the containerised deployment actually depends on: /health answers with
+      # no credentials, and /mcp refuses everything without the bearer token.
+      - name: Smoke test the image
+        run: |
+          set -euo pipefail
+          TOKEN=$(openssl rand -hex 32)
+          docker run -d --name sxng-ci -p 127.0.0.1:3001:3001 \
+            -e SEARXNG_MCP_AUTH_TOKEN="$TOKEN" searxng-mcp:ci
+
+          code() { curl -s -o /dev/null -w '%{http_code}' "$@"; }
+          mcp() {
+            code -X POST http://127.0.0.1:3001/mcp \
+              -H 'Content-Type: application/json' \
+              -H 'Accept: application/json, text/event-stream' "$@"
+          }
+
+          # 503 is expected — there is no cache backend in CI. What is asserted
+          # here is only that the route answers at all.
+          for i in $(seq 1 30); do
+            health=$(code http://127.0.0.1:3001/health || true)
+            case "$health" in 200|503) break ;; esac
+            if [ "$i" = 30 ]; then
+              echo "server never came up"; docker logs sxng-ci; exit 1
+            fi
+            sleep 1
+          done
+
+          echo "GET /health (no credentials) -> $health"
+          case "$health" in 200|503) ;; *) exit 1 ;; esac
+
+          unauth=$(mcp -d '{}')
+          echo "POST /mcp (no credentials) -> $unauth"
+          [ "$unauth" = 401 ]
+
+          wrong=$(mcp -H 'Authorization: Bearer not-the-token' -d '{}')
+          echo "POST /mcp (wrong token) -> $wrong"
+          [ "$wrong" = 401 ]
+
+          ok=$(mcp -H "Authorization: Bearer $TOKEN" \
+            -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"ci","version":"0.0.0"}}}')
+          echo "POST /mcp (correct token) -> $ok"
+          [ "$ok" = 200 ]
+
+          # The deployment relies on the image not running as root.
+          uid=$(docker exec sxng-ci id -u)
+          echo "runtime uid -> $uid"
+          [ "$uid" = 1000 ]
+
+      - name: Container logs
+        if: always()
+        run: docker logs sxng-ci || true
+
   audit:
     name: Dependency audit
     runs-on: ubuntu-latest

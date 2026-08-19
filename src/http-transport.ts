@@ -1,11 +1,15 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
 import { cachePing } from "./cache.js";
-import { HTTP_MAX_SESSIONS, HTTP_SESSION_IDLE_TIMEOUT_MS } from "./config.js";
-import { logError, logWarn } from "./log.js";
+import {
+  HTTP_AUTH_TOKEN,
+  HTTP_MAX_SESSIONS,
+  HTTP_SESSION_IDLE_TIMEOUT_MS,
+} from "./config.js";
+import { logError, logThrottled, logWarn } from "./log.js";
 
 const SESSION_SWEEP_INTERVAL_MS = 60_000;
 
@@ -13,14 +17,39 @@ function sendJsonRpcError(
   res: ServerResponse,
   status: number,
   message: string,
+  extraHeaders: Record<string, string> = {},
 ): void {
-  res.writeHead(status, { "Content-Type": "application/json" });
+  res.writeHead(status, {
+    "Content-Type": "application/json",
+    ...extraHeaders,
+  });
   res.end(
     JSON.stringify({
       jsonrpc: "2.0",
       error: { code: -32600, message },
       id: null,
     }),
+  );
+}
+
+// RFC 6750 bearer credentials. The scheme name is case-insensitive (RFC 7235
+// §2.1) and the token itself is a non-space run, so anything else is malformed
+// and treated exactly like a missing header.
+function bearerFrom(header: string | undefined): string | undefined {
+  if (header === undefined) return undefined;
+  const match = /^Bearer\s+(\S+)\s*$/i.exec(header);
+  return match ? match[1] : undefined;
+}
+
+// Compare SHA-256 digests rather than the raw tokens. timingSafeEqual throws on
+// a length mismatch — guarding that with an explicit length check would work but
+// reintroduces a length oracle and a 500 waiting to happen if the guard is ever
+// dropped. Digests are always 32 bytes, so the comparison is constant-time and
+// total for any input, including the empty string.
+function tokenMatches(presented: string): boolean {
+  return timingSafeEqual(
+    createHash("sha256").update(presented).digest(),
+    createHash("sha256").update(HTTP_AUTH_TOKEN).digest(),
   );
 }
 
@@ -113,6 +142,29 @@ export function createHttpRequestListener(
             }),
           );
           return;
+        }
+
+        // Bearer gate. Off unless SEARXNG_MCP_AUTH_TOKEN is set, so stdio users
+        // and existing loopback deployments keep today's behaviour exactly.
+        // Placed after /health (the healthcheck must stay open) and before
+        // session routing, so an unauthenticated caller can neither reach an
+        // established session nor create one.
+        if (HTTP_AUTH_TOKEN !== "") {
+          const presented = bearerFrom(req.headers.authorization);
+          if (presented === undefined || !tokenMatches(presented)) {
+            // Identical response for missing, malformed and wrong credentials.
+            // Never echo the presented token or its length. Throttled — this is
+            // reachable by every co-tenant on the network, so an unthrottled
+            // line per rejection lets a scanner flood the log.
+            logThrottled(
+              "http-auth-401",
+              `rejected unauthenticated request: ${req.method} ${req.url}`,
+            );
+            sendJsonRpcError(res, 401, "Unauthorized", {
+              "WWW-Authenticate": "Bearer",
+            });
+            return;
+          }
         }
 
         const sessionId = req.headers["mcp-session-id"];

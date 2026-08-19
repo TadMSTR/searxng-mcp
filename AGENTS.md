@@ -18,7 +18,8 @@ Exposes seven MCP tools:
 
 ```
 src/
-  index.ts        # Entry point — creates MCP server, registers tools
+  index.ts        # Entry point — creates MCP server, registers tools, selects transport
+  http-transport.ts # HTTP transport: bearer gate, /health, per-session routing + eviction
   tools.ts        # Tool definitions (schemas + handlers)
   search.ts       # SearXNG client
   fetch.ts        # Fetch orchestrator: fast paths, robots gate, tier cascade, caching, post-extract
@@ -35,7 +36,7 @@ src/
     index.ts      # Barrel re-export
   reranker.ts     # Jina-compatible reranker client + recency weighting
   ollama.ts       # Ollama client (query expansion + summarization)
-  cache.ts        # Valkey/Redis caching layer (get/set + WATCH/MULTI/EXEC atomic update + SCAN)
+  cache.ts        # Valkey/Redis caching layer (get/set + Lua EVAL compare-and-set + SCAN)
   domain-db.ts    # Per-domain capability records (tier stats, capabilities); best-effort writes
   domain-stats.ts # Bounded SCAN enumerate + aggregate helpers, summary/formatters (tool + job)
   domain-snapshot.ts # Durable JSON snapshot write/prune/load + non-clobbering restore
@@ -47,7 +48,7 @@ src/
     domain-db-maintenance.ts # Standalone job: OTel gauges + durable snapshot (cron/PM2, single writer)
     restore-domain-db.ts     # Re-seed the domain-db from the newest snapshot after a flush
 tests/
-  *.test.ts       # Vitest unit tests (464 tests across 41 files)
+  *.test.ts       # Vitest unit tests (564 tests across 51 files)
 ```
 
 The domain-db maintenance/restore CLIs are standalone (`pnpm domain-db-maintenance`, `pnpm restore-domain-db`) — run the maintenance job on a schedule, **not** as an in-process timer, since searxng-mcp runs as several concurrent per-agent stdio children. Snapshot path/retention via `DOMAIN_DB_SNAPSHOT_DIR` / `DOMAIN_DB_SNAPSHOT_RETENTION`.
@@ -80,7 +81,25 @@ pnpm build        # tsc → build/
 node build/src/index.js
 ```
 
-Transport: stdio (MCP standard).
+Transport: stdio by default; `SEARXNG_MCP_TRANSPORT=http` runs a shared HTTP server on
+`SEARXNG_MCP_HOST:SEARXNG_MCP_PORT`.
+
+## Transport authentication
+
+The HTTP transport is unauthenticated unless `SEARXNG_MCP_AUTH_TOKEN` is set — the default
+`127.0.0.1` bind is what makes that safe. Any non-loopback bind (`0.0.0.0`, i.e. every
+containerised deployment) **must** set the token, or every tool is reachable by anything that
+can route to the port, including the arbitrary-URL `fetch_url` and the destructive
+`clear_cache`. The startup guard logs a warning for exactly that combination.
+
+When set, all requests except `GET /health` require `Authorization: Bearer <token>`; failures
+get a `401` with `WWW-Authenticate: Bearer`. `/health` is exempt on purpose — it is the
+container healthcheck and returns no secrets. Tokens are compared as SHA-256 digests so the
+check is constant-time and total (a raw `timingSafeEqual` throws on a length mismatch).
+
+Do not add authorization decisions here. There is no per-caller identity model — the token
+authenticates access to the server, not a client. Per-tool scoping belongs upstream in the
+calling proxy.
 
 ## Testing
 
