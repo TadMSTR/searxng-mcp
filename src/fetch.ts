@@ -1,5 +1,6 @@
 import { cacheGet, cacheSet, fetchCacheKey } from "./cache.js";
 import { FETCH_CACHE_TTL_SECONDS, WAYBACK_ENABLED } from "./config.js";
+import { probeStructuredContent } from "./content-type.js";
 import {
   recordMetadataFetchAttempt,
   recordPostExtractSample,
@@ -28,6 +29,7 @@ import {
   githubFetch,
   isGithubUrl,
   tier2 as pdfTier,
+  rawFetch,
   waybackFetch,
 } from "./tiers/index.js";
 import { isYouTubeHost, youtubeFetch } from "./youtube.js";
@@ -61,9 +63,13 @@ function applyPostExtract(
     maxChars,
   });
 
-  // Sample what we saw in the metadata HTML for the domain DB. Cheap regex
-  // checks — full extraction is already done inside postExtract.
-  const jsonLdPresent = enriched.source === "json_ld";
+  // Sample what we saw in the metadata HTML for the domain DB. Presence comes
+  // from the scan postExtract already performed, NOT from whether JSON-LD won
+  // the body: `source === "json_ld"` additionally requires a 300+ char
+  // articleBody, so deriving presence from it reported 0 present across 111
+  // sampled pages while og:title — checked directly against the HTML below —
+  // read 40% on the same sample.
+  const jsonLdPresent = enriched.jsonLdPresent;
   const ogTitlePresent =
     /<meta[^>]+(property|name)\s*=\s*["']og:title["']/i.test(html);
   recordPostExtractSample(url, { jsonLdPresent, ogTitlePresent }).catch(
@@ -389,6 +395,52 @@ export async function fetchPage(
           latency_ms: Date.now() - t_total,
         });
         return { ...persisted, text: persisted.text.slice(0, maxChars) };
+      }
+
+      // Content-type fast path — a JSON/XML/YAML/CSV/plain-text endpoint has
+      // nothing for a headless browser to render. Firecrawl returns empty
+      // markdown for these and runTier books it as `empty_result`, which is how
+      // tier1 accumulated a 0/27 lifetime record made up almost entirely of API
+      // and CDN hosts while Firecrawl itself was healthy.
+      //
+      // Probe is fail-open: an unreachable, HEAD-refusing or HTML-serving host
+      // returns null and drops through to the normal cascade unchanged. Only a
+      // positive identification diverts.
+      const structuredKind = await probeStructuredContent(url);
+      if (structuredKind) {
+        console.error(
+          `[searxng-mcp] fetch content_type fast_path url=${url} kind=${structuredKind}`,
+        );
+        const structured = await runTier("tier3_rawfetch", url, () =>
+          rawFetch(url, storeChars, tuning),
+        );
+        if (structured) {
+          const persisted = {
+            title: structured.title,
+            url: structured.url,
+            text: structured.text,
+          };
+          await cacheSet(
+            key,
+            JSON.stringify(persisted),
+            FETCH_CACHE_TTL_SECONDS,
+          );
+          events.fetchCompleted({
+            url,
+            tier_served: "tier3_rawfetch",
+            title: structured.title,
+            text_len: structured.text.length,
+            latency_ms: Date.now() - t_total,
+          });
+          return { ...persisted, text: persisted.text.slice(0, maxChars) };
+        }
+        // Raw fetch failed on something the probe said was structured — fall
+        // through rather than throwing. The cascade may still have an answer
+        // (wayback, a tier that handles the error differently), and a probe
+        // must not be able to turn a fetchable URL into a hard failure.
+        console.error(
+          `[searxng-mcp] fetch content_type fast_path miss url=${url} — falling through to cascade`,
+        );
       }
 
       // Run tier cascade and side-channel raw-HTML metadata fetch in parallel.

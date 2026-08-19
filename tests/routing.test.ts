@@ -23,9 +23,19 @@ function stat(attempts: number, ok: number, fail: number) {
   return { attempts, ok, fail, window_start_ms: NOW };
 }
 
+// Same counts, but recorded outside the 30-day window they claim to cover.
+function expiredStat(attempts: number, ok: number, fail: number) {
+  return {
+    attempts,
+    ok,
+    fail,
+    window_start_ms: NOW - 31 * 24 * 60 * 60 * 1000,
+  };
+}
+
 function record(overrides: Partial<DomainRecord>): DomainRecord {
   return {
-    schema_version: 4,
+    schema_version: 5,
     domain: "example.com",
     first_seen: "2026-05-01T00:00:00Z",
     last_fetch: "2026-05-01T00:00:00Z",
@@ -49,6 +59,49 @@ describe("computeTierSkips", () => {
   });
 
   afterEach(() => vi.restoreAllMocks());
+
+  it("ignores attempts recorded outside the 30-day window", async () => {
+    // The window only reset on the *next write for that domain*, so a domain
+    // fetched once and then left alone kept its stats until the 90-day record
+    // TTL — and kept the tier skipped on the strength of them. grep.app's 0/10
+    // was 26 days stale and still suppressing tier1.
+    cacheGetMock.mockResolvedValue(
+      JSON.stringify(
+        record({
+          tier_stats_30d: {
+            tier1: expiredStat(40, 1, 39),
+            tier2: stat(0, 0, 0),
+            tier3: stat(0, 0, 0),
+            tier4: stat(0, 0, 0),
+            github: stat(0, 0, 0),
+          },
+        }),
+      ),
+    );
+    expect(await computeTierSkips("https://example.com/p")).toEqual([]);
+  });
+
+  it("still skips on in-window failures at the same counts", async () => {
+    // Control for the case above: identical numbers, current window, so the
+    // skip must fire. Without this pair, "ignores expired stats" would also
+    // pass if skipping were broken outright.
+    cacheGetMock.mockResolvedValue(
+      JSON.stringify(
+        record({
+          tier_stats_30d: {
+            tier1: stat(40, 1, 39),
+            tier2: stat(0, 0, 0),
+            tier3: stat(0, 0, 0),
+            tier4: stat(0, 0, 0),
+            github: stat(0, 0, 0),
+          },
+        }),
+      ),
+    );
+    expect(await computeTierSkips("https://example.com/p")).toEqual([
+      { tier: "tier1", reason: "low_success_rate" },
+    ]);
+  });
 
   it("returns no skips during cold start (under 10 attempts)", async () => {
     cacheGetMock.mockResolvedValue(

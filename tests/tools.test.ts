@@ -331,7 +331,7 @@ describe("handleDomainStats", () => {
     capabilities: DomainRecord["capabilities"] = {},
   ): DomainRecord {
     return {
-      schema_version: 4,
+      schema_version: 5,
       domain,
       first_seen: "2026-05-01T00:00:00Z",
       last_fetch: "2026-06-01T00:00:00Z",

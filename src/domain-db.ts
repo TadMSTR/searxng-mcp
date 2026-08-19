@@ -14,8 +14,13 @@ export const DOMAIN_RECORD_TTL_SECONDS = 90 * 24 * 60 * 60;
 // GitHub fetches previously bypassed runTier() and recorded no tier stats).
 // Existing records on schema 3 are treated as stale and rebuilt fresh (see
 // updateRecord), same migration approach used for the 1->2 and 2->3 bumps.
-export const SCHEMA_VERSION = 4;
-const WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
+// Bumped 4->5 to discard tier stats accumulated while cacheAtomicUpdate was
+// losing writes. The surviving numbers are a biased sample — whichever writer
+// happened to win each race — and they drive tier-skip decisions, so they are
+// discarded rather than migrated. Same approach as 1->2, 2->3 and 3->4.
+export const SCHEMA_VERSION = 5;
+export const TIER_STATS_WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
+const WINDOW_MS = TIER_STATS_WINDOW_MS;
 
 export type TierName =
   | "tier1_firecrawl"
@@ -38,11 +43,13 @@ export interface TierStat {
 }
 
 export interface DomainCapabilities {
-  llms_txt?: {
-    present: boolean;
-    url?: string;
-    last_checked: string;
-  };
+  // NOTE: a sibling `llms_txt` slot lived here with no writer and no reader
+  // anywhere in src/, from the schema's first version. It was removed in the v5
+  // bump rather than wired up: `llms_full_txt` is the probe that actually runs
+  // and feeds preferred_strategy, and populating `llms_txt` would have meant
+  // probing every domain for a signal nothing consumes. Declared-but-unwritten
+  // schema reads as "we measure this" and invites exactly the false confidence
+  // the mocked concurrency test produced.
   llms_full_txt?: {
     present: boolean;
     size_bytes?: number;
@@ -105,6 +112,35 @@ function emptyStat(): TierStat {
   return { attempts: 0, ok: 0, fail: 0, window_start_ms: Date.now() };
 }
 
+/**
+ * A TierStat as of `now`, with an elapsed window reported as empty.
+ *
+ * `tier_stats_30d` was never a 30-day window on read. The reset in
+ * `recordTierAttempt` fires only on the *next write for that domain*, so a
+ * domain fetched once and never revisited kept reporting those numbers until
+ * the 90-day record TTL — grep.app's 0/10 was 26 days stale and still topping
+ * the failing-domains list. Applying the cutoff at read time makes the window
+ * mean what its name says regardless of write cadence.
+ *
+ * Every consumer must go through this: `routing.ts` thresholds on these counts
+ * to skip tiers and `domain-stats.ts` reports them, and the two disagreeing
+ * would be worse than either being wrong on its own. `window_start_ms` is
+ * preserved so the "resets in ~Nd" hint still renders (as 0d, correctly).
+ */
+export function currentWindowStat(
+  stat: TierStat | undefined,
+  now: number = Date.now(),
+): TierStat {
+  if (!stat) return { attempts: 0, ok: 0, fail: 0, window_start_ms: now };
+  if (now - stat.window_start_ms <= WINDOW_MS) return stat;
+  return {
+    attempts: 0,
+    ok: 0,
+    fail: 0,
+    window_start_ms: stat.window_start_ms,
+  };
+}
+
 function newRecord(domain: string, now: string): DomainRecord {
   return {
     schema_version: SCHEMA_VERSION,
@@ -161,10 +197,12 @@ export async function getDomainRecord(
   return parseDomainRecord(await cacheGet(domainKey(hostname)));
 }
 
-// Atomic read-modify-write: uses WATCH/MULTI/EXEC via cacheAtomicUpdate.
-// Replaces the former in-process per-hostname Promise queue, which only
-// serialized within a single process. WATCH/MULTI/EXEC handles concurrent
-// writers across multiple processes as well.
+// Atomic read-modify-write via cacheAtomicUpdate, which pairs an in-process
+// per-key queue with a server-side compare-and-set. The queue removes
+// contention between this module's own fire-and-forget writers; the CAS covers
+// writers in other processes. See the commentary in cache.ts — the previous
+// WATCH/MULTI/EXEC implementation provided neither, because WATCH is scoped to
+// the shared singleton connection rather than to the call.
 function updateRecord(
   hostnameOrUrl: string,
   mutate: (r: DomainRecord) => void,

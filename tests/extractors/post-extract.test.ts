@@ -4,6 +4,56 @@ import { postExtract } from "../../src/extractors/post-extract.js";
 const wrap = (head: string, body = "") =>
   `<!doctype html><html><head>${head}</head><body>${body}</body></html>`;
 
+describe("postExtract jsonLdPresent", () => {
+  // The signal fetch.ts samples into the domain DB. It has to be true whenever
+  // the page carries Article schema, including — especially — when JSON-LD did
+  // NOT win the body, which is the overwhelmingly common case and was
+  // previously indistinguishable from "no JSON-LD here at all".
+  it("is true with source=baseline when Article schema has no usable body", () => {
+    const baseline = "Long baseline text. ".repeat(100);
+    const html = wrap(
+      `<title>Page</title>
+       <script type="application/ld+json">
+       ${JSON.stringify({
+         "@type": "Article",
+         headline: "Headline only, no articleBody",
+       })}
+       </script>`,
+    );
+    const result = postExtract({
+      url: "https://example.com/x",
+      html,
+      baselineTitle: "Baseline Title",
+      baselineText: baseline,
+      maxChars: 8000,
+    });
+    expect(result.source).toBe("baseline");
+    expect(result.jsonLdPresent).toBe(true);
+  });
+
+  it("is false when the page carries no Article schema", () => {
+    const result = postExtract({
+      url: "https://example.com/x",
+      html: wrap("<title>Page</title>", "<p>body</p>"),
+      baselineTitle: "Baseline Title",
+      baselineText: "text",
+      maxChars: 8000,
+    });
+    expect(result.jsonLdPresent).toBe(false);
+  });
+
+  it("is false when the HTML cannot be parsed at all", () => {
+    const result = postExtract({
+      url: "not a url",
+      html: "<html>",
+      baselineTitle: "T",
+      baselineText: "text",
+      maxChars: 8000,
+    });
+    expect(result.jsonLdPresent).toBe(false);
+  });
+});
+
 describe("postExtract", () => {
   it("uses JSON-LD articleBody when baseline is short (likely chrome-only)", () => {
     const html = wrap(

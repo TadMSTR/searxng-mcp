@@ -1,6 +1,9 @@
 import { JSDOM } from "jsdom";
 import { describe, expect, it } from "vitest";
-import { extractJsonLdArticle } from "../../src/extractors/jsonld.js";
+import {
+  extractJsonLdArticle,
+  scanJsonLd,
+} from "../../src/extractors/jsonld.js";
 
 function dom(body: string): JSDOM {
   return new JSDOM(
@@ -124,5 +127,146 @@ describe("extractJsonLdArticle", () => {
         `),
       ),
     ).toBeNull();
+  });
+});
+
+describe("scanJsonLd presence", () => {
+  // Presence must not depend on extractability. The live corpus reported
+  // json_ld_article present on 0 of 111 sampled pages precisely because the
+  // caller inferred presence from "did JSON-LD supply the body", and almost no
+  // site ships a full articleBody.
+  it("reports present for headline-only Article with no articleBody", () => {
+    const scan = scanJsonLd(
+      dom(`
+        <script type="application/ld+json">
+          ${JSON.stringify({
+            "@context": "https://schema.org",
+            "@type": "Article",
+            headline: "Metadata only",
+            datePublished: "2026-08-19",
+          })}
+        </script>
+      `),
+    );
+    expect(scan.present).toBe(true);
+    // Extractable too — headline alone satisfies pickArticle.
+    expect(scan.article?.title).toBe("Metadata only");
+  });
+
+  it("reports present for an Article node carrying neither headline nor body", () => {
+    // The shape the old detector was structurally unable to see: valid Article
+    // schema with all its content in fields the extractor doesn't read.
+    const scan = scanJsonLd(
+      dom(`
+        <script type="application/ld+json">
+          ${JSON.stringify({
+            "@type": "Article",
+            author: { "@type": "Person", name: "Someone" },
+            dateModified: "2026-08-19",
+          })}
+        </script>
+      `),
+    );
+    expect(scan.present).toBe(true);
+    expect(scan.article).toBeNull();
+  });
+
+  it("reports absent when the page carries only non-article schema", () => {
+    const scan = scanJsonLd(
+      dom(`
+        <script type="application/ld+json">
+          ${JSON.stringify({
+            "@type": "BreadcrumbList",
+            itemListElement: [{ "@type": "ListItem", position: 1 }],
+          })}
+        </script>
+      `),
+    );
+    expect(scan.present).toBe(false);
+    expect(scan.article).toBeNull();
+  });
+
+  it("finds an Article nested in @graph", () => {
+    const scan = scanJsonLd(
+      dom(`
+        <script type="application/ld+json">
+          ${JSON.stringify({
+            "@context": "https://schema.org",
+            "@graph": [
+              { "@type": "WebSite", name: "Site" },
+              { "@type": "BlogPosting", headline: "Nested post" },
+            ],
+          })}
+        </script>
+      `),
+    );
+    expect(scan.present).toBe(true);
+    expect(scan.article?.title).toBe("Nested post");
+  });
+
+  it("matches a fully-qualified schema.org @type URL", () => {
+    // `"@type": "https://schema.org/NewsArticle"` is valid JSON-LD and was
+    // silently unmatched by a bare-name comparison.
+    const scan = scanJsonLd(
+      dom(`
+        <script type="application/ld+json">
+          ${JSON.stringify({
+            "@type": "https://schema.org/NewsArticle",
+            headline: "Qualified",
+          })}
+        </script>
+      `),
+    );
+    expect(scan.present).toBe(true);
+  });
+
+  it("matches Article subtypes beyond the original four", () => {
+    for (const type of [
+      "ScholarlyArticle",
+      "OpinionNewsArticle",
+      "LiveBlogPosting",
+    ]) {
+      const scan = scanJsonLd(
+        dom(`
+          <script type="application/ld+json">
+            ${JSON.stringify({ "@type": type, headline: type })}
+          </script>
+        `),
+      );
+      expect(scan.present, `${type} should be recognised`).toBe(true);
+    }
+  });
+
+  it("keeps scanning later blocks after an extractable article is found", () => {
+    // Presence must not short-circuit on the first usable article, or it
+    // becomes content-dependent again by the back door.
+    const scan = scanJsonLd(
+      dom(`
+        <script type="application/ld+json">
+          ${JSON.stringify({ "@type": "Article", headline: "First" })}
+        </script>
+        <script type="application/ld+json">
+          ${JSON.stringify({ "@type": "NewsArticle", headline: "Second" })}
+        </script>
+      `),
+    );
+    expect(scan.present).toBe(true);
+    expect(scan.article?.title).toBe("First");
+  });
+
+  it("survives malformed JSON and reports whatever the valid blocks carry", () => {
+    const scan = scanJsonLd(
+      dom(`
+        <script type="application/ld+json">{ not json </script>
+        <script type="application/ld+json">
+          ${JSON.stringify({ "@type": "TechArticle", headline: "Valid" })}
+        </script>
+      `),
+    );
+    expect(scan.present).toBe(true);
+  });
+
+  it("reports absent for a page with no JSON-LD at all", () => {
+    expect(scanJsonLd(dom("<p>hello</p>")).present).toBe(false);
   });
 });

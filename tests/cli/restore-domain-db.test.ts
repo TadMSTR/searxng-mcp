@@ -24,7 +24,7 @@ function emptyStat() {
 
 function mkRecord(domain: string, lastFetch: string): DomainRecord {
   return {
-    schema_version: 4,
+    schema_version: 5,
     domain,
     first_seen: "2026-05-01T00:00:00Z",
     last_fetch: lastFetch,
