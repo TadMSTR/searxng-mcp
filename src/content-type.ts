@@ -104,7 +104,26 @@ export function renderStructured(body: string, kind: StructuredKind): string {
       rendered = body;
     }
   }
-  return `\`\`\`${FENCE_LANG[kind]}\n${rendered}\n\`\`\``;
+  const fence = "`".repeat(fenceWidthFor(rendered));
+  return `${fence}${FENCE_LANG[kind]}\n${rendered}\n${fence}`;
+}
+
+/**
+ * Fence width that the body cannot terminate early.
+ *
+ * This wraps bytes from a remote server. A response containing its own
+ * ``` run would close the fence and let everything after it render as
+ * markdown in the consuming agent's context — structured data escaping into
+ * instructions. CommonMark closes a fence only on a run of at least the
+ * opening length, so opening wider than the longest run inside the body makes
+ * that impossible.
+ */
+function fenceWidthFor(body: string): number {
+  let longest = 0;
+  for (const run of body.match(/`+/g) ?? []) {
+    if (run.length > longest) longest = run.length;
+  }
+  return Math.max(3, longest + 1);
 }
 
 /**
