@@ -202,16 +202,25 @@ Before invoking the fetch cascade, searxng-mcp reads the domain's `tier_stats_30
 
 `tier_skip` keys can be bare domains (`example.com` matches the domain and all subdomains) or domain + path prefix (`example.com/api/`). The file is hot-reloaded — no restart needed. Manual overrides emit `reason: operator_override`.
 
+### Content-type fast path
+
+A URL serving structured, non-HTML content — `application/json`, any `*+json`, XML, YAML, TOML, CSV, or `text/plain` — is detected via a `HEAD` probe and routed straight to the raw-HTTP tier instead of the full Firecrawl/Crawl4AI cascade. JSON is returned pretty-printed inside a fenced code block. Previously, asking a headless browser to render a JSON API response or CDN asset returned empty markdown, so API and CDN endpoints (`registry.npmjs.org`, `api.osv.dev`, `cdn.jsdelivr.net`, …) simply failed.
+
+Guarantees:
+- The probe is **fail-open**. An unreachable host, a server that refuses `HEAD`, or an unreadable/unparseable `Content-Type` header all fall through to the normal cascade unchanged.
+- `application/xhtml+xml` is deliberately excluded — that is markup for a browser, not structured data.
+- HTML that a server mislabels as `text/plain` is still parsed as HTML, not dumped as a raw text block.
+
 ### Domain capability database
 
-Every fetch records what searxng-mcp learns about the target domain to Valkey under `domain:<hostname>` (90-day TTL, schema_version 4). Captured per record:
+Every fetch records what searxng-mcp learns about the target domain to Valkey under `domain:<hostname>` (90-day TTL, schema_version 5). Captured per record:
 
-- `tier_stats_30d.{tier1,tier2,tier3,tier4,github}.{attempts, ok, fail, last_fail_reason, window_start_ms}` — fetch success rate per tier over a rolling 30-day window; counters reset when the window expires. The `tier4` (Wayback Machine) slot is recorded only when `WAYBACK_ENABLED=true`. The `github` slot records the [GitHub fast path](#github-urls) (`raw.githubusercontent.com` / `api.github.com` / `github.com` README fetches), which bypasses the tier cascade but is still tracked here. A `schema_version` bump rebuilds existing records fresh — accumulated windows for currently-idle domains are discarded (precedented across the 1→2, 2→3, 3→4 bumps).
+- `tier_stats_30d.{tier1,tier2,tier3,tier4,github}.{attempts, ok, fail, last_fail_reason, window_start_ms}` — fetch success rate per tier over a rolling 30-day window. The cutoff is applied at **read time**, shared by tier-routing decisions and `domain_stats` reporting, so the two cannot disagree — a domain fetched once and then left idle reports a genuinely empty window rather than stale numbers surviving until the next write. The `tier4` (Wayback Machine) slot is recorded only when `WAYBACK_ENABLED=true`. The `github` slot records the [GitHub fast path](#github-urls) (`raw.githubusercontent.com` / `api.github.com` / `github.com` README fetches), which bypasses the tier cascade but is still tracked here. A `schema_version` bump rebuilds existing records fresh — accumulated windows for currently-idle domains are discarded (precedented across the 1→2, 2→3, 3→4, 4→5 bumps).
 - `capabilities.metadata_fetch.{attempts, ok, fail, last_fail_reason}` — success/failure of the metadata side-channel fetch (`fetchRawHtmlForMetadata`, used for JSON-LD/og:title sampling). Tracked separately from `tier_stats_30d` since it answers "is this domain reachable at all", not "did full-content delivery succeed".
 - `capabilities.seen_in_search.{count, last_seen_ms}` — how often the domain appears in `search` results. Written fire-and-forget by `searxSearch()` on every return path (including cache hits) with no fetch performed, so a domain can be tracked before it is ever fetched.
 - `capabilities.robots_txt.{present, fetched, allows_us}` — robots.txt presence and whether it permits us
 - `capabilities.llms_full_txt.{present, size_bytes, last_checked}` — whether the domain serves `/llms-full.txt`
-- `capabilities.json_ld_article.{sampled, present, last_sampled_at}` — how often Article-schema JSON-LD is found
+- `capabilities.json_ld_article.{sampled, present, last_sampled_at}` — whether the page carries Article-schema JSON-LD at all (Schema.org `Article`/`NewsArticle`/`BlogPosting`/`TechArticle` and subtypes like `ScholarlyArticle`/`OpinionNewsArticle`/`LiveBlogPosting`, matched by bare name or fully-qualified `https://schema.org/...` `@type`), independent of whether that schema had extractable body text — many sites publish headline/metadata JSON-LD with no `articleBody`, which is a distinct concern from [post-extraction](#fetch-quality) actually using it.
 - `capabilities.og_title.{sampled, present, last_sampled_at}` — same for `<meta property="og:title">`
 - `preferred_strategy` — currently set to `llms_full_txt` when a present probe lands; future phases will use this to skip the tier cascade
 
@@ -221,7 +230,9 @@ Inspect a record with the bundled CLI, or query it from an agent via the `domain
 pnpm dump-domain docs.anthropic.com
 ```
 
-Concurrent updates for the same hostname (the tier-attempt, robots-probe, and post-extract-sample recorders that fire in parallel during one fetch) are serialized with an atomic `WATCH`/`MULTI`/`EXEC` read-modify-write, so writers across all processes stay consistent.
+`dump-domain` distinguishes a window that has expired from a tier that has no data at all, rather than showing both the same way.
+
+Concurrent updates for the same hostname (the tier-attempt, robots-probe, and post-extract-sample recorders that fire in parallel during one fetch) are serialized through a server-side Lua compare-and-set, paired with an in-process per-key queue that removes contention between a single process's own writers so the CAS only has to arbitrate genuinely concurrent writes across processes. Versions before v3.17.0 used a `WATCH`/`MULTI`/`EXEC` read-modify-write against a shared connection, which does not actually serialize concurrent writers — data collected before v3.17.0 was substantially incomplete as a result. Upgrading discards existing tier statistics via the schema bump; expect `domain_stats` to read near-empty immediately after upgrading and refill over the following days.
 
 #### Domain-db persistence
 
@@ -674,6 +685,16 @@ Environment variables are validated at startup — `RERANK_RECENCY_WEIGHT` warns
 ## Contributing
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for setup instructions, commit conventions, and the PR process.
+
+### Integration tests
+
+A real-Valkey integration suite covering domain-DB concurrency is gated on `VALKEY_TEST_URL` and skipped entirely when it's unset, so a plain `pnpm test` still works with no Valkey present:
+
+```bash
+VALKEY_TEST_URL=redis://:<password>@<host>:<port>/<scratch-db> pnpm test
+```
+
+Use a **scratch database index** — the suite writes and deletes `domain:*` keys and refuses to run against index `0` or `1` as a safety guard.
 
 ## License
 
