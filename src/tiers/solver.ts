@@ -132,6 +132,10 @@ export async function solverFetch(
         url,
         maxTimeout: SOLVER_MAX_TIMEOUT_MS,
       }),
+      // The solver is an internal service and should never redirect. If a
+      // misconfigured SOLVER_URL points at something that does, following it
+      // would be an unguarded fetch to wherever it pointed — so don't.
+      redirect: "manual",
       // Outlast the solver's own budget so a solver that is working right up to
       // its deadline still gets to answer, but never hang unbounded.
       signal: AbortSignal.timeout(SOLVER_MAX_TIMEOUT_MS + 10_000),

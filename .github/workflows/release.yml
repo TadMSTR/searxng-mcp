@@ -84,6 +84,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           TAG_NAME: ${{ github.ref_name }}
         run: |
+          set -euo pipefail
           # `gh release create` is not idempotent. publish-npm and this job both
           # `needs: build`, so when publish-npm fails and the run is re-run with
           # "re-run all jobs", this job executes a second time for a tag that
