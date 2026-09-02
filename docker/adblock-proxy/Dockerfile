@@ -13,7 +13,9 @@ WORKDIR /app
 COPY package.json ./
 RUN npm install --omit=dev
 
-COPY proxy.js ./
+# ssrf.js is required by proxy.js at startup — a COPY that lists only proxy.js
+# produces an image that crash-loops on MODULE_NOT_FOUND.
+COPY proxy.js ssrf.js ./
 
 USER proxy
 

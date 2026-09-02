@@ -1,4 +1,9 @@
 import { cacheGet, cacheSet, fetchCacheKey } from "./cache.js";
+import {
+  CHALLENGE_MISS_REASON,
+  ChallengeDetectedError,
+  type ChallengeSignal,
+} from "./challenge.js";
 import { FETCH_CACHE_TTL_SECONDS, WAYBACK_ENABLED } from "./config.js";
 import { probeStructuredContent } from "./content-type.js";
 import {
@@ -30,6 +35,7 @@ import {
   isGithubUrl,
   tier2 as pdfTier,
   rawFetch,
+  solverFetch,
   waybackFetch,
 } from "./tiers/index.js";
 import { isYouTubeHost, youtubeFetch } from "./youtube.js";
@@ -83,10 +89,20 @@ function applyPostExtract(
   };
 }
 
+/**
+ * Run one tier and record its outcome (metrics, events, domain-db).
+ *
+ * `onChallenge` is how a detected challenge escapes the tier: the tier throws
+ * ChallengeDetectedError, this wrapper turns it into a miss, and the callback
+ * lets the caller remember that a challenge was seen for *this* request. The
+ * flag it sets is a local in fetchPage, so it is request-scoped by
+ * construction — no shared or ambient state.
+ */
 async function runTier<T extends TierResult | null>(
   tier: TierName,
   url: string,
   fn: () => Promise<T>,
+  onChallenge?: (signal: ChallengeSignal) => void,
 ): Promise<T> {
   const t0 = Date.now();
   try {
@@ -105,6 +121,26 @@ async function runTier<T extends TierResult | null>(
     return out;
   } catch (err) {
     const latency_ms = Date.now() - t0;
+    // A detected challenge is a miss, not an error: the tier reached the origin
+    // and got a well-formed response, it just wasn't content. Recording it as
+    // `challenge_detected` rather than the generic `empty_result` is what makes
+    // the solver gate possible, and it stops the interstitial being booked as a
+    // hit (cached, and counted as proof the tier works on this domain).
+    if (err instanceof ChallengeDetectedError) {
+      incCounter("fetch", { tier, outcome: "miss" });
+      recordHistogram("fetch", latency_ms / 1000, { tier, outcome: "miss" });
+      events.fetchTierMiss({
+        url,
+        tier,
+        reason: CHALLENGE_MISS_REASON,
+        latency_ms,
+      });
+      recordTierAttempt(url, tier, "miss", CHALLENGE_MISS_REASON).catch(
+        () => {},
+      );
+      onChallenge?.(err.signal);
+      return null as T;
+    }
     const reason = err instanceof Error ? err.message : "error";
     incCounter("fetch", { tier, outcome: "error" });
     recordHistogram("fetch", latency_ms / 1000, { tier, outcome: "error" });
@@ -349,6 +385,14 @@ export async function fetchPage(
         throw new RobotsDisallowedError(url);
       }
 
+      // Armed by runTier when any tier reports a challenge for this URL. A
+      // plain local, so it is request-scoped by construction — the solver must
+      // never fire on the strength of a challenge seen in some other request.
+      let challengeDetected = false;
+      const onChallenge = () => {
+        challengeDetected = true;
+      };
+
       // Resolve data-driven + operator skips before kicking off the cascade.
       const { active: activeTiers, skipped: skipDecisions } =
         await getTiers(url);
@@ -411,8 +455,11 @@ export async function fetchPage(
         console.error(
           `[searxng-mcp] fetch content_type fast_path url=${url} kind=${structuredKind}`,
         );
-        const structured = await runTier("tier3_rawfetch", url, () =>
-          rawFetch(url, storeChars, tuning),
+        const structured = await runTier(
+          "tier3_rawfetch",
+          url,
+          () => rawFetch(url, storeChars, tuning),
+          onChallenge,
         );
         if (structured) {
           const persisted = {
@@ -448,8 +495,11 @@ export async function fetchPage(
 
       let fetched: TierResult | null = null;
       for (const tier of activeTiers) {
-        fetched = await runTier(tier.name, url, () =>
-          tier.fetch(url, storeChars, preferFit, tuning),
+        fetched = await runTier(
+          tier.name,
+          url,
+          () => tier.fetch(url, storeChars, preferFit, tuning),
+          onChallenge,
         );
         if (fetched) {
           tierServed = tier.name;
@@ -459,6 +509,34 @@ export async function fetchPage(
           break;
         }
         console.error(`[searxng-mcp] fetch ${tier.slot} miss url=${url}`);
+      }
+
+      // Challenge solver. Detection-gated: it fires only when a tier actually
+      // reported `challenge_detected` for this URL, never on an unchallenged
+      // one. searxng-mcp already runs two browser-rendering tiers ahead of
+      // this, so solving unconditionally would re-render pages that were never
+      // challenged, at seconds of latency and hundreds of MB of RAM each.
+      //
+      // Dispatched directly here rather than as a cascade tier, following
+      // tier4_wayback and github: it takes a TierName but no TierSlot, which
+      // keeps it out of computeTierSkips and the tier_skip domain config.
+      // Placed after tier3 because a browser must not run ahead of a cheap raw
+      // fetch that frequently succeeds, and before tier4_wayback because a
+      // solved live page beats an archived one.
+      //
+      // A solver miss is expected and is not an error — it falls through to
+      // wayback exactly as a tier miss does.
+      if (!fetched && challengeDetected) {
+        console.error(`[searxng-mcp] fetch solver_byparr attempt url=${url}`);
+        fetched = await runTier("solver_byparr", url, () =>
+          solverFetch(url, storeChars, tuning),
+        );
+        if (fetched) {
+          tierServed = "solver_byparr";
+          console.error(`[searxng-mcp] fetch solver_byparr hit url=${url}`);
+        } else {
+          console.error(`[searxng-mcp] fetch solver_byparr miss url=${url}`);
+        }
       }
 
       if (!fetched && WAYBACK_ENABLED) {

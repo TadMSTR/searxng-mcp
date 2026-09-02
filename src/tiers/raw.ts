@@ -1,6 +1,7 @@
 import { Readability } from "@mozilla/readability";
 import { JSDOM } from "jsdom";
 import { ProxyAgent } from "undici";
+import { ChallengeDetectedError, detectChallenge } from "../challenge.js";
 import { ADBLOCK_PROXY_URL } from "../config.js";
 import {
   classifyContentType,
@@ -19,10 +20,21 @@ import {
 // Passed as `dispatcher` to undici-backed fetch calls (Node.js 18+ global fetch).
 const proxyAgent = ADBLOCK_PROXY_URL ? new ProxyAgent(ADBLOCK_PROXY_URL) : null;
 
+/**
+ * Extra request headers for the fetch. Used by the solver replay to carry the
+ * solved session's User-Agent and its host-scoped cookies; a supplied
+ * User-Agent replaces the default, since a solved Cloudflare session is bound
+ * to the browser identity that solved it.
+ */
+export interface RawFetchHeaders {
+  [name: string]: string;
+}
+
 export async function rawFetch(
   url: string,
   maxChars = 8000,
   tuning?: FetchTuning,
+  extraHeaders?: RawFetchHeaders,
 ): Promise<TierResult> {
   // SSRF guard: safeFetch applies the string-level check (protecting future
   // direct callers, SSRF-08) and, absent the adblock proxy, routes through the
@@ -32,7 +44,7 @@ export async function rawFetch(
   const fetchOptions: Parameters<typeof fetch>[1] & {
     dispatcher?: ProxyAgent;
   } = {
-    headers: { "User-Agent": USER_AGENT },
+    headers: { "User-Agent": USER_AGENT, ...extraHeaders },
     redirect: "manual",
     signal: AbortSignal.timeout(15000),
   };
@@ -51,10 +63,23 @@ export async function rawFetch(
     // (OE-02).
     throw new Error(`Redirect not followed (${res.status})`);
   }
+  // Status/header challenge (403 or 503 from a Cloudflare edge). Checked ahead
+  // of the generic !res.ok throw so the attempt is recorded as
+  // `challenge_detected` rather than "Raw fetch error: 403" — the solver gate
+  // keys on that reason.
+  const statusSignal = detectChallenge(res.status, res.headers, null);
+  if (statusSignal) throw new ChallengeDetectedError(statusSignal);
+
   if (!res.ok)
     throw new Error(`Raw fetch error: ${res.status} ${res.statusText}`);
 
   const body = await readBoundedText(res);
+
+  // The 200-with-interstitial case, and the reason this check exists: res.ok is
+  // true, so without it Readability extracts "Just a moment..." as an article
+  // and the cascade books a hit.
+  const bodySignal = detectChallenge(res.status, res.headers, body);
+  if (bodySignal) throw new ChallengeDetectedError(bodySignal);
 
   // Structured payloads short-circuit before JSDOM. Readability over a JSON
   // document finds no article, falls through to returning the raw string, and

@@ -18,7 +18,13 @@ export const DOMAIN_RECORD_TTL_SECONDS = 90 * 24 * 60 * 60;
 // losing writes. The surviving numbers are a biased sample — whichever writer
 // happened to win each race — and they drive tier-skip decisions, so they are
 // discarded rather than migrated. Same approach as 1->2, 2->3 and 3->4.
-export const SCHEMA_VERSION = 5;
+// Bumped 5->6 to add the `solver` slot to tier_stats_30d for the challenge
+// solver tier. Records on schema 5 are treated as stale and rebuilt fresh (see
+// updateRecord), the same migration approach used for every bump before it —
+// the alternative, back-filling an empty slot, would leave the record claiming
+// a 30-day window it never measured. The reset is accepted (Ted, 2026-09-02):
+// the v5 window only began 2026-08-19, so little is discarded.
+export const SCHEMA_VERSION = 6;
 export const TIER_STATS_WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
 const WINDOW_MS = TIER_STATS_WINDOW_MS;
 
@@ -31,7 +37,30 @@ export type TierName =
   // README fetches). Not a cascade tier — dispatched directly in fetchPage —
   // but routed through runTier() so its hit/miss/error is recorded like any
   // other tier.
-  | "github";
+  | "github"
+  // Challenge solver (Byparr). Like tier4_wayback and github, a TierName with
+  // no TierSlot: it is dispatched directly in fetchPage rather than being part
+  // of the ordered cascade, so it stays out of computeTierSkips and the
+  // tier_skip domain config entirely.
+  | "solver_byparr";
+
+/**
+ * The tier_stats_30d slot keys — the single roster of this closed set.
+ *
+ * domain-stats.ts and domain-snapshot.ts both consume it rather than keeping
+ * their own copy: a slot added here but missed in one of those lists would be
+ * silently dropped from aggregation or silently rejected by the snapshot
+ * restore guard, and neither array is exhaustiveness-checked by the compiler.
+ */
+export const TIER_SLOT_KEYS = [
+  "tier1",
+  "tier2",
+  "tier3",
+  "tier4",
+  "github",
+  "solver",
+] as const;
+export type TierSlotKey = (typeof TIER_SLOT_KEYS)[number];
 export type PreferredStrategy = "llms_full_txt" | "tier1" | "tier2" | "tier3";
 
 export interface TierStat {
@@ -103,6 +132,7 @@ export interface DomainRecord {
     tier3: TierStat;
     tier4: TierStat;
     github: TierStat;
+    solver: TierStat;
   };
   preferred_strategy?: PreferredStrategy;
   notes?: string;
@@ -154,6 +184,7 @@ function newRecord(domain: string, now: string): DomainRecord {
       tier3: emptyStat(),
       tier4: emptyStat(),
       github: emptyStat(),
+      solver: emptyStat(),
     },
   };
 }
@@ -232,15 +263,13 @@ function updateRecord(
   });
 }
 
-const TIER_KEY: Record<
-  TierName,
-  "tier1" | "tier2" | "tier3" | "tier4" | "github"
-> = {
+const TIER_KEY: Record<TierName, TierSlotKey> = {
   tier1_firecrawl: "tier1",
   tier2_crawl4ai: "tier2",
   tier3_rawfetch: "tier3",
   tier4_wayback: "tier4",
   github: "github",
+  solver_byparr: "solver",
 };
 
 export async function recordTierAttempt(

@@ -1,6 +1,6 @@
 {
   "name": "@tadmstr/searxng-mcp",
-  "version": "3.18.0",
+  "version": "3.19.0",
   "description": "MCP server for SearXNG — private web search for Claude Code",
   "main": "build/src/index.js",
   "bin": {
@@ -67,8 +67,8 @@
   "pnpm": {
     "overrides": {
       "path-to-regexp": ">=8.4.0",
-      "hono": ">=4.12.21",
-      "@hono/node-server": ">=1.19.13",
+      "hono": ">=4.12.34",
+      "@hono/node-server": ">=2.0.10",
       "fast-uri": ">=3.1.2",
       "ip-address": ">=10.1.1",
       "qs": ">=6.15.2"

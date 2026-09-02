@@ -71,6 +71,24 @@ export const HISTER_TOKEN = process.env.HISTER_TOKEN ?? "";
 export const CRAWL4AI_URL = process.env.CRAWL4AI_URL ?? null;
 export const CRAWL4AI_API_TOKEN = process.env.CRAWL4AI_API_TOKEN;
 export const WAYBACK_ENABLED = process.env.WAYBACK_ENABLED === "true";
+// Challenge-solving tier. SOLVER_URL points at a FlareSolverr-v1-compatible
+// solver — Byparr on forge (`http://byparr:8191`); FlareSolverr itself speaks
+// the same POST /v1 contract, so swapping is config, not code.
+//
+// SOLVER_ENABLED is the kill switch and defaults off, mirroring
+// WAYBACK_ENABLED: with it unset the tier is inert and the cascade behaves
+// exactly as it did before. The solver is also only ever reached when a tier
+// actually reported `challenge_detected` — see the gate in fetchPage.
+//
+// Note the solver's own address is an internal service name, so the call to it
+// deliberately does not go through safeFetch's public-address guard. That guard
+// belongs on the *replay*, which is an outbound fetch to the caller's URL.
+export const SOLVER_URL = process.env.SOLVER_URL?.replace(/\/$/, "") ?? "";
+export const SOLVER_ENABLED = process.env.SOLVER_ENABLED === "true";
+export const SOLVER_MAX_TIMEOUT_MS = positiveIntEnv(
+  "SOLVER_MAX_TIMEOUT_MS",
+  60_000,
+);
 // Durable domain-db snapshots (written by the domain-db-maintenance job,
 // re-seeded by restore-domain-db). DOMAIN_DB_SNAPSHOT_DIR is where dated JSON
 // snapshots live — set it to a durable path in deployment (e.g. an appdata or

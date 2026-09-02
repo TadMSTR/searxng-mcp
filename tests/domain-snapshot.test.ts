@@ -21,7 +21,7 @@ function emptyStat() {
 
 function mkRecord(domain: string, lastFetch: string): DomainRecord {
   return {
-    schema_version: 5,
+    schema_version: 6,
     domain,
     first_seen: "2026-05-01T00:00:00Z",
     last_fetch: lastFetch,
@@ -32,6 +32,7 @@ function mkRecord(domain: string, lastFetch: string): DomainRecord {
       tier3: emptyStat(),
       tier4: emptyStat(),
       github: emptyStat(),
+      solver: emptyStat(),
     },
   };
 }
@@ -78,7 +79,7 @@ describe("writeSnapshot + loadLatestSnapshot", () => {
 
     const loaded = await loadLatestSnapshot(dir);
     expect(loaded?.count).toBe(1);
-    expect(loaded?.schema_version).toBe(5);
+    expect(loaded?.schema_version).toBe(6);
     expect(loaded?.records[0].domain).toBe("a.com");
 
     // FW-01: atomic write leaves no leftover .tmp file behind.
