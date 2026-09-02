@@ -13,6 +13,8 @@ import {
   currentWindowStat,
   type DomainRecord,
   parseDomainRecord,
+  TIER_SLOT_KEYS,
+  type TierSlotKey,
   type TierStat,
   TIER_STATS_WINDOW_MS as WINDOW_MS,
 } from "./domain-db.js";
@@ -28,16 +30,13 @@ const SCAN_COUNT = 200;
 // complete.
 export const DEFAULT_MAX_KEYS = 5000;
 
-// Slots aggregated across the tier_stats_30d block. Mirrors the domain-db
-// TIER_KEY value union (tier1-4 cascade + github fast path).
-export type TierSlotName = "tier1" | "tier2" | "tier3" | "tier4" | "github";
-const TIER_SLOTS: readonly TierSlotName[] = [
-  "tier1",
-  "tier2",
-  "tier3",
-  "tier4",
-  "github",
-];
+// Slots aggregated across the tier_stats_30d block. Re-exported from domain-db
+// rather than restated: this list used to be a second copy of the same closed
+// set, and a slot added to the record but missed here would be silently
+// excluded from every aggregate (an array literal is not exhaustiveness-checked
+// against the union it is typed with).
+export type TierSlotName = TierSlotKey;
+const TIER_SLOTS = TIER_SLOT_KEYS;
 
 // A domain is "failing" if it has enough attempts to judge and a low overall
 // success rate. Tuned to surface the raw.githubusercontent.com-style cases
@@ -155,13 +154,9 @@ export function aggregateDomainStats(
   truncated = false,
   now: number = Date.now(),
 ): DomainAggregate {
-  const tiers: Record<TierSlotName, TierAggregate> = {
-    tier1: emptyTierAggregate(),
-    tier2: emptyTierAggregate(),
-    tier3: emptyTierAggregate(),
-    tier4: emptyTierAggregate(),
-    github: emptyTierAggregate(),
-  };
+  const tiers = Object.fromEntries(
+    TIER_SLOTS.map((slot) => [slot, emptyTierAggregate()]),
+  ) as Record<TierSlotName, TierAggregate>;
   let seenNeverFetched = 0;
   const failing: FailingDomain[] = [];
 
@@ -258,13 +253,9 @@ export function summarizeDomainRecord(
     first_seen: record.first_seen,
     last_fetch: record.last_fetch,
     preferred_strategy: record.preferred_strategy ?? null,
-    tiers: {
-      tier1: tierAggregateOf(t.tier1, now),
-      tier2: tierAggregateOf(t.tier2, now),
-      tier3: tierAggregateOf(t.tier3, now),
-      tier4: tierAggregateOf(t.tier4, now),
-      github: tierAggregateOf(t.github, now),
-    },
+    tiers: Object.fromEntries(
+      TIER_SLOTS.map((slot) => [slot, tierAggregateOf(t[slot], now)]),
+    ) as Record<TierSlotName, TierAggregate>,
     capabilities: {
       llms_full_txt: record.capabilities.llms_full_txt?.present ?? false,
       robots_allows_us: record.capabilities.robots_txt
@@ -322,6 +313,7 @@ export function formatDomainRecord(
     tierLine("tier3 (raw)      ", t.tier3, now),
     tierLine("tier4 (wayback)  ", t.tier4, now),
     tierLine("github (fastpath)", t.github, now),
+    tierLine("solver (byparr) ", t.solver, now),
   ];
 
   const meta = record.capabilities.metadata_fetch;

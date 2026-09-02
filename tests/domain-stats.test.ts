@@ -24,7 +24,7 @@ function mkRecord(
   capabilities: DomainRecord["capabilities"] = {},
 ): DomainRecord {
   return {
-    schema_version: 5,
+    schema_version: 6,
     domain,
     first_seen: "2026-05-01T00:00:00Z",
     last_fetch: "2026-06-01T00:00:00Z",
@@ -35,6 +35,7 @@ function mkRecord(
       tier3: stat(0, 0, 0),
       tier4: stat(0, 0, 0),
       github: stat(0, 0, 0),
+      solver: stat(0, 0, 0),
       ...tiers,
     },
   };

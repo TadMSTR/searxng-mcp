@@ -33,7 +33,7 @@ describe("dump-domain CLI — present-domain case", () => {
     const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
     process.argv[2] = "docs.example.com";
     getDomainRecordMock.mockResolvedValueOnce({
-      schema_version: 5,
+      schema_version: 6,
       domain: "docs.example.com",
       first_seen: "2026-05-01T00:00:00Z",
       last_fetch: "2026-06-01T00:00:00Z",
@@ -55,6 +55,7 @@ describe("dump-domain CLI — present-domain case", () => {
         tier3: stat(0, 0, 0),
         tier4: stat(3, 2, 1),
         github: stat(5, 5, 0),
+        solver: stat(5, 5, 0),
       },
     });
 
@@ -84,7 +85,7 @@ describe("dump-domain CLI — present-domain case", () => {
     const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
     process.argv[2] = "sparse.example.com";
     getDomainRecordMock.mockResolvedValueOnce({
-      schema_version: 5,
+      schema_version: 6,
       domain: "sparse.example.com",
       first_seen: "2026-05-01T00:00:00Z",
       last_fetch: "2026-06-01T00:00:00Z",
@@ -95,6 +96,7 @@ describe("dump-domain CLI — present-domain case", () => {
         tier3: stat(0, 0, 0),
         tier4: stat(0, 0, 0),
         github: stat(0, 0, 0),
+        solver: stat(0, 0, 0),
       },
     });
 
@@ -111,7 +113,7 @@ describe("dump-domain CLI — present-domain case", () => {
     const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
     process.argv[2] = "flaky.example.com";
     getDomainRecordMock.mockResolvedValueOnce({
-      schema_version: 5,
+      schema_version: 6,
       domain: "flaky.example.com",
       first_seen: "2026-05-01T00:00:00Z",
       last_fetch: "2026-06-01T00:00:00Z",
@@ -122,6 +124,7 @@ describe("dump-domain CLI — present-domain case", () => {
         tier3: stat(0, 0, 0),
         tier4: stat(0, 0, 0),
         github: stat(0, 0, 0),
+        solver: stat(0, 0, 0),
       },
     });
 

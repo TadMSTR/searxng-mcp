@@ -23,13 +23,15 @@ import {
   type DomainRecord,
   domainKey,
   SCHEMA_VERSION,
+  TIER_SLOT_KEYS,
 } from "./domain-db.js";
 
 const SNAPSHOT_PREFIX = "domain-db-";
 const SNAPSHOT_SUFFIX = ".json";
-// Tier slots every well-formed record must carry (mirrors domain-db's
-// tier_stats_30d). Used by the restore-path structural guard.
-const TIER_SLOTS = ["tier1", "tier2", "tier3", "tier4", "github"] as const;
+// Tier slots every well-formed record must carry. Taken from domain-db rather
+// than restated: a slot missing from this list would let the restore guard
+// admit a structurally incomplete record.
+const TIER_SLOTS = TIER_SLOT_KEYS;
 // Matches only snapshots this module writes: the prefix, an ISO-ish timestamp
 // (digits, T, Z, dashes, dots), then .json. Anything else in the dir is ignored.
 const SNAPSHOT_FILE_RE = /^domain-db-[0-9TZ.-]+\.json$/;

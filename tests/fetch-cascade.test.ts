@@ -31,7 +31,7 @@ function stat(attempts: number, ok: number, fail: number) {
 
 function record(overrides: Partial<DomainRecord>): DomainRecord {
   return {
-    schema_version: 5,
+    schema_version: 6,
     domain: "example.com",
     first_seen: "2026-05-01T00:00:00Z",
     last_fetch: "2026-05-01T00:00:00Z",
@@ -42,6 +42,7 @@ function record(overrides: Partial<DomainRecord>): DomainRecord {
       tier3: stat(0, 0, 0),
       tier4: stat(0, 0, 0),
       github: stat(0, 0, 0),
+      solver: stat(0, 0, 0),
     },
     ...overrides,
   };
@@ -104,6 +105,7 @@ describe("getTiers — active tier list", () => {
             tier3: stat(0, 0, 0),
             tier4: stat(0, 0, 0),
             github: stat(0, 0, 0),
+            solver: stat(0, 0, 0),
           },
         }),
       ),
@@ -142,6 +144,7 @@ describe("getTiers — active tier list", () => {
             tier3: stat(0, 0, 0),
             tier4: stat(0, 0, 0),
             github: stat(0, 0, 0),
+            solver: stat(0, 0, 0),
           },
         }),
       ),
@@ -160,6 +163,7 @@ describe("getTiers — active tier list", () => {
             tier3: stat(0, 0, 0),
             tier4: stat(0, 0, 0),
             github: stat(0, 0, 0),
+            solver: stat(0, 0, 0),
           },
         }),
       ),

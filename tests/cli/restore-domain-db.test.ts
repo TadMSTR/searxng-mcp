@@ -24,7 +24,7 @@ function emptyStat() {
 
 function mkRecord(domain: string, lastFetch: string): DomainRecord {
   return {
-    schema_version: 5,
+    schema_version: 6,
     domain,
     first_seen: "2026-05-01T00:00:00Z",
     last_fetch: lastFetch,
@@ -35,6 +35,7 @@ function mkRecord(domain: string, lastFetch: string): DomainRecord {
       tier3: emptyStat(),
       tier4: emptyStat(),
       github: emptyStat(),
+      solver: emptyStat(),
     },
   };
 }

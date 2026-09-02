@@ -13,7 +13,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../src/config.js", () => ({
   FETCH_CACHE_TTL_SECONDS: 86400,
-  WAYBACK_ENABLED: false,
+  WAYBACK_ENABLED: true,
   YOUTUBE_TRANSCRIPT_ENABLED: false,
   YOUTUBE_IGNORE_ROBOTS: false,
   REDDIT_FASTPATH_ENABLED: false,
@@ -111,6 +111,7 @@ vi.mock("../src/tiers/index.js", () => ({
   githubFetch: vi.fn(),
   isGithubUrl: () => false,
   rawFetch: vi.fn(),
+  solverFetch: vi.fn().mockResolvedValue(null),
   tier2: { name: "tier2_crawl4ai", slot: "tier2", fetch: vi.fn() },
   waybackFetch: vi.fn().mockResolvedValue(null),
 }));
@@ -121,11 +122,14 @@ import { recordTierAttempt } from "../src/domain-db.js";
 import { events } from "../src/events.js";
 import { fetchPage } from "../src/fetch.js";
 import { incCounter } from "../src/observability.js";
+import { solverFetch, waybackFetch } from "../src/tiers/index.js";
 
 const cacheSetMock = vi.mocked(cacheSet);
 const recordTierAttemptMock = vi.mocked(recordTierAttempt);
 const incCounterMock = vi.mocked(incCounter);
 const fetchTierMissMock = vi.mocked(events.fetchTierMiss);
+const solverFetchMock = vi.mocked(solverFetch);
+const waybackFetchMock = vi.mocked(waybackFetch);
 
 const URL = "https://protected.example.com/article";
 
@@ -141,6 +145,8 @@ beforeEach(() => {
   tier1Fetch.mockResolvedValue(null);
   tier2Fetch.mockResolvedValue(null);
   tier3Fetch.mockResolvedValue(null);
+  solverFetchMock.mockResolvedValue(null);
+  waybackFetchMock.mockResolvedValue(null);
 });
 
 afterEach(() => vi.restoreAllMocks());
@@ -252,5 +258,114 @@ describe("fetchPage — a detected challenge is a miss, not a hit", () => {
       "error",
       "connection reset",
     );
+  });
+});
+
+describe("fetchPage — the solver gate", () => {
+  it("NEVER invokes the solver on a normal URL that a tier serves", async () => {
+    // End-to-end shape check for the common case. Note it does NOT by itself
+    // constrain the gate: tier1 succeeds here, so execution never reaches the
+    // solver dispatch point and this would pass even with the gate removed.
+    // The test below is the one that actually holds the gate — it drives every
+    // tier to miss, so the dispatch point IS reached and only the
+    // challenge_detected condition keeps the solver out.
+    tier1Fetch.mockResolvedValue({ title: "t", url: URL, text: "body" });
+
+    await fetchPage(URL);
+
+    expect(solverFetchMock).not.toHaveBeenCalled();
+    expect(incCounterMock).not.toHaveBeenCalledWith("fetch", {
+      tier: "solver_byparr",
+      outcome: expect.anything(),
+    });
+  });
+
+  it("does not invoke the solver when every tier misses without a challenge", async () => {
+    // THE gate control. Every tier misses, so the solver dispatch point is
+    // reached and the only thing keeping the solver out is the absence of a
+    // challenge. Verified to go red when the `challengeDetected` condition is
+    // removed. An ordinary miss is not a challenge — it goes straight to
+    // wayback.
+    tier1Fetch.mockResolvedValue(null);
+    tier2Fetch.mockRejectedValue(new Error("connection reset"));
+    tier3Fetch.mockResolvedValue(null);
+
+    await expect(fetchPage(URL)).rejects.toThrow("All fetch tiers failed");
+
+    expect(solverFetchMock).not.toHaveBeenCalled();
+    expect(waybackFetchMock).toHaveBeenCalledOnce();
+  });
+
+  it("invokes the solver once a tier reports a challenge", async () => {
+    tier1Fetch.mockRejectedValue(challenge());
+    solverFetchMock.mockResolvedValue({
+      title: "Solved Article",
+      url: URL,
+      text: "content behind the challenge",
+    });
+
+    const result = await fetchPage(URL);
+
+    expect(solverFetchMock).toHaveBeenCalledOnce();
+    expect(result.text).toBe("content behind the challenge");
+    expect(recordTierAttemptMock).toHaveBeenCalledWith(
+      URL,
+      "solver_byparr",
+      "hit",
+    );
+  });
+
+  it("runs the solver after the cascade and before wayback", async () => {
+    // Ordering matters both ways: a browser must not run ahead of the cheap raw
+    // fetch that frequently succeeds, and a solved live page beats an archived
+    // one.
+    const order: string[] = [];
+    tier3Fetch.mockImplementation(async () => {
+      order.push("tier3");
+      throw challenge();
+    });
+    solverFetchMock.mockImplementation(async () => {
+      order.push("solver");
+      return null;
+    });
+    waybackFetchMock.mockImplementation(async () => {
+      order.push("wayback");
+      return null;
+    });
+
+    await expect(fetchPage(URL)).rejects.toThrow("All fetch tiers failed");
+
+    expect(order).toEqual(["tier3", "solver", "wayback"]);
+  });
+
+  it("degrades cleanly into wayback when the solver fails to solve", async () => {
+    // Byparr's own README states a bypass is not guaranteed, so a solver miss
+    // is the expected path, not an error path.
+    tier1Fetch.mockRejectedValue(challenge());
+    solverFetchMock.mockResolvedValue(null);
+    waybackFetchMock.mockResolvedValue({
+      title: "[Archived] Article",
+      url: URL,
+      text: "archived body",
+    });
+
+    const result = await fetchPage(URL);
+
+    expect(solverFetchMock).toHaveBeenCalledOnce();
+    expect(result.text).toBe("archived body");
+  });
+
+  it("does not let a challenge on one request arm the gate on the next", async () => {
+    // The flag is a local in fetchPage, so it is request-scoped by
+    // construction. This asserts that property rather than trusting it.
+    tier1Fetch.mockRejectedValueOnce(challenge());
+    await expect(fetchPage(URL)).rejects.toThrow("All fetch tiers failed");
+    expect(solverFetchMock).toHaveBeenCalledOnce();
+
+    solverFetchMock.mockClear();
+    tier1Fetch.mockResolvedValue({ title: "t", url: URL, text: "clean body" });
+    await fetchPage("https://other.example.com/page");
+
+    expect(solverFetchMock).not.toHaveBeenCalled();
   });
 });
