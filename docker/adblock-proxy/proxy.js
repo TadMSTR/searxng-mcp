@@ -22,6 +22,7 @@ const http = require("http");
 const net = require("net");
 const { URL } = require("url");
 const { FiltersEngine, Request } = require("@ghostery/adblocker");
+const { resolveSafeAddress } = require("./ssrf.js");
 
 const PORT = parseInt(process.env.PORT ?? "8118", 10);
 const FILTERS_URLS = (
@@ -94,40 +95,56 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  const options = {
-    hostname: parsed.hostname,
-    port: parsed.port || 80,
-    path: parsed.pathname + parsed.search,
-    method: req.method,
-    headers: { ...req.headers, host: parsed.host },
-  };
-
-  const proxy = http.request(options, (proxyRes) => {
-    res.writeHead(proxyRes.statusCode, proxyRes.headers);
-    proxyRes.pipe(res, { end: true });
-  });
-
-  proxy.on("error", (err) => {
-    if (!res.headersSent) {
-      res.writeHead(502);
+  // SSRF: resolve and validate before connecting. This path previously had no
+  // address check of any kind — only the CONNECT handler did — so a plain-HTTP
+  // target resolving to an internal address was proxied straight through.
+  resolveSafeAddress(parsed.hostname).then((address) => {
+    if (!address) {
+      if (LOG_BLOCKED) {
+        console.log(`[adblock-proxy] refused non-public target ${parsed.hostname}`);
+      }
+      res.writeHead(403);
       res.end();
+      return;
     }
-  });
 
-  req.pipe(proxy, { end: true });
+    const options = {
+      // Connect to the validated ADDRESS, not the hostname: re-resolving by
+      // name here would reopen the DNS-rebinding window the check just closed.
+      // The Host header still carries the original name, so virtual hosts and
+      // redirects behave unchanged.
+      hostname: address,
+      port: parsed.port || 80,
+      path: parsed.pathname + parsed.search,
+      method: req.method,
+      headers: { ...req.headers, host: parsed.host },
+    };
+
+    const proxy = http.request(options, (proxyRes) => {
+      res.writeHead(proxyRes.statusCode, proxyRes.headers);
+      proxyRes.pipe(res, { end: true });
+    });
+
+    proxy.on("error", () => {
+      if (!res.headersSent) {
+        res.writeHead(502);
+        res.end();
+      }
+    });
+
+    req.pipe(proxy, { end: true });
+  });
 });
 
-// RFC-1918 / loopback blocklist — applied to CONNECT targets to prevent SSRF pivot.
-// Mirrors the patterns in src/fetch-utils.ts:assertPublicUrl.
-// SECURITY[control]: blocks internal address tunneling via CONNECT. Audit: 2026-06-05/searxng-mcp-transport-2026-06.
-const PRIVATE_HOSTS = [
-  /^localhost$/i, /^127\./, /^0\.0\.0\.0$/,
-  /^10\./, /^192\.168\./, /^172\.(1[6-9]|2[0-9]|3[01])\./,
-  /^host\.docker\.internal$/i,
-  /^::1$/, /^fc[0-9a-f]{2}:/i, /^fe[89ab][0-9a-f]:/i, /^fd[0-9a-f]{2}:/i,
-];
-
 // HTTPS CONNECT — TCP tunnel, no interception
+//
+// SECURITY[control]: blocks internal-address tunneling via CONNECT.
+// Audit: 2026-06-05/searxng-mcp-transport-2026-06 (original string blocklist),
+// 2026-09-02/searxng-mcp-solver-tier-2026-09 (MEDIUM, SSRF-10 — the string
+// blocklist tested the literal CONNECT hostname and then called
+// net.connect(port, host), which re-resolved with no rebinding protection).
+// Now resolved and validated before connecting, and pinned to the validated
+// address so there is no window to race.
 server.on("connect", (req, clientSocket, head) => {
   const [host, portStr] = (req.url ?? "").split(":");
   const port = parseInt(portStr ?? "443", 10);
@@ -138,26 +155,35 @@ server.on("connect", (req, clientSocket, head) => {
     return;
   }
 
-  if (PRIVATE_HOSTS.some((r) => r.test(host))) {
-    clientSocket.write("HTTP/1.1 403 Forbidden\r\n\r\n");
-    clientSocket.destroy();
-    return;
-  }
+  resolveSafeAddress(host).then((address) => {
+    if (!address) {
+      if (LOG_BLOCKED) {
+        console.log(`[adblock-proxy] refused non-public CONNECT ${host}`);
+      }
+      clientSocket.write("HTTP/1.1 403 Forbidden\r\n\r\n");
+      clientSocket.destroy();
+      return;
+    }
 
-  const serverSocket = net.connect(port, host, () => {
-    clientSocket.write("HTTP/1.1 200 Connection Established\r\n\r\n");
-    serverSocket.write(head);
-    serverSocket.pipe(clientSocket);
-    clientSocket.pipe(serverSocket);
-  });
+    // Connect to the validated address, not the name. TLS is end-to-end through
+    // this tunnel — the client sends its own SNI and validates the origin
+    // certificate itself — so pinning the address here changes nothing the
+    // client relies on.
+    const serverSocket = net.connect(port, address, () => {
+      clientSocket.write("HTTP/1.1 200 Connection Established\r\n\r\n");
+      serverSocket.write(head);
+      serverSocket.pipe(clientSocket);
+      clientSocket.pipe(serverSocket);
+    });
 
-  serverSocket.on("error", () => {
-    clientSocket.write("HTTP/1.1 502 Bad Gateway\r\n\r\n");
-    clientSocket.destroy();
-  });
+    serverSocket.on("error", () => {
+      clientSocket.write("HTTP/1.1 502 Bad Gateway\r\n\r\n");
+      clientSocket.destroy();
+    });
 
-  clientSocket.on("error", () => {
-    serverSocket.destroy();
+    clientSocket.on("error", () => {
+      serverSocket.destroy();
+    });
   });
 });
 
