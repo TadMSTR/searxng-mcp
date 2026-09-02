@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const mockFetch = vi.fn();
 vi.stubGlobal("fetch", mockFetch);
 
+import { ChallengeDetectedError } from "../../src/challenge.js";
 import { rawFetch } from "../../src/tiers/raw.js";
 
 beforeEach(() => {
@@ -108,5 +109,63 @@ describe("rawFetch", () => {
     await expect(rawFetch(URL)).rejects.toThrow(
       "PDF content cannot be extracted by raw fetch",
     );
+  });
+});
+
+// Cloudflare challenge detection at the tier3 boundary. The 200 case is the
+// one that mattered: before this, res.ok was true, Readability extracted
+// "Just a moment..." as the article, and the cascade booked a hit.
+describe("rawFetch — challenge detection", () => {
+  const INTERSTITIAL_200 = `<!DOCTYPE html><html><head>
+<title>Just a moment...</title></head><body>
+<h1>Verifying you are human. This may take a few seconds.</h1>
+<script>window._cf_chl_opt={cvId:'3'};</script>
+<script src="/cdn-cgi/challenge-platform/h/b/orchestrate/chl_page/v1"></script>
+</body></html>`;
+
+  it("throws ChallengeDetectedError on a 200 interstitial", async () => {
+    mockFetch.mockResolvedValueOnce(
+      mockHtmlResponse(INTERSTITIAL_200, {
+        headers: { "cf-ray": "8f2a1b3c4d5e6f70-LHR", server: "cloudflare" },
+      }),
+    );
+    await expect(rawFetch(URL)).rejects.toBeInstanceOf(ChallengeDetectedError);
+  });
+
+  it("throws ChallengeDetectedError on a 503 from a Cloudflare edge", async () => {
+    // Ahead of the generic !res.ok throw, so the attempt is recorded as
+    // challenge_detected rather than "Raw fetch error: 503".
+    mockFetch.mockResolvedValueOnce(
+      mockHtmlResponse("", {
+        status: 503,
+        headers: { "cf-ray": "8f2a1b3c4d5e6f70-LHR" },
+      }),
+    );
+    const err = await rawFetch(URL).catch((e) => e);
+    expect(err).toBeInstanceOf(ChallengeDetectedError);
+    expect(err.message).not.toContain("Raw fetch error");
+  });
+
+  it("still throws the generic error on an honest 403", async () => {
+    mockFetch.mockResolvedValueOnce(
+      mockHtmlResponse("", { status: 403, headers: { server: "nginx" } }),
+    );
+    const err = await rawFetch(URL).catch((e) => e);
+    expect(err).not.toBeInstanceOf(ChallengeDetectedError);
+    expect(err.message).toContain("Raw fetch error: 403");
+  });
+
+  it("negative control — a page using 'just a moment' in prose is still a hit", async () => {
+    const HONEST = `<html><head><title>Notes on waiting well</title></head><body>
+      <article><h1>Notes on waiting well</h1>
+      <p>Just a moment ago I was convinced the build was broken, and it was not.</p>
+      <p>Give it just a moment and the deploy settles down on its own again.</p>
+      </article></body></html>`;
+    mockFetch.mockResolvedValueOnce(
+      mockHtmlResponse(HONEST, { headers: { server: "cloudflare" } }),
+    );
+    const result = await rawFetch(URL, 10000);
+    expect(result.title).toBe("Notes on waiting well");
+    expect(result.text).toContain("Just a moment ago");
   });
 });

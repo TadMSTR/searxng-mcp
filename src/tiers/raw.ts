@@ -1,6 +1,7 @@
 import { Readability } from "@mozilla/readability";
 import { JSDOM } from "jsdom";
 import { ProxyAgent } from "undici";
+import { ChallengeDetectedError, detectChallenge } from "../challenge.js";
 import { ADBLOCK_PROXY_URL } from "../config.js";
 import {
   classifyContentType,
@@ -51,10 +52,23 @@ export async function rawFetch(
     // (OE-02).
     throw new Error(`Redirect not followed (${res.status})`);
   }
+  // Status/header challenge (403 or 503 from a Cloudflare edge). Checked ahead
+  // of the generic !res.ok throw so the attempt is recorded as
+  // `challenge_detected` rather than "Raw fetch error: 403" — the solver gate
+  // keys on that reason.
+  const statusSignal = detectChallenge(res.status, res.headers, null);
+  if (statusSignal) throw new ChallengeDetectedError(statusSignal);
+
   if (!res.ok)
     throw new Error(`Raw fetch error: ${res.status} ${res.statusText}`);
 
   const body = await readBoundedText(res);
+
+  // The 200-with-interstitial case, and the reason this check exists: res.ok is
+  // true, so without it Readability extracts "Just a moment..." as an article
+  // and the cascade books a hit.
+  const bodySignal = detectChallenge(res.status, res.headers, body);
+  if (bodySignal) throw new ChallengeDetectedError(bodySignal);
 
   // Structured payloads short-circuit before JSDOM. Readability over a JSON
   // document finds no article, falls through to returning the raw string, and

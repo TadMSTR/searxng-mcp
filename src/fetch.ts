@@ -1,4 +1,9 @@
 import { cacheGet, cacheSet, fetchCacheKey } from "./cache.js";
+import {
+  CHALLENGE_MISS_REASON,
+  ChallengeDetectedError,
+  type ChallengeSignal,
+} from "./challenge.js";
 import { FETCH_CACHE_TTL_SECONDS, WAYBACK_ENABLED } from "./config.js";
 import { probeStructuredContent } from "./content-type.js";
 import {
@@ -83,10 +88,20 @@ function applyPostExtract(
   };
 }
 
+/**
+ * Run one tier and record its outcome (metrics, events, domain-db).
+ *
+ * `onChallenge` is how a detected challenge escapes the tier: the tier throws
+ * ChallengeDetectedError, this wrapper turns it into a miss, and the callback
+ * lets the caller remember that a challenge was seen for *this* request. The
+ * flag it sets is a local in fetchPage, so it is request-scoped by
+ * construction — no shared or ambient state.
+ */
 async function runTier<T extends TierResult | null>(
   tier: TierName,
   url: string,
   fn: () => Promise<T>,
+  onChallenge?: (signal: ChallengeSignal) => void,
 ): Promise<T> {
   const t0 = Date.now();
   try {
@@ -105,6 +120,26 @@ async function runTier<T extends TierResult | null>(
     return out;
   } catch (err) {
     const latency_ms = Date.now() - t0;
+    // A detected challenge is a miss, not an error: the tier reached the origin
+    // and got a well-formed response, it just wasn't content. Recording it as
+    // `challenge_detected` rather than the generic `empty_result` is what makes
+    // the solver gate possible, and it stops the interstitial being booked as a
+    // hit (cached, and counted as proof the tier works on this domain).
+    if (err instanceof ChallengeDetectedError) {
+      incCounter("fetch", { tier, outcome: "miss" });
+      recordHistogram("fetch", latency_ms / 1000, { tier, outcome: "miss" });
+      events.fetchTierMiss({
+        url,
+        tier,
+        reason: CHALLENGE_MISS_REASON,
+        latency_ms,
+      });
+      recordTierAttempt(url, tier, "miss", CHALLENGE_MISS_REASON).catch(
+        () => {},
+      );
+      onChallenge?.(err.signal);
+      return null as T;
+    }
     const reason = err instanceof Error ? err.message : "error";
     incCounter("fetch", { tier, outcome: "error" });
     recordHistogram("fetch", latency_ms / 1000, { tier, outcome: "error" });
