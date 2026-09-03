@@ -17,6 +17,7 @@ const CAP_ENV = [
   "WAYBACK_ENABLED",
   "OTEL_EXPORTER_OTLP_ENDPOINT",
   "NATS_URL",
+  "HISTER_TOKEN",
 ];
 
 function clearCapEnv() {
@@ -80,6 +81,31 @@ describe("capabilityLine", () => {
     expect(capabilityLine()).toContain("capabilities on=");
     expect(fetchSpy).not.toHaveBeenCalled();
     fetchSpy.mockRestore();
+  });
+
+  // The line is built from Object.keys of a record whose values are already
+  // collapsed to booleans, so no URL or credential can reach it. That is a
+  // security property of the construction rather than of a redaction step, and
+  // it would regress silently if the line were ever "improved" to show where
+  // each service points — hence an explicit test rather than a comment.
+  it("emits no URL, host or credential from any configured service", async () => {
+    process.env.HISTER_URL = "http://hister.internal.example:8080";
+    process.env.HISTER_TOKEN = "s3cret-hister-token";
+    process.env.LLM_BASE_URL = "http://llm.internal.example:8000/v1";
+    process.env.KIWIX_URL = "http://kiwix.internal.example:8292";
+    process.env.SOLVER_URL = "http://byparr.internal.example:8191";
+    process.env.NATS_URL = "nats://user:pw@nats.internal.example:4222";
+    const { capabilityLine } = await import("../src/capabilities.js");
+    const line = capabilityLine();
+    for (const leak of [
+      "internal.example",
+      "s3cret-hister-token",
+      "://",
+      "8080",
+      "user:pw",
+    ]) {
+      expect(line).not.toContain(leak);
+    }
   });
 
   it("agrees with tierConfigured about the tiers", async () => {
