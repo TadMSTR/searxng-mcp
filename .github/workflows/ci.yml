@@ -122,18 +122,32 @@ jobs:
         with:
           node-version: "22"
 
-      # npmjs.org retired the audit endpoints `pnpm audit` depends on (410,
-      # even on latest pnpm) — npm's own audit already speaks the new bulk
-      # advisory endpoint, so generate a throwaway lockfile from package.json
-      # and audit with that instead. See SXNG-15.
-      - name: Generate npm lockfile for audit
-        run: npm install --package-lock-only
+      - name: Install pnpm
+        run: corepack enable
 
-      # Fail only on high+ advisories. A moderate, Windows-only serve-static
-      # path-traversal in @hono/node-server <2.0.5 (GHSA-frvp-7c67-39w9) is
-      # pulled in transitively by @modelcontextprotocol/sdk, which pins
-      # ^1.19.9 — no patched version exists in range, and the vulnerable code
-      # path isn't used (Linux deploy; node:http transport, not hono
-      # serve-static). Revisit when the SDK bumps hono to 2.x. Tracked: vikunja#218.
+      # Audit `pnpm-lock.yaml` — the tree the Docker image is actually built
+      # from. This job used to run `npm install --package-lock-only` and audit
+      # *that*, which re-resolves every dependency from the semver ranges in
+      # package.json. It therefore reported on "what a fresh install would get
+      # today", a tree that ships nowhere: it read undici 7.29.0 and passed
+      # green while the deployed container ran 7.28.0 with four highs. No
+      # --audit-level value could have caught that — the threshold picks which
+      # findings fail, not which tree is read. See vikunja#633.
+      #
+      # The npm detour existed because npmjs.org 410'd the endpoints `pnpm
+      # audit` used (SXNG-15 / vikunja#145). That premise is dead: pnpm audit
+      # returns real findings and real exit codes against the real lockfile.
+      #
+      # No --audit-level, which means pnpm's default: `low`. The tree is clean
+      # at that setting, so a threshold has nothing to suppress and would only
+      # hide the next version drift. If an advisory ever lands with no fix in
+      # range, add a narrow, dated, ticket-referenced `--ignore <CVE>` for that
+      # one advisory — do not raise the threshold. `--ignore-registry-errors`
+      # is deliberately absent too: a registry outage should be visible here,
+      # not silently green.
+      #
+      # No `pnpm install` step: audit reads the lockfile directly. The lockfile
+      # is kept honest by the `test` job's `pnpm install --frozen-lockfile`,
+      # which fails if it has drifted from package.json.
       - name: Audit dependencies
-        run: npm audit --omit=dev --audit-level=high
+        run: pnpm audit --prod
