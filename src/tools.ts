@@ -46,7 +46,15 @@ interface SearchEventCtx {
   num_results: number;
 }
 
+/**
+ * The three tools that share the `search` histogram. Naming the union rather
+ * than taking a bare string keeps a typo out of the label set — a stray value
+ * would not fail anything at runtime, it would quietly create a fourth series.
+ */
+type SearchToolName = "search" | "search_and_fetch" | "search_and_summarize";
+
 async function withSearchEvents<T>(
+  toolName: SearchToolName,
   ctx: SearchEventCtx,
   fn: () => Promise<{
     ranked: SearxResult[];
@@ -60,11 +68,14 @@ async function withSearchEvents<T>(
     const { ranked, result, rerankApplied } = await fn();
     const latency_ms = Date.now() - t0;
     incCounter("search", {
+      tool: toolName,
       profile: ctx.profile ?? "default",
       expand: ctx.expand ? "true" : "false",
     });
     recordHistogram("search", latency_ms / 1000, {
+      tool: toolName,
       profile: ctx.profile ?? "default",
+      outcome: "ok",
     });
     events.searchCompleted({
       result_count: ranked.length,
@@ -74,7 +85,21 @@ async function withSearchEvents<T>(
     });
     return result;
   } catch (err) {
+    // Record latency on the failure path too. Previously only `errors_total`
+    // was incremented here, so a search that failed after 40s and one that
+    // failed instantly were indistinguishable in the metrics — which is
+    // precisely the question asked of this histogram during the 300s stall.
+    //
+    // `outcome` keeps the two populations separable: folding error latencies
+    // into the success distribution unlabelled would corrupt the p99 that the
+    // histogram exists to report.
+    recordHistogram("search", (Date.now() - t0) / 1000, {
+      tool: toolName,
+      profile: ctx.profile ?? "default",
+      outcome: "error",
+    });
     incCounter("errors", {
+      tool: toolName,
       stage: "search",
       error_type: err instanceof Error ? err.name : "unknown",
     });
@@ -85,6 +110,29 @@ async function withSearchEvents<T>(
     });
     throw err;
   }
+}
+
+/**
+ * `instrumentTool` + `withSearchEvents` for the three search tools, so the tool
+ * name is written once per call site. Passing it separately to each would let
+ * the span name and the metric label drift apart silently.
+ *
+ * NOTE: this does NOT make the histogram able to see a hang. Both the success
+ * and failure recordings happen after `await fn()` settles, so a call that
+ * never returns still records nothing at all. Closing that needs a watchdog
+ * timer independent of the awaited promise, which is deliberately out of scope
+ * here — see CHANGELOG.
+ */
+async function instrumentSearchTool<T>(
+  toolName: SearchToolName,
+  ctx: SearchEventCtx,
+  fn: () => Promise<{
+    ranked: SearxResult[];
+    result: T;
+    rerankApplied: boolean;
+  }>,
+): Promise<T> {
+  return instrumentTool(toolName, () => withSearchEvents(toolName, ctx, fn));
 }
 
 const DomainProfileSchema = z
@@ -189,42 +237,41 @@ export async function handleSearch({
   engines?: string;
   site?: string | string[];
 }) {
-  return instrumentTool("search", () =>
-    withSearchEvents(
-      { query, profile: domain_profile, expand, time_range, num_results },
-      async () => {
-        const { results: raw, meta } = await searxSearch(
-          query,
-          category ?? "general",
-          num_results,
-          time_range,
-          domain_profile,
-          expand,
-          language,
-          engines,
-          site,
-        );
-        const ranked = await rerankWithFallback(
-          query,
-          raw,
-          num_results,
-          time_range,
-        );
-        return {
-          ranked,
-          rerankApplied: true,
-          result: {
-            content: [
-              {
-                type: "text" as const,
-                text: withMeta(meta, formatResults(ranked)),
-              },
-            ],
-            structuredContent: buildSearchStructured(meta, ranked),
-          },
-        };
-      },
-    ),
+  return instrumentSearchTool(
+    "search",
+    { query, profile: domain_profile, expand, time_range, num_results },
+    async () => {
+      const { results: raw, meta } = await searxSearch(
+        query,
+        category ?? "general",
+        num_results,
+        time_range,
+        domain_profile,
+        expand,
+        language,
+        engines,
+        site,
+      );
+      const ranked = await rerankWithFallback(
+        query,
+        raw,
+        num_results,
+        time_range,
+      );
+      return {
+        ranked,
+        rerankApplied: true,
+        result: {
+          content: [
+            {
+              type: "text" as const,
+              text: withMeta(meta, formatResults(ranked)),
+            },
+          ],
+          structuredContent: buildSearchStructured(meta, ranked),
+        },
+      };
+    },
   );
 }
 
@@ -249,48 +296,156 @@ export async function handleSearchAndFetch({
   engines?: string;
   site?: string | string[];
 }) {
-  return instrumentTool("search_and_fetch", () =>
-    withSearchEvents(
-      {
+  return instrumentSearchTool(
+    "search_and_fetch",
+    {
+      query,
+      profile: domain_profile,
+      expand,
+      time_range,
+      num_results: fetch_count,
+    },
+    async () => {
+      const { results: raw, meta } = await searxSearch(
         query,
-        profile: domain_profile,
-        expand,
+        category ?? "general",
+        5,
         time_range,
-        num_results: fetch_count,
-      },
-      async () => {
-        const { results: raw, meta } = await searxSearch(
-          query,
-          category ?? "general",
-          5,
-          time_range,
-          domain_profile,
-          expand,
-          language,
-          engines,
-          site,
-        );
-        if (raw.length === 0) {
-          return {
-            ranked: [],
-            rerankApplied: false,
-            result: {
-              content: [
-                {
-                  type: "text" as const,
-                  text: withMeta(meta, "No results found."),
-                },
-              ],
+        domain_profile,
+        expand,
+        language,
+        engines,
+        site,
+      );
+      if (raw.length === 0) {
+        return {
+          ranked: [],
+          rerankApplied: false,
+          result: {
+            content: [
+              {
+                type: "text" as const,
+                text: withMeta(meta, "No results found."),
+              },
+            ],
+          },
+        };
+      }
+      const ranked = await rerankWithFallback(query, raw, 5, time_range);
+      const searchText = formatResults(ranked);
+      const maxCharsPerPage = Math.floor(8000 / fetch_count);
+      const toFetch = ranked.slice(0, fetch_count);
+      const fetched = await Promise.allSettled(
+        toFetch.map((r) => fetchPage(r.url, maxCharsPerPage, domain_profile)),
+      );
+      const fetchedSections = fetched
+        .map((result, i) => {
+          if (result.status === "fulfilled") {
+            const { title, text } = result.value;
+            return `\n\n--- Full content: ${title} ---\n${text}`;
+          }
+          const err =
+            result.reason instanceof Error
+              ? result.reason.message
+              : String(result.reason);
+          return `\n\n--- Could not fetch result ${i + 1}: ${err} ---`;
+        })
+        .join("");
+      return {
+        ranked,
+        rerankApplied: true,
+        result: {
+          content: [
+            {
+              type: "text" as const,
+              text: withMeta(meta, searchText + fetchedSections),
             },
-          };
-        }
-        const ranked = await rerankWithFallback(query, raw, 5, time_range);
-        const searchText = formatResults(ranked);
-        const maxCharsPerPage = Math.floor(8000 / fetch_count);
-        const toFetch = ranked.slice(0, fetch_count);
-        const fetched = await Promise.allSettled(
-          toFetch.map((r) => fetchPage(r.url, maxCharsPerPage, domain_profile)),
+          ],
+        },
+      };
+    },
+  );
+}
+
+export async function handleSearchAndSummarize({
+  query,
+  fetch_count,
+  category,
+  time_range,
+  domain_profile,
+  expand,
+  language,
+  engines,
+  site,
+}: {
+  query: string;
+  fetch_count: number;
+  category?: string;
+  time_range?: string;
+  domain_profile?: string;
+  expand?: boolean;
+  language?: string;
+  engines?: string;
+  site?: string | string[];
+}) {
+  return instrumentSearchTool(
+    "search_and_summarize",
+    {
+      query,
+      profile: domain_profile,
+      expand,
+      time_range,
+      num_results: fetch_count,
+    },
+    async () => {
+      const { results: raw, meta } = await searxSearch(
+        query,
+        category ?? "general",
+        fetch_count + 2,
+        time_range,
+        domain_profile,
+        expand,
+        language,
+        engines,
+        site,
+      );
+      if (raw.length === 0) {
+        return {
+          ranked: [],
+          rerankApplied: false,
+          result: {
+            content: [
+              {
+                type: "text" as const,
+                text: withMeta(meta, "No results found."),
+              },
+            ],
+          },
+        };
+      }
+      const ranked = await rerankWithFallback(
+        query,
+        raw,
+        fetch_count,
+        time_range,
+      );
+      const searchText = formatResults(ranked);
+      const toFetch = ranked.slice(0, fetch_count);
+      const fetched = await Promise.allSettled(
+        toFetch.map((r) => fetchPage(r.url, 4000, domain_profile, true)),
+      );
+      const successfulPages = fetched
+        .map((r) => (r.status === "fulfilled" ? r.value : null))
+        .filter(
+          (r): r is { title: string; url: string; text: string } => r !== null,
         );
+      const summaryResult = await withSpan(
+        "summarize_llm",
+        { "summary.pages": successfulPages.length },
+        () => summarizePages(query, successfulPages),
+      );
+
+      if (!summaryResult.summary) {
         const fetchedSections = fetched
           .map((result, i) => {
             if (result.status === "fulfilled") {
@@ -316,127 +471,16 @@ export async function handleSearchAndFetch({
             ],
           },
         };
-      },
-    ),
-  );
-}
-
-export async function handleSearchAndSummarize({
-  query,
-  fetch_count,
-  category,
-  time_range,
-  domain_profile,
-  expand,
-  language,
-  engines,
-  site,
-}: {
-  query: string;
-  fetch_count: number;
-  category?: string;
-  time_range?: string;
-  domain_profile?: string;
-  expand?: boolean;
-  language?: string;
-  engines?: string;
-  site?: string | string[];
-}) {
-  return instrumentTool("search_and_summarize", () =>
-    withSearchEvents(
-      {
-        query,
-        profile: domain_profile,
-        expand,
-        time_range,
-        num_results: fetch_count,
-      },
-      async () => {
-        const { results: raw, meta } = await searxSearch(
-          query,
-          category ?? "general",
-          fetch_count + 2,
-          time_range,
-          domain_profile,
-          expand,
-          language,
-          engines,
-          site,
-        );
-        if (raw.length === 0) {
-          return {
-            ranked: [],
-            rerankApplied: false,
-            result: {
-              content: [
-                {
-                  type: "text" as const,
-                  text: withMeta(meta, "No results found."),
-                },
-              ],
-            },
-          };
-        }
-        const ranked = await rerankWithFallback(
-          query,
-          raw,
-          fetch_count,
-          time_range,
-        );
-        const searchText = formatResults(ranked);
-        const toFetch = ranked.slice(0, fetch_count);
-        const fetched = await Promise.allSettled(
-          toFetch.map((r) => fetchPage(r.url, 4000, domain_profile, true)),
-        );
-        const successfulPages = fetched
-          .map((r) => (r.status === "fulfilled" ? r.value : null))
-          .filter(
-            (r): r is { title: string; url: string; text: string } =>
-              r !== null,
-          );
-        const summaryResult = await withSpan(
-          "summarize_llm",
-          { "summary.pages": successfulPages.length },
-          () => summarizePages(query, successfulPages),
-        );
-
-        if (!summaryResult.summary) {
-          const fetchedSections = fetched
-            .map((result, i) => {
-              if (result.status === "fulfilled") {
-                const { title, text } = result.value;
-                return `\n\n--- Full content: ${title} ---\n${text}`;
-              }
-              const err =
-                result.reason instanceof Error
-                  ? result.reason.message
-                  : String(result.reason);
-              return `\n\n--- Could not fetch result ${i + 1}: ${err} ---`;
-            })
-            .join("");
-          return {
-            ranked,
-            rerankApplied: true,
-            result: {
-              content: [
-                {
-                  type: "text" as const,
-                  text: withMeta(meta, searchText + fetchedSections),
-                },
-              ],
-            },
-          };
-        }
-        const output = formatSummaryResult(summaryResult);
-        return {
-          ranked,
-          rerankApplied: true,
-          result: {
-            content: [{ type: "text" as const, text: withMeta(meta, output) }],
-          },
-        };
-      },
-    ),
+      }
+      const output = formatSummaryResult(summaryResult);
+      return {
+        ranked,
+        rerankApplied: true,
+        result: {
+          content: [{ type: "text" as const, text: withMeta(meta, output) }],
+        },
+      };
+    },
   );
 }
 
