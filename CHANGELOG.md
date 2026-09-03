@@ -106,6 +106,23 @@ interpretable, and fixes the `domain_stats` output-schema contract so it cannot 
 - `ajv` is now an explicit devDependency. It was reachable only as an auto-installed peer of the
   MCP SDK, which is not a dependency the new schema-contract tests should rest on.
 
+### Security
+
+- **Basic-auth credentials in `SEARXNG_URL` are extracted into an `Authorization` header.** Found by
+  the security audit of this build. Node's `fetch` refuses a URL containing userinfo *synchronously*,
+  before any network I/O, and embeds the whole URL — password included — in the resulting
+  `TypeError`'s own message. So a credentialed instance had two problems at once: it could never
+  serve a single search, and the password reached every sink that forwards an error message. That
+  is the stderr failover line, the `search.failover` NATS event, the generic `error` event (which
+  fires on the single-instance path too), the OTel span exported over OTLP, and the error returned
+  to the calling agent. Credentials are now lifted out at parse time, so `SEARXNG_URLS` is
+  credential-free by construction, and error messages are scrubbed at the generic sinks rather than
+  at each call site.
+
+  The test that was supposed to cover this mocked `fetch`'s rejection as a generic `Error`, whose
+  message can never contain a URL — it asserted the right property against the wrong failure shape.
+  The replacement mocks nothing: real `fetch`, real servers, real refused connections.
+
 ### Not included
 - **`pageno`** was descoped and is tracked as vikunja#639. Pool-and-slice is the right design, but
   it makes the pool size depend on the requested page, and the cached value records no pool size —

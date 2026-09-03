@@ -619,7 +619,7 @@ All service URLs are configurable via environment variables.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `SEARXNG_URL` | `http://localhost:8081` | SearXNG instance URL. Accepts a **list** of interchangeable replicas separated by `,` or `;` (e.g. `http://searxng-a:8080,http://searxng-b:8080`) — tried in order, with failover. A single value behaves exactly as before: one request, one host, no health lookup. Entries that are not valid http(s) URLs are dropped with a warning; if none survive the default is used rather than the server refusing to start. |
+| `SEARXNG_URL` | `http://localhost:8081` | SearXNG instance URL. Accepts a **list** of interchangeable replicas separated by `,` or `;` (e.g. `http://searxng-a:8080,http://searxng-b:8080`) — tried in order, with failover. A single value behaves exactly as before: one request, one host, no health lookup. Entries that are not valid http(s) URLs are dropped with a warning; if none survive the default is used rather than the server refusing to start. Basic-auth credentials may be embedded (`http://user:pass@host:8080`) — they are lifted out of the URL at startup and sent as an `Authorization: Basic` header, and never appear in logs, events, cache keys or error messages. |
 | `SEARXNG_TOTAL_TIMEOUT_MS` | `10000` | Total timeout budget for one search **across all instances**, not per instance. Iterating N replicas at the per-attempt timeout each would make a total outage take longer to report the more replicas you add. |
 | `SEARXNG_ATTEMPT_TIMEOUT_MS` | `10000` | Per-instance ceiling, further capped by whatever remains of `SEARXNG_TOTAL_TIMEOUT_MS`. |
 | `SEARXNG_UNHEALTHY_TTL_SECONDS` | `30` | How long a failed instance is deprioritised for. A hint that reorders candidates, not a circuit breaker — an unhealthy instance is moved to the back, never removed, and if every instance is marked down the full list is still tried. Stored in the cache so the hint is shared across processes; a cache outage degrades to "try every instance in configured order". |
@@ -802,6 +802,8 @@ stdio has no network surface. The HTTP transport binds `127.0.0.1` by default an
 CI runs `pnpm audit` on every push. The lockfile (`pnpm-lock.yaml`) is committed for reproducible, auditable builds.
 
 ### Credential handling
+
+Basic-auth credentials embedded in `SEARXNG_URL` are extracted at startup and sent as an `Authorization` header; the URL used for the request, for cache keys, for log lines, for NATS events and for error messages is always the credential-free origin. This matters more than it looks: Node's `fetch` refuses a URL containing userinfo outright and puts the whole URL — password included — into the resulting `TypeError`'s message, so leaving credentials in the URL would both break every request and leak the password into any sink that forwards an error message.
 
 No credentials are stored or logged by the server. API keys (`FIRECRAWL_API_KEY`, `GITHUB_TOKEN`, `CRAWL4AI_API_TOKEN`) are read from environment variables and used only in outbound requests to their respective services.
 
