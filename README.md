@@ -48,9 +48,9 @@ For a full local topology including Firecrawl, Crawl4AI, Ollama, Kiwix, the adbl
 
 | Tool | Description | Key Parameters |
 |------|-------------|----------------|
-| `search` | Search via SearXNG with local reranking. Fetches a wider result pool, reranks by relevance, returns top N. SearXNG's native direct answers, infoboxes, spelling corrections, and related suggestions are surfaced above the list and in `structuredContent`. | `query`, `num_results` (1–20), `category`, `time_range`, `domain_profile`, `expand`, `language`, `engines`, `site` |
-| `search_and_fetch` | Search, rerank, then fetch full content of the top result(s) using the fetch cascade (Firecrawl → Crawl4AI → raw HTTP). | `query`, `category`, `time_range`, `fetch_count` (1–3), `domain_profile`, `expand`, `language`, `engines`, `site` |
-| `search_and_summarize` | Search, fetch top results, then synthesize a summary with citations via Ollama (`OLLAMA_SUMMARIZE_MODEL`). Falls back to raw fetched content if Ollama is unavailable. | `query`, `fetch_count` (1–5), `category`, `time_range`, `domain_profile`, `expand`, `language`, `engines`, `site` |
+| `search` | Search via SearXNG with local reranking. Fetches a wider result pool, reranks by relevance, returns top N. SearXNG's native direct answers, infoboxes, spelling corrections, and related suggestions are surfaced above the list and in `structuredContent`. | `query`, `num_results` (1–20), `category`, `time_range`, `domain_profile`, `expand`, `language`, `engines`, `site`, `min_score` |
+| `search_and_fetch` | Search, rerank, then fetch full content of the top result(s) using the fetch cascade (Firecrawl → Crawl4AI → raw HTTP). | `query`, `category`, `time_range`, `fetch_count` (1–3), `domain_profile`, `expand`, `language`, `engines`, `site`, `min_score` |
+| `search_and_summarize` | Search, fetch top results, then synthesize a summary with citations via Ollama (`OLLAMA_SUMMARIZE_MODEL`). Falls back to raw fetched content if Ollama is unavailable. | `query`, `fetch_count` (1–5), `category`, `time_range`, `domain_profile`, `expand`, `language`, `engines`, `site`, `min_score` |
 | `fetch_url` | Fetch and extract readable markdown from any public URL. GitHub hosts take the GitHub fast path; YouTube video URLs return the transcript and Reddit thread URLs return post+comments (both opt-in via robots, see below); all others use the fetch cascade (Firecrawl → Crawl4AI → raw HTTP). Trimmed to a token budget (default ~8,000 chars). | `url`, `domain_profile`, `max_tokens`, `target_selector`, `wait_for_selector` |
 | `crawl_site` | Crawl an entire site and return a manifest of URL/title/snippet for each page. Tries Firecrawl crawl first, falls back to sitemap parsing, then optional BFS. Full page content is cached in Valkey so follow-up `fetch_url` calls are zero-cost. | `url`, `max_pages` (default: `CRAWL_MAX_PAGES_DEFAULT`), `bfs` (bool, opt-in BFS) |
 | `clear_cache` | Purge the search cache, fetch cache, crawl manifest cache, or all. Useful when researching fast-moving topics where cached results may be stale. | `target` (`search`, `fetch`, `crawl`, `all`) |
@@ -244,7 +244,7 @@ Guarantees:
 
 ### Domain capability database
 
-Every fetch records what searxng-mcp learns about the target domain to Valkey under `domain:<hostname>` (90-day TTL, schema_version 5). Captured per record:
+Every fetch records what searxng-mcp learns about the target domain to Valkey under `domain:<hostname>` (90-day TTL, schema_version 6). Captured per record:
 
 - `tier_stats_30d.{tier1,tier2,tier3,tier4,solver,github}.{attempts, ok, fail, last_fail_reason, window_start_ms}` — fetch success rate per tier over a rolling 30-day window. The cutoff is applied at **read time**, shared by tier-routing decisions and `domain_stats` reporting, so the two cannot disagree — a domain fetched once and then left idle reports a genuinely empty window rather than stale numbers surviving until the next write. The `tier4` (Wayback Machine) slot is recorded only when `WAYBACK_ENABLED=true`; the `solver` slot (Byparr challenge-solving tier, see [Challenge detection and solver tier](#challenge-detection-and-solver-tier)) only when `SOLVER_ENABLED=true`. The `github` slot records the [GitHub fast path](#github-urls) (`raw.githubusercontent.com` / `api.github.com` / `github.com` README fetches), which bypasses the tier cascade but is still tracked here. A `schema_version` bump rebuilds existing records fresh — accumulated windows for currently-idle domains are discarded (precedented across the 1→2, 2→3, 3→4, 4→5, 5→6 bumps).
 - `capabilities.metadata_fetch.{attempts, ok, fail, last_fail_reason}` — success/failure of the metadata side-channel fetch (`fetchRawHtmlForMetadata`, used for JSON-LD/og:title sampling). Tracked separately from `tier_stats_30d` since it answers "is this domain reachable at all", not "did full-content delivery succeed".
@@ -274,7 +274,7 @@ pnpm domain-db-maintenance   # SCAN all domain:* records → write a dated JSON 
 pnpm restore-domain-db       # re-seed the domain-db from the newest snapshot after a flush
 ```
 
-- **`domain-db-maintenance`** is a standalone job (run it on a schedule via cron or a PM2 cron-restart — **not** as an in-process timer, since searxng-mcp runs as several concurrent per-agent stdio children that would each fire it). One bounded `SCAN` feeds both outputs: a durable dated snapshot and, when `OTEL_EXPORTER_OTLP_ENDPOINT` is set, gauges (`searxng_domains_tracked`, `searxng_domains_failing`, `searxng_domain_tier_success_ratio{tier}`) force-flushed before exit.
+- **`domain-db-maintenance`** is a standalone job — run it on a schedule via cron or a container cron sidecar, **not** as an in-process timer. (The original reason was that searxng-mcp ran as several concurrent per-agent stdio children that would each fire the timer. That is no longer true: since vikunja#149/#321 it is one shared container. The conclusion still holds for a different reason — an in-process timer ties a bounded full-keyspace `SCAN` to the lifetime of the request-serving process, whereas a standalone job can be scheduled, retried and observed on its own.) One bounded `SCAN` feeds both outputs: a durable dated snapshot and, when `OTEL_EXPORTER_OTLP_ENDPOINT` is set, gauges (`searxng_domains_tracked`, `searxng_domains_failing`, `searxng_domain_tier_success_ratio{tier}`) force-flushed before exit.
 - **`restore-domain-db`** re-seeds only keys that are missing or whose live record is strictly staler than the snapshot (compares `last_fetch`) — it never clobbers a fresher-or-equal live record, so it is safe to run against a live, partially-populated Valkey (e.g. in a service boot sequence for automatic flush recovery).
 
 | Env var | Default | Purpose |
@@ -368,10 +368,37 @@ After any tier returns content with raw HTML, a post-extraction pass improves ti
 - **Title cascade** — falls back through `og:title` → `twitter:title` → `<title>` (with publisher-suffix stripping) → first `<h1>` → URL.
 - **Tier-2 Readability comparison** — when Crawl4AI returns markdown, JSDOM+Readability also runs over its raw HTML and is preferred when its text is longer (or unconditionally when Crawl4AI returns less than 500 chars).
 
+### Relevance filtering (`min_score`)
+
+The three search tools accept `min_score` (0–1), a floor applied after reranking. Omit it and nothing changes.
+
+It filters on the **raw cross-encoder `relevance_score`**, not on the value used for ordering. Ranking sorts by `relevance_score + RERANK_RECENCY_WEIGHT * recencyScore(publishedDate)`, which with the default weight of `0.15` ranges over **0–1.15, not 0–1**. Filtering a parameter called "minimum relevance" on that number would quietly make it mean "relevant enough *or* recent enough". Filtering happens before the top-N slice, so the floor never costs you a result that cleared it.
+
+Two things make this knob behave differently from how a 0–1 range suggests. Both were measured against the local FlashRank service on the query *"how to configure nginx reverse proxy"*:
+
+| Document | `relevance_score` |
+|---|---|
+| nginx reverse-proxy guide (`proxy_pass`) | **0.998** |
+| Apache `mod_proxy` reverse proxying | **0.967** |
+| nginx install page (topical, wrong subject) | **0.0028** |
+| banana bread recipe | **0.0000151** |
+
+- **The distribution is strongly bimodal.** Relevant results cluster near 1.0, irrelevant ones near 0, with very little in between — so any threshold in roughly 0.01–0.9 behaves near-identically. Useful values are around **0.01–0.1**; `0.5` is not a meaningful midpoint.
+- **A high score means topically related, not correct.** The Apache document scored 0.967 on an nginx query. `min_score` is a topicality floor and cannot be trusted as a correctness filter.
+
+Thresholds are model-dependent and not comparable across rerankers. When the reranker is unavailable there are no scores to filter on, so `min_score` becomes a **no-op with a throttled warning** — returning unfiltered results silently would let you believe a floor had been applied, and returning nothing would turn a reranker outage into "no results found".
+
 ### Resilience
 
-- **Cache never hangs a search.** The Valkey client is bounded by `CACHE_COMMAND_TIMEOUT_MS`/`CACHE_CONNECT_TIMEOUT_MS`/`CACHE_MAX_RETRIES_PER_REQUEST` (see [Configuration](#configuration)). A stalled or CPU-spiked cache backend now rejects the command instead of hanging forever — the existing fail-soft handling degrades that rejection to a cache miss (serve live) rather than throwing. Cache connect failures, client errors, and per-command errors emit a throttled `[searxng-mcp]` stderr line (deduped per key so a sustained outage leaves a periodic breadcrumb, not a flood) — stderr is the only telemetry sink wired on the deployed PM2 process.
-- **Process crash handlers** — `uncaughtException` logs then exits 1 (clean PM2 restart); `unhandledRejection` logs and continues rather than crashing the shared process silently.
+- **Multi-instance SearXNG failover.** `SEARXNG_URL` accepts a list of interchangeable replicas (`,` or `;` separated), tried in order. A single value behaves exactly as before — one request, one host, no health lookup, no extra cache traffic. Three things about the multi-instance path are worth knowing:
+  - The timeout budget is **total, not per instance**. `SEARXNG_TOTAL_TIMEOUT_MS` bounds the whole call and is decremented as candidates fail, so adding a replica cannot make a total outage take longer to report.
+  - Health state lives in the **cache, not in process memory**, so one process's discovery of a dead instance informs the next call. It is a hint, not a circuit breaker: a failed instance is moved to the back of the order for `SEARXNG_UNHEALTHY_TTL_SECONDS`, never removed, and if every instance is marked down the full list is tried anyway. A cache outage degrades to "try every instance in configured order" — never to an error.
+  - **Failover is loud.** Each fall-through emits a `search.failover` NATS event and a throttled stderr line. A silent failover is indistinguishable from a healthy primary, which is how a half-dead deployment goes unnoticed for weeks.
+
+  Fan-out (querying replicas in parallel and merging) is deliberately **not** implemented: it needs meta reconciliation with no obvious right answer — if two instances return different `answers`/`infoboxes`, which wins? `searxSearch` already merges across expanded query variants, so the marginal recall gain is small.
+
+- **Cache never hangs a search.** The Valkey client is bounded by `CACHE_COMMAND_TIMEOUT_MS`/`CACHE_CONNECT_TIMEOUT_MS`/`CACHE_MAX_RETRIES_PER_REQUEST` (see [Configuration](#configuration)). A stalled or CPU-spiked cache backend now rejects the command instead of hanging forever — the existing fail-soft handling degrades that rejection to a cache miss (serve live) rather than throwing. Cache connect failures, client errors, and per-command errors emit a throttled `[searxng-mcp]` stderr line (deduped per key so a sustained outage leaves a periodic breadcrumb, not a flood) — stderr is always on, and is the sink that never depends on configuration. On the forge deployment OTel and NATS are also wired (`OTEL_EXPORTER_OTLP_ENDPOINT` and `NATS_URL` are both set, and the startup capability line reports `otel,nats` in its on-list), so stderr is the floor rather than the whole story.
+- **Process crash handlers** — `uncaughtException` logs then exits 1, so the supervisor restarts cleanly (Docker's `restart: unless-stopped` on the forge deployment); `unhandledRejection` logs and continues rather than crashing the shared process silently.
 - **Graceful-degradation warnings** — the reranker fallback and the Ollama/LLM expand + summarize fallbacks emit one throttled stderr line each when they silently degrade quality (reranker unavailable, LLM backend unreachable).
 - **Version is single-sourced** from `package.json` at runtime (`src/version.ts`) — the `McpServer` version, OTel tracer/meter version, and outbound `USER_AGENT` all track it, so they can't drift independently.
 
@@ -592,7 +619,10 @@ All service URLs are configurable via environment variables.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `SEARXNG_URL` | `http://localhost:8081` | SearXNG instance URL |
+| `SEARXNG_URL` | `http://localhost:8081` | SearXNG instance URL. Accepts a **list** of interchangeable replicas separated by `,` or `;` (e.g. `http://searxng-a:8080,http://searxng-b:8080`) — tried in order, with failover. A single value behaves exactly as before: one request, one host, no health lookup. Entries that are not valid http(s) URLs are dropped with a warning; if none survive the default is used rather than the server refusing to start. |
+| `SEARXNG_TOTAL_TIMEOUT_MS` | `10000` | Total timeout budget for one search **across all instances**, not per instance. Iterating N replicas at the per-attempt timeout each would make a total outage take longer to report the more replicas you add. |
+| `SEARXNG_ATTEMPT_TIMEOUT_MS` | `10000` | Per-instance ceiling, further capped by whatever remains of `SEARXNG_TOTAL_TIMEOUT_MS`. |
+| `SEARXNG_UNHEALTHY_TTL_SECONDS` | `30` | How long a failed instance is deprioritised for. A hint that reorders candidates, not a circuit breaker — an unhealthy instance is moved to the back, never removed, and if every instance is marked down the full list is still tried. Stored in the cache so the hint is shared across processes; a cache outage degrades to "try every instance in configured order". |
 | `FIRECRAWL_URL` | `http://localhost:3002` | Firecrawl instance URL |
 | `FIRECRAWL_ENABLED` | `true` | Set to `false` when no Firecrawl is deployed — tier 1 is then skipped with `reason: not_configured` instead of attempting a connection on every fetch |
 | `RERANKER_URL` | `http://localhost:8787` | Reranker instance URL |

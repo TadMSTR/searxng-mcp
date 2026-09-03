@@ -1,8 +1,15 @@
 // Minimal stderr logging with the shared `[searxng-mcp]` prefix. stderr is the
-// only telemetry sink wired on the running PM2 process (OTel/NATS are opt-in and
-// usually unset), so the failure/degradation paths log here directly rather than
-// relying on those counters. `logThrottled` dedupes noisy repeats (e.g. a cache
-// that is down for minutes) to one line per interval per key.
+// one sink that is always on and never depends on configuration, so the
+// failure/degradation paths log here directly rather than relying on counters
+// that may not be exported anywhere.
+//
+// This comment previously said stderr was the ONLY telemetry sink wired on the
+// running PM2 process. Both halves were wrong: the deployment is Docker, not
+// PM2, and OTel and NATS are in fact wired there — the startup capability line
+// reports `otel,nats` in its on-list. stderr is the floor, not the whole story.
+//
+// `logThrottled` dedupes noisy repeats (e.g. a cache that is down for minutes)
+// to one line per interval per key.
 
 const PREFIX = "[searxng-mcp]";
 
