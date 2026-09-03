@@ -32,7 +32,7 @@
 
 import { cacheGet, cacheSet } from "./cache.js";
 import { SEARXNG_UNHEALTHY_TTL_SECONDS, SEARXNG_URLS } from "./config.js";
-import { logThrottled } from "./log.js";
+import { logThrottled, redactUrlCredentials } from "./log.js";
 
 /**
  * Cache key for an instance's unhealthy marker.
@@ -42,13 +42,29 @@ import { logThrottled } from "./log.js";
  * dropped rather than written into a cache key.
  */
 export function unhealthyKey(url: string): string {
-  let origin: string;
+  return `searxng:unhealthy:${instanceLabel(url)}`;
+}
+
+/**
+ * How an instance is named ANYWHERE it leaves this process — cache keys, stderr
+ * lines, NATS events, and error messages handed back to the caller.
+ *
+ * `origin` drops userinfo, so credentials in a configured URL
+ * (`http://user:pass@searxng.internal:8080`, a normal shape for an instance
+ * behind basic auth) cannot reach a sink. The cache key was written this way
+ * from the start; the log and event paths were not, and guarding one sink while
+ * leaving three is how a redaction gets quietly bypassed. `src/log.ts` already
+ * carries `redactUrlCredentials` for the same reason on the cache URL.
+ *
+ * Falls back to the same redaction for anything `URL` cannot parse, so an
+ * unparseable value is never echoed verbatim either.
+ */
+export function instanceLabel(url: string): string {
   try {
-    origin = new URL(url).origin;
+    return new URL(url).origin;
   } catch {
-    origin = url;
+    return redactUrlCredentials(url);
   }
-  return `searxng:unhealthy:${origin}`;
 }
 
 /**
@@ -127,8 +143,10 @@ export async function markHealthy(url: string): Promise<void> {
  * the primary stays down.
  */
 export function logFailover(from: string, to: string, reason: string): void {
+  const a = instanceLabel(from);
+  const b = instanceLabel(to);
   logThrottled(
-    `searxng-failover:${from}->${to}`,
-    `SearXNG failover: ${from} failed (${reason}), served by ${to}`,
+    `searxng-failover:${a}->${b}`,
+    `SearXNG failover: ${a} failed (${reason}), served by ${b}`,
   );
 }

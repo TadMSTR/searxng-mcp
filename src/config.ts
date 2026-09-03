@@ -1,3 +1,4 @@
+import { redactUrlCredentials } from "./log.js";
 import type { TierSlot } from "./types.js";
 
 const SEARXNG_URL_DEFAULT = "http://localhost:8081";
@@ -34,14 +35,18 @@ export function parseSearxngUrls(
     try {
       const u = new URL(entry);
       if (u.protocol !== "http:" && u.protocol !== "https:") {
-        warn(`SEARXNG_URL entry is not http(s), ignoring: ${entry}`);
+        warn(
+          `SEARXNG_URL entry is not http(s), ignoring: ${redactUrlCredentials(entry)}`,
+        );
         continue;
       }
       // Normalise away a trailing slash so `${base}/search` cannot become
       // `//search`, which some reverse proxies 404 rather than normalising.
       valid.push(u.toString().replace(/\/$/, ""));
     } catch {
-      warn(`SEARXNG_URL entry is not a valid URL, ignoring: ${entry}`);
+      warn(
+        `SEARXNG_URL entry is not a valid URL, ignoring: ${redactUrlCredentials(entry)}`,
+      );
     }
   }
 

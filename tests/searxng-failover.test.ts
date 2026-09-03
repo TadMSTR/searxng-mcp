@@ -199,6 +199,105 @@ describe("getSearxCandidates", () => {
   });
 });
 
+// ── Credential redaction at every sink ──────────────────────────────────────
+//
+// `SEARXNG_URL` can legitimately carry basic-auth credentials — an instance
+// behind basic auth is a normal deployment. The instance URL leaves this
+// process by FOUR routes: the cache key, the stderr failover line, the NATS
+// event, and the error message handed back to the caller. Guarding one and
+// leaving three is how a redaction gets quietly bypassed, so each is asserted
+// separately rather than trusting a single shared helper to be called.
+
+describe("credential redaction", () => {
+  const SECRET = "hunter2";
+  const WITH_CREDS = `http://admin:${SECRET}@primary:8080`;
+
+  it("instanceLabel drops userinfo", async () => {
+    const { instanceLabel } = await import("../src/instances.js");
+    const label = instanceLabel(WITH_CREDS);
+    expect(label).not.toContain(SECRET);
+    expect(label).not.toContain("admin");
+    expect(label).toBe("http://primary:8080");
+  });
+
+  it("instanceLabel redacts rather than echoes an unparseable value", async () => {
+    const { instanceLabel } = await import("../src/instances.js");
+    expect(instanceLabel("not a url")).not.toBe("not a url");
+  });
+
+  it("the stderr failover line carries no credentials", async () => {
+    const { logFailover } = await import("../src/instances.js");
+    const { resetLogThrottle } = await import("../src/log.js");
+    resetLogThrottle();
+    const spy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    logFailover(WITH_CREDS, "http://replica:8080", "ECONNREFUSED");
+
+    const logged = spy.mock.calls.map((c) => String(c[0])).join("\n");
+    expect(logged).toContain("primary:8080");
+    expect(logged).not.toContain(SECRET);
+    expect(logged).not.toContain("admin");
+    spy.mockRestore();
+  });
+
+  it("the NATS failover event and the thrown error carry no credentials", async () => {
+    process.env.SEARXNG_URL = `${WITH_CREDS},http://admin:${SECRET}@replica:8080`;
+    vi.doMock("../src/cache.js", () => ({
+      cacheGet: vi.fn().mockResolvedValue(null),
+      cacheSet: vi.fn().mockResolvedValue(undefined),
+      searchCacheKey: vi.fn().mockReturnValue("k"),
+      getValkey: vi.fn().mockResolvedValue(null),
+      cacheClear: vi.fn(),
+      cacheAtomicUpdate: vi.fn(),
+    }));
+    const searxFailover = vi.fn();
+    vi.doMock("../src/events.js", () => ({
+      events: new Proxy(
+        { searxFailover },
+        { get: (t, p) => (p in t ? t[p as "searxFailover"] : vi.fn()) },
+      ),
+    }));
+    vi.doMock("../src/observability.js", () => ({
+      withSpan: vi.fn().mockImplementation((_n, _a, fn) => fn()),
+      incCounter: vi.fn(),
+      recordHistogram: vi.fn(),
+    }));
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockRejectedValue(new Error("ECONNREFUSED")),
+    );
+    const spy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    const { searxSearchSingle } = await import("../src/search.js");
+    let thrown = "";
+    try {
+      await searxSearchSingle("q", "general", 5);
+    } catch (e) {
+      thrown = e instanceof Error ? e.message : String(e);
+    }
+
+    const payloads = JSON.stringify(searxFailover.mock.calls);
+    expect(searxFailover).toHaveBeenCalled();
+    expect(payloads).toContain("primary:8080");
+    expect(payloads).not.toContain(SECRET);
+    expect(payloads).not.toContain("admin");
+    expect(thrown).not.toContain(SECRET);
+
+    spy.mockRestore();
+    vi.unstubAllGlobals();
+  });
+
+  it("the config warning for a bad entry carries no credentials", async () => {
+    const { parseSearxngUrls } = await import("../src/config.js");
+    const warnings: string[] = [];
+    // Not a valid URL (space), but still carrying something secret-shaped.
+    parseSearxngUrls(`http://admin:${SECRET}@bad host:8080`, (m) =>
+      warnings.push(m),
+    );
+    expect(warnings.join(" ")).not.toContain(SECRET);
+  });
+});
+
 // ── Failover behaviour ──────────────────────────────────────────────────────
 
 const SEARX_OK = {

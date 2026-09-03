@@ -10,6 +10,7 @@ import { applyDomainFilters } from "./domains.js";
 import { events } from "./events.js";
 import {
   getSearxCandidates,
+  instanceLabel,
   logFailover,
   markHealthy,
   markUnhealthy,
@@ -130,7 +131,7 @@ export async function searxSearchSingle(
         const remaining = deadline - Date.now();
         if (remaining <= 0) {
           lastError ??= new Error(
-            `SearXNG timeout budget (${SEARXNG_TOTAL_TIMEOUT_MS}ms) exhausted before trying ${base}`,
+            `SearXNG timeout budget (${SEARXNG_TOTAL_TIMEOUT_MS}ms) exhausted before trying ${instanceLabel(base)}`,
           );
           break;
         }
@@ -159,8 +160,9 @@ export async function searxSearchSingle(
             await markUnhealthy(base);
             const reason = err instanceof Error ? err.message : String(err);
             events.searxFailover({
-              from: base,
-              to: next,
+              // Redacted at the sink: these leave the process onto NATS.
+              from: instanceLabel(base),
+              to: next === null ? null : instanceLabel(next),
               attempt,
               error_type: err instanceof Error ? err.name : "unknown",
               message: reason,
