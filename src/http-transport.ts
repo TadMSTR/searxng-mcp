@@ -19,17 +19,26 @@ function sendJsonRpcError(
   status: number,
   message: string,
   extraHeaders: Record<string, string> = {},
+  onFlushed?: () => void,
 ): void {
   res.writeHead(status, {
     "Content-Type": "application/json",
     ...extraHeaders,
   });
+  // onFlushed runs once the body has actually been handed off, not merely
+  // queued. Only the 413 path needs it — it destroys the socket afterwards,
+  // and doing that while the response is still buffered would replace the
+  // error the client should see with a bare connection reset. Today's payload
+  // is ~100 bytes and flushes synchronously, so this is correct either way;
+  // the callback is what stops that from being a property of the payload size
+  // rather than of the code.
   res.end(
     JSON.stringify({
       jsonrpc: "2.0",
       error: { code: -32600, message },
       id: null,
     }),
+    () => onFlushed?.(),
   );
 }
 
@@ -218,14 +227,24 @@ export function createHttpRequestListener(
             "http-body-413",
             `rejected oversized request body: ${req.method} ${req.url}`,
           );
-          // Answer first, then tear the connection down. The remainder of the
-          // body is never read, so a client that keeps sending is stopped by
-          // TCP backpressure and then by the close, rather than leaving a
-          // socket half-drained on a long-lived shared process.
-          sendJsonRpcError(res, 413, "Request body too large", {
-            Connection: "close",
-          });
-          req.destroy();
+          // Answer first, then tear the connection down — and only once the
+          // response has actually flushed, so the client gets the 413 rather
+          // than a reset.
+          //
+          // The `Connection: close` header is what actually stops the inbound
+          // read: Node will not drain a body it is not going to reuse the
+          // socket for. The explicit destroy is defence-in-depth for the day
+          // someone drops that header, and is deliberately not load-bearing —
+          // removing it changes no observable behaviour today, which is
+          // recorded in tests/http-body-limit.test.ts so the next reader does
+          // not mistake a surviving mutation for dead code.
+          sendJsonRpcError(
+            res,
+            413,
+            "Request body too large",
+            { Connection: "close" },
+            () => req.destroy(),
+          );
           return;
         }
 
