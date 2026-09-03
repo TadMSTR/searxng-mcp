@@ -1,6 +1,74 @@
 import type { TierSlot } from "./types.js";
 
-export const SEARXNG_URL = process.env.SEARXNG_URL ?? "http://localhost:8081";
+const SEARXNG_URL_DEFAULT = "http://localhost:8081";
+
+/**
+ * Parse `SEARXNG_URL` as an ordered list of interchangeable replicas.
+ *
+ * Accepts both `,` and `;` as separators — neither is legal in a URL authority,
+ * and the comparable server (`ihor-sokoliuk/mcp-searxng`) uses `;`, so taking
+ * both avoids a silent single-instance fallback for anyone copying that syntax.
+ *
+ * A SCALAR VALUE MUST BEHAVE EXACTLY AS BEFORE. That is every existing
+ * deployment, so it is the case this function is written around: one entry in,
+ * one entry out, no health lookup, one request. See `getSearxCandidates`.
+ *
+ * Unparseable entries are dropped with a warning rather than taken literally.
+ * An unset `${SEARXNG_URL}` in a manifest interpolates to the *literal* string
+ * `"${SEARXNG_URL}"` rather than to empty, and `new URL()` is what catches it —
+ * without this the server would come up and fail every search against a
+ * nonsense host. If nothing survives, fall back to the default and say so
+ * loudly; refusing to boot would turn one bad env var into a total outage.
+ */
+export function parseSearxngUrls(
+  raw: string | undefined,
+  warn: (msg: string) => void = () => {},
+): string[] {
+  const entries = (raw ?? SEARXNG_URL_DEFAULT)
+    .split(/[,;]/)
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
+
+  const valid: string[] = [];
+  for (const entry of entries) {
+    try {
+      const u = new URL(entry);
+      if (u.protocol !== "http:" && u.protocol !== "https:") {
+        warn(`SEARXNG_URL entry is not http(s), ignoring: ${entry}`);
+        continue;
+      }
+      // Normalise away a trailing slash so `${base}/search` cannot become
+      // `//search`, which some reverse proxies 404 rather than normalising.
+      valid.push(u.toString().replace(/\/$/, ""));
+    } catch {
+      warn(`SEARXNG_URL entry is not a valid URL, ignoring: ${entry}`);
+    }
+  }
+
+  // De-duplicate: a repeated instance would be retried as though it were a
+  // distinct replica, burning the shared timeout budget on a host already known
+  // to have just failed.
+  const deduped = [...new Set(valid)];
+
+  if (deduped.length === 0) {
+    warn(
+      `SEARXNG_URL had no usable entries, falling back to ${SEARXNG_URL_DEFAULT}`,
+    );
+    return [SEARXNG_URL_DEFAULT];
+  }
+  return deduped;
+}
+
+export const SEARXNG_URLS = parseSearxngUrls(process.env.SEARXNG_URL, (m) =>
+  console.error(`[searxng-mcp] ${m}`),
+);
+
+/**
+ * The primary instance. Retained as a named export because it is what the
+ * startup capability line and any single-endpoint caller report; failover
+ * iterates `SEARXNG_URLS`.
+ */
+export const SEARXNG_URL = SEARXNG_URLS[0];
 export const FIRECRAWL_URL =
   process.env.FIRECRAWL_URL ?? "http://localhost:3002";
 export const FIRECRAWL_API_KEY =
@@ -44,6 +112,32 @@ export const CACHE_CONNECT_TIMEOUT_MS = positiveIntEnv(
   "CACHE_CONNECT_TIMEOUT_MS",
   3000,
 );
+// SearXNG failover tuning. Named to match the CACHE_*_TIMEOUT_MS convention
+// above, and defaulted so a single-instance deployment is bit-identical to the
+// pre-failover `AbortSignal.timeout(10000)`: one candidate, budget 10s,
+// per-attempt ceiling 10s, so exactly one 10s-bounded request.
+//
+// TOTAL is the whole-call budget, not per instance. Iterating N candidates at
+// 10s each would make the worst case N*10s with no ceiling — the caller would
+// see a search that hangs longer the more replicas you configure, which is the
+// opposite of what adding replicas is for.
+export const SEARXNG_TOTAL_TIMEOUT_MS = positiveIntEnv(
+  "SEARXNG_TOTAL_TIMEOUT_MS",
+  10_000,
+);
+export const SEARXNG_ATTEMPT_TIMEOUT_MS = positiveIntEnv(
+  "SEARXNG_ATTEMPT_TIMEOUT_MS",
+  10_000,
+);
+// How long a failed instance is deprioritised for. Short by design: this is a
+// hint to reorder candidates, not a circuit breaker. An instance that recovers
+// should be picked up again quickly, and a stale marker must never be able to
+// take a healthy instance out of rotation for long.
+export const SEARXNG_UNHEALTHY_TTL_SECONDS = positiveIntEnv(
+  "SEARXNG_UNHEALTHY_TTL_SECONDS",
+  30,
+);
+
 export const CACHE_MAX_RETRIES_PER_REQUEST = positiveIntEnv(
   "CACHE_MAX_RETRIES_PER_REQUEST",
   2,

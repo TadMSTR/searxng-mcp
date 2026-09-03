@@ -2,10 +2,18 @@ import { cacheGet, cacheSet, searchCacheKey } from "./cache.js";
 import {
   CACHE_TTL_SECONDS,
   EXPAND_QUERIES_DEFAULT,
-  SEARXNG_URL,
+  SEARXNG_ATTEMPT_TIMEOUT_MS,
+  SEARXNG_TOTAL_TIMEOUT_MS,
 } from "./config.js";
 import { normalizeHostname, recordSearchAppearance } from "./domain-db.js";
 import { applyDomainFilters } from "./domains.js";
+import { events } from "./events.js";
+import {
+  getSearxCandidates,
+  logFailover,
+  markHealthy,
+  markUnhealthy,
+} from "./instances.js";
 import { withSpan } from "./observability.js";
 import { expandQuery } from "./ollama.js";
 import type {
@@ -106,17 +114,66 @@ export async function searxSearchSingle(
       // soft rather than erroring.
       if (engines) params.set("engines", engines);
 
-      const res = await fetch(`${SEARXNG_URL}/search?${params}`, {
-        signal: AbortSignal.timeout(10000),
-      });
-      if (!res.ok)
-        throw new Error(`SearXNG error: ${res.status} ${res.statusText}`);
+      const candidates = await getSearxCandidates();
+      const multi = candidates.length > 1;
 
-      const data = (await res.json()) as SearxResponse;
-      return {
-        results: data.results.slice(0, fetchCount),
-        meta: normalizeSearxMeta(data),
-      };
+      // ONE budget for the whole call, decremented as candidates fail. Giving
+      // each candidate its own 10s would make the worst case N*10s: adding a
+      // replica would make a total outage take longer to report, which is the
+      // opposite of the point. With a single candidate this reduces to exactly
+      // the previous `AbortSignal.timeout(10000)`.
+      const deadline = Date.now() + SEARXNG_TOTAL_TIMEOUT_MS;
+      let lastError: unknown;
+
+      for (let attempt = 0; attempt < candidates.length; attempt++) {
+        const base = candidates[attempt];
+        const remaining = deadline - Date.now();
+        if (remaining <= 0) {
+          lastError ??= new Error(
+            `SearXNG timeout budget (${SEARXNG_TOTAL_TIMEOUT_MS}ms) exhausted before trying ${base}`,
+          );
+          break;
+        }
+        const attemptMs = Math.min(SEARXNG_ATTEMPT_TIMEOUT_MS, remaining);
+
+        try {
+          const res = await fetch(`${base}/search?${params}`, {
+            signal: AbortSignal.timeout(attemptMs),
+          });
+          if (!res.ok)
+            throw new Error(`SearXNG error: ${res.status} ${res.statusText}`);
+
+          const data = (await res.json()) as SearxResponse;
+          // Only touched when there is something to clear, and only in the
+          // multi-instance case, so the single-instance path stays free of
+          // extra cache traffic.
+          if (multi && attempt > 0) await markHealthy(base);
+          return {
+            results: data.results.slice(0, fetchCount),
+            meta: normalizeSearxMeta(data),
+          };
+        } catch (err) {
+          lastError = err;
+          const next = candidates[attempt + 1] ?? null;
+          if (multi) {
+            await markUnhealthy(base);
+            const reason = err instanceof Error ? err.message : String(err);
+            events.searxFailover({
+              from: base,
+              to: next,
+              attempt,
+              error_type: err instanceof Error ? err.name : "unknown",
+              message: reason,
+              exhausted: next === null,
+            });
+            if (next) logFailover(base, next, reason);
+          }
+        }
+      }
+
+      throw lastError instanceof Error
+        ? lastError
+        : new Error(`SearXNG request failed: ${String(lastError)}`);
     },
   );
 }
