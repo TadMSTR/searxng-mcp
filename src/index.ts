@@ -2,6 +2,7 @@
 import { createServer } from "node:http";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { logCapabilities } from "./capabilities.js";
 import {
   HTTP_AUTH_TOKEN,
   HTTP_HOST,
@@ -45,6 +46,10 @@ process.on("unhandledRejection", (reason) => {
 
 await initObservability();
 await initEvents();
+// After both inits so the OTel/NATS entries report what actually got wired,
+// and before transport setup so the line is present even if the transport
+// fails to come up.
+logCapabilities();
 
 const createSearxngServer = () => {
   const server = new McpServer({

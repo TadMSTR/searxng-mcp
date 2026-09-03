@@ -6,6 +6,60 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+Only SearXNG is required, and the code now says so as well as the README (build
+`searxng-mcp-lite-mode-2026-09`, vikunja#636). `README.md:160` claimed "SearXNG and Firecrawl are
+required" while `README.md:16` correctly said only SearXNG is. The stricter claim was wrong:
+`runTier` converts every tier failure into a miss rather than a fatal, and tier 3 is a raw HTTP
+fetch plus Readability running wholly in-process. Verified end to end — with Firecrawl, Crawl4AI,
+the cache and the reranker all dead, `fetchPage` returns clean extracted content via tier 3.
+
+### Added
+- **`FIRECRAWL_ENABLED` and `CRAWL4AI_ENABLED`**, both defaulting to `true` and read as
+  `!== "false"`, matching the existing `YOUTUBE_TRANSCRIPT_ENABLED` / `REDDIT_FASTPATH_ENABLED`
+  convention. A deployment that sets neither behaves exactly as v3.19.1 did. Deliberately *not*
+  derived from whether `FIRECRAWL_URL` was explicitly set: it defaults to `http://localhost:3002`,
+  so sniffing the env var would have silently disabled tier 1 for anyone already running Firecrawl
+  on the default port — a breaking change dressed as a fix.
+- **A startup capability line** naming which of tier1/2/3, cache, reranker, LLM, Kiwix, Hister,
+  solver, Wayback, OTel and NATS are configured. It reports configuration, never reachability —
+  nothing is probed, so it cannot delay or fail startup. This is the operator's answer to "why is
+  quality worse than I expected", which until now had to be guessed at.
+
+### Fixed
+- **Tier 1 had no unconfigured guard, unlike tier 2.** `firecrawlScrape` always attempted
+  `FIRECRAWL_URL`, so a Firecrawl-less deployment paid a failed connection on every fetch — cheap
+  on loopback (ECONNREFUSED), but a routable-but-dead host costs the full 15s
+  `AbortSignal.timeout`. With `FIRECRAWL_ENABLED=false` no connection is attempted at all,
+  confirmed against a stub listener that counts hits, with the switch left on as the negative
+  control.
+- **Unconfigured tiers no longer pollute the domain capability database.** Tier 2's null return
+  still booked a `miss` through `runTier`, so `tier_stats_30d` accumulated failures meaning "not
+  deployed" rather than "tried and failed" — and those same numbers drive `computeTierSkips`
+  routing and `domain_stats` output, so the pollution was never cosmetic. Three lite-mode fetches
+  measured before and after: **tier1 3 attempts/3 fail and tier2 3 attempts/3 fail, against 0 and 0
+  after**, with tier3 3/3 in both. At ten attempts those fabricated failures would have crossed the
+  30% threshold and started skipping tiers on the strength of a service that was never installed.
+
+### Changed
+- **`not_configured` is a third `SkipReason`** alongside `operator_override` and
+  `low_success_rate`, so unconfigured tiers route through the existing skip machinery — the
+  `searxng.fetch.tier.skipped` event, the `searxng_fetch_total{outcome=skipped}` counter and the
+  routing filter — rather than a parallel gate. That reuse *is* the stat fix: a skipped tier is
+  never recorded as an attempt. `not_configured` takes precedence over both other reasons, since
+  an override cannot un-skip a tier there is nothing to call.
+- **The `skipped` counter is now labelled with `reason`.** Previously
+  `searxng_fetch_total{outcome=skipped}` could not distinguish a tier that was never deployed from
+  one that is failing. Three values, so cardinality is unaffected, and queries that do not select
+  on `reason` aggregate the same total as before.
+- **One behaviour change, and it is the point of the build:** with `CRAWL4AI_URL` unset, tier 2
+  goes from *attempted, returns null, books a miss* to *skipped, books nothing*. No outbound call
+  changes — `crawl4aiFetch` already returned `null` without touching the network — so fetch results
+  are identical. What changes is the stats and the log line, which is the defect being fixed.
+- **README restructured around a minimal-config path.** Prerequisites is now tiered
+  (required / strongly recommended / optional), with each optional service naming the capability it
+  unlocks and the variable that turns it on, plus a SearXNG-only Quick Start stating plainly what
+  does and does not work in that configuration.
+
 ## [3.19.1] - 2026-09-03
 
 Seventeen advisories (9 high) cleared from the production dependency tree, and the CI gate that reported `found 0 vulnerabilities` the entire time they were shipping (build `searxng-mcp-audit-gate-2026-09`, vikunja#633). The versions are the smaller half. The `audit` job ran `npm install --package-lock-only` and audited *that* — which re-resolves every dependency from the semver ranges in `package.json`, answering "what would a fresh install get today" about a tree that ships nowhere. The image is built from `pnpm-lock.yaml`, which pins. So CI read undici 7.29.0 and passed green while the deployed container ran **7.28.0 with four highs**. No `--audit-level` value could have caught that: the threshold picks which findings fail, not which tree is read. Versions drift again in weeks; the gate reading the shipped lockfile is what stops the next drift shipping silently.

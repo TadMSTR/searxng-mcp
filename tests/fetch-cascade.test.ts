@@ -5,6 +5,17 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+// These suites exercise the operator-override and stats passes, which are
+// orthogonal to whether a tier is configured at all. Pin a fully-configured
+// baseline so every pre-existing assertion keeps meaning what it meant before
+// `not_configured` existed — CRAWL4AI_URL is unset in the test env, which would
+// otherwise skip tier2 in every case here and hide what these cases check.
+// The not_configured pass has its own cases, which drive this mock explicitly.
+vi.mock("../src/config.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../src/config.js")>()),
+  tierConfigured: vi.fn(() => ({ tier1: true, tier2: true, tier3: true })),
+}));
+
 vi.mock("../src/cache.js", () => ({
   cacheGet: vi.fn(),
   cacheSet: vi.fn(),

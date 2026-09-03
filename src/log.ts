@@ -6,6 +6,10 @@
 
 const PREFIX = "[searxng-mcp]";
 
+export function logInfo(message: string): void {
+  console.error(`${PREFIX} ${message}`);
+}
+
 export function logError(message: string): void {
   console.error(`${PREFIX} ${message}`);
 }
