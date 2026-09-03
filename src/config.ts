@@ -358,6 +358,17 @@ export const HTTP_SESSION_IDLE_TIMEOUT_MS = positiveIntEnv(
   600_000,
 );
 export const HTTP_MAX_SESSIONS = positiveIntEnv("HTTP_MAX_SESSIONS", 256);
+// Cap on the HTTP request body read by the transport before an MCP session
+// exists. Only the initialize path reads a body this way — requests carrying an
+// Mcp-Session-Id are handled by the SDK transport, which reads its own — and an
+// initialize payload is a few hundred bytes, so 1 MB is already generous.
+// Without a cap the read is a `for await` into Buffer.concat with no ceiling,
+// which lets one credentialed caller OOM a container shared by every agent
+// (vikunja#423).
+export const HTTP_MAX_BODY_BYTES = positiveIntEnv(
+  "HTTP_MAX_BODY_BYTES",
+  1024 * 1024,
+);
 export const CRAWL_MANIFEST_TTL_SECONDS = parseInt(
   process.env.CRAWL_MANIFEST_TTL_SECONDS ?? "21600",
   10,

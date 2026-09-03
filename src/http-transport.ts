@@ -6,6 +6,7 @@ import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
 import { cachePing } from "./cache.js";
 import {
   HTTP_AUTH_TOKEN,
+  HTTP_MAX_BODY_BYTES,
   HTTP_MAX_SESSIONS,
   HTTP_SESSION_IDLE_TIMEOUT_MS,
 } from "./config.js";
@@ -53,10 +54,26 @@ function tokenMatches(presented: string): boolean {
   );
 }
 
+class BodyTooLargeError extends Error {
+  constructor(readonly limit: number) {
+    super(`Request body exceeds ${limit} bytes`);
+    this.name = "BodyTooLargeError";
+  }
+}
+
 async function readJsonBody(req: IncomingMessage): Promise<unknown> {
   const chunks: Buffer[] = [];
+  let total = 0;
   for await (const chunk of req) {
-    chunks.push(chunk as Buffer);
+    const buf = chunk as Buffer;
+    total += buf.byteLength;
+    // Bail on the chunk that crosses the limit, before it is retained. Reading
+    // to completion and rejecting afterwards would have already paid the
+    // memory cost the limit exists to avoid — the same post-hoc-check mistake
+    // this change removes from the fetch side.
+    if (total > HTTP_MAX_BODY_BYTES)
+      throw new BodyTooLargeError(HTTP_MAX_BODY_BYTES);
+    chunks.push(buf);
   }
   const raw = Buffer.concat(chunks).toString("utf8");
   return raw.length > 0 ? JSON.parse(raw) : undefined;
@@ -191,8 +208,26 @@ export function createHttpRequestListener(
           return;
         }
 
-        const parsedBody =
-          req.method === "POST" ? await readJsonBody(req) : undefined;
+        let parsedBody: unknown;
+        try {
+          parsedBody =
+            req.method === "POST" ? await readJsonBody(req) : undefined;
+        } catch (err: unknown) {
+          if (!(err instanceof BodyTooLargeError)) throw err;
+          logThrottled(
+            "http-body-413",
+            `rejected oversized request body: ${req.method} ${req.url}`,
+          );
+          // Answer first, then tear the connection down. The remainder of the
+          // body is never read, so a client that keeps sending is stopped by
+          // TCP backpressure and then by the close, rather than leaving a
+          // socket half-drained on a long-lived shared process.
+          sendJsonRpcError(res, 413, "Request body too large", {
+            Connection: "close",
+          });
+          req.destroy();
+          return;
+        }
 
         if (!isInitializeRequest(parsedBody)) {
           sendJsonRpcError(res, 400, "No valid session ID provided");
