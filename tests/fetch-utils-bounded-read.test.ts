@@ -1,9 +1,6 @@
 import { createServer, type Server } from "node:http";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import {
-  RAW_HTML_MAX_BYTES,
-  readBoundedText,
-} from "../src/fetch-utils.js";
+import { RAW_HTML_MAX_BYTES, readBoundedText } from "../src/fetch-utils.js";
 
 // A stub that streams far more than any cap the tests set, and records how
 // many bytes it actually pushed onto the wire before the client went away.
@@ -148,8 +145,8 @@ describe("readBoundedText — truncation is byte-based, not character-based", ()
   });
 
   it("a zero limit reads nothing", async () => {
-    expect(await readBoundedText(new Response("plenty of content here"), 0)).toBe(
-      "",
-    );
+    expect(
+      await readBoundedText(new Response("plenty of content here"), 0),
+    ).toBe("");
   });
 });
