@@ -12,6 +12,13 @@ beforeEach(() => {
 
 const URL = "https://example.com/page";
 
+// A real body stream, not `body: null`. rawFetch reads through
+// readBoundedText, which streams from res.body — a null body would send it
+// down the no-reader path and test nothing that ships.
+function bodyStream(text: string): ReadableStream<Uint8Array> {
+  return new Response(text).body as ReadableStream<Uint8Array>;
+}
+
 function mockHtmlResponse(
   html: string,
   opts?: { status?: number; headers?: Record<string, string> },
@@ -26,7 +33,7 @@ function mockHtmlResponse(
     status,
     statusText: status === 200 ? "OK" : "Error",
     headers,
-    body: null,
+    body: bodyStream(html),
     text: () => Promise.resolve(html),
   };
 }

@@ -50,7 +50,9 @@ function pageResponse(html: string) {
     status: 200,
     statusText: "OK",
     headers: new Headers({ "Content-Type": "text/html" }),
-    body: null,
+    // Real stream: solverFetch replays through readBoundedText, which reads
+    // res.body. `body: null` would exercise the no-reader path instead.
+    body: new Response(html).body as ReadableStream<Uint8Array>,
     text: () => Promise.resolve(html),
   };
 }
