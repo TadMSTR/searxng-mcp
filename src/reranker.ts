@@ -18,6 +18,7 @@ async function rerank(
   results: SearxResult[],
   topN: number,
   applyRecency: boolean,
+  minScore?: number,
 ): Promise<SearxResult[]> {
   if (results.length === 0) return results;
 
@@ -48,11 +49,27 @@ async function rerank(
           ? r.relevance_score +
             RERANK_RECENCY_WEIGHT * recencyScore(result.publishedDate)
           : r.relevance_score;
-      return { result, score: combined };
+      // `relevance` is carried alongside `score` rather than being discarded
+      // here, because the two are NOT interchangeable and `min_score` must
+      // filter on the raw one. See the filter below.
+      return { result, score: combined, relevance: r.relevance_score };
     });
 
-  scored.sort((a, b) => b.score - a.score);
-  return scored.slice(0, topN).map((s) => s.result);
+  // Filter BEFORE sort-and-slice. Slicing first would return fewer than `topN`
+  // results even when enough qualifying ones existed further down the pool.
+  //
+  // Filtering on `relevance` (raw cross-encoder) and NOT on `score` (which adds
+  // RERANK_RECENCY_WEIGHT * recencyScore) is deliberate. The combined value
+  // ranges over 0..1.15 with the default weight of 0.15, so a parameter named
+  // "minimum relevance" applied to it would silently let a low-relevance but
+  // recent document past a threshold the caller believed was about relevance.
+  const kept =
+    minScore === undefined
+      ? scored
+      : scored.filter((s) => s.relevance >= minScore);
+
+  kept.sort((a, b) => b.score - a.score);
+  return kept.slice(0, topN).map((s) => s.result);
 }
 
 export async function rerankWithFallback(
@@ -60,14 +77,19 @@ export async function rerankWithFallback(
   results: SearxResult[],
   topN: number,
   timeRange?: string,
+  minScore?: number,
 ): Promise<SearxResult[]> {
   return withSpan(
     "rerank",
-    { "rerank.candidates": results.length, "rerank.top_n": topN },
+    {
+      "rerank.candidates": results.length,
+      "rerank.top_n": topN,
+      "rerank.min_score": minScore,
+    },
     async () => {
       const applyRecency = !timeRange; // skip when caller already filtered by date
       try {
-        return await rerank(query, results, topN, applyRecency);
+        return await rerank(query, results, topN, applyRecency, minScore);
       } catch (err) {
         // Reranker unavailable — fall back to SearXNG order. Silent otherwise;
         // one throttled line makes "why did ranking quality drop" answerable.
@@ -75,6 +97,18 @@ export async function rerankWithFallback(
           "degrade:reranker",
           `reranker unavailable — using SearXNG result order: ${err instanceof Error ? err.message : String(err)}`,
         );
+        // `min_score` becomes a documented NO-OP here, and says so. There are
+        // no scores to filter on in this path, so the alternatives were: return
+        // everything silently, which would let a caller believe a relevance
+        // floor was applied when none was; or return nothing, which turns a
+        // reranker outage into an empty result set. Both are worse than
+        // unfiltered-and-announced.
+        if (minScore !== undefined) {
+          logThrottled(
+            "degrade:reranker:min_score",
+            `min_score=${minScore} ignored — reranker unavailable, so no relevance scores exist to filter on; returning unfiltered SearXNG order`,
+          );
+        }
         return results.slice(0, topN);
       }
     },

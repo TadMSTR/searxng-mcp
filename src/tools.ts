@@ -3,7 +3,11 @@ import { z } from "zod";
 import { cacheClear } from "./cache.js";
 import { newRequestId, withRequestId } from "./context.js";
 import { crawlSite, formatCrawlManifest } from "./crawl.js";
-import { getDomainRecord } from "./domain-db.js";
+import {
+  getDomainRecord,
+  TIER_SLOT_KEYS,
+  type TierSlotKey,
+} from "./domain-db.js";
 import {
   aggregateDomainStats,
   enumerateDomains,
@@ -14,6 +18,7 @@ import {
 import { events } from "./events.js";
 import { fetchPage } from "./fetch.js";
 import type { FetchTuning } from "./fetch-utils.js";
+import { redactUrlCredentialsInText } from "./log.js";
 import { incCounter, recordHistogram, withSpan } from "./observability.js";
 import { formatSummaryResult, summarizePages } from "./ollama.js";
 import { rerankWithFallback } from "./reranker.js";
@@ -42,7 +47,15 @@ interface SearchEventCtx {
   num_results: number;
 }
 
+/**
+ * The three tools that share the `search` histogram. Naming the union rather
+ * than taking a bare string keeps a typo out of the label set — a stray value
+ * would not fail anything at runtime, it would quietly create a fourth series.
+ */
+type SearchToolName = "search" | "search_and_fetch" | "search_and_summarize";
+
 async function withSearchEvents<T>(
+  toolName: SearchToolName,
   ctx: SearchEventCtx,
   fn: () => Promise<{
     ranked: SearxResult[];
@@ -56,11 +69,14 @@ async function withSearchEvents<T>(
     const { ranked, result, rerankApplied } = await fn();
     const latency_ms = Date.now() - t0;
     incCounter("search", {
+      tool: toolName,
       profile: ctx.profile ?? "default",
       expand: ctx.expand ? "true" : "false",
     });
     recordHistogram("search", latency_ms / 1000, {
+      tool: toolName,
       profile: ctx.profile ?? "default",
+      outcome: "ok",
     });
     events.searchCompleted({
       result_count: ranked.length,
@@ -70,17 +86,59 @@ async function withSearchEvents<T>(
     });
     return result;
   } catch (err) {
+    // Record latency on the failure path too. Previously only `errors_total`
+    // was incremented here, so a search that failed after 40s and one that
+    // failed instantly were indistinguishable in the metrics — which is
+    // precisely the question asked of this histogram during the 300s stall.
+    //
+    // `outcome` keeps the two populations separable: folding error latencies
+    // into the success distribution unlabelled would corrupt the p99 that the
+    // histogram exists to report.
+    recordHistogram("search", (Date.now() - t0) / 1000, {
+      tool: toolName,
+      profile: ctx.profile ?? "default",
+      outcome: "error",
+    });
     incCounter("errors", {
+      tool: toolName,
       stage: "search",
       error_type: err instanceof Error ? err.name : "unknown",
     });
+    // Scrubbed: this is a generic sink reached by errors from any source, and
+    // it fires even on the single-instance path where the failover-specific
+    // redaction above never runs.
     events.error({
       stage: "search",
       error_type: err instanceof Error ? err.name : "unknown",
-      message: err instanceof Error ? err.message : String(err),
+      message: redactUrlCredentialsInText(
+        err instanceof Error ? err.message : String(err),
+      ),
     });
     throw err;
   }
+}
+
+/**
+ * `instrumentTool` + `withSearchEvents` for the three search tools, so the tool
+ * name is written once per call site. Passing it separately to each would let
+ * the span name and the metric label drift apart silently.
+ *
+ * NOTE: this does NOT make the histogram able to see a hang. Both the success
+ * and failure recordings happen after `await fn()` settles, so a call that
+ * never returns still records nothing at all. Closing that needs a watchdog
+ * timer independent of the awaited promise, which is deliberately out of scope
+ * here — see CHANGELOG.
+ */
+async function instrumentSearchTool<T>(
+  toolName: SearchToolName,
+  ctx: SearchEventCtx,
+  fn: () => Promise<{
+    ranked: SearxResult[];
+    result: T;
+    rerankApplied: boolean;
+  }>,
+): Promise<T> {
+  return instrumentTool(toolName, () => withSearchEvents(toolName, ctx, fn));
 }
 
 const DomainProfileSchema = z
@@ -174,6 +232,7 @@ export async function handleSearch({
   language,
   engines,
   site,
+  min_score,
 }: {
   query: string;
   num_results: number;
@@ -184,43 +243,44 @@ export async function handleSearch({
   language?: string;
   engines?: string;
   site?: string | string[];
+  min_score?: number;
 }) {
-  return instrumentTool("search", () =>
-    withSearchEvents(
-      { query, profile: domain_profile, expand, time_range, num_results },
-      async () => {
-        const { results: raw, meta } = await searxSearch(
-          query,
-          category ?? "general",
-          num_results,
-          time_range,
-          domain_profile,
-          expand,
-          language,
-          engines,
-          site,
-        );
-        const ranked = await rerankWithFallback(
-          query,
-          raw,
-          num_results,
-          time_range,
-        );
-        return {
-          ranked,
-          rerankApplied: true,
-          result: {
-            content: [
-              {
-                type: "text" as const,
-                text: withMeta(meta, formatResults(ranked)),
-              },
-            ],
-            structuredContent: buildSearchStructured(meta, ranked),
-          },
-        };
-      },
-    ),
+  return instrumentSearchTool(
+    "search",
+    { query, profile: domain_profile, expand, time_range, num_results },
+    async () => {
+      const { results: raw, meta } = await searxSearch(
+        query,
+        category ?? "general",
+        num_results,
+        time_range,
+        domain_profile,
+        expand,
+        language,
+        engines,
+        site,
+      );
+      const ranked = await rerankWithFallback(
+        query,
+        raw,
+        num_results,
+        time_range,
+        min_score,
+      );
+      return {
+        ranked,
+        rerankApplied: true,
+        result: {
+          content: [
+            {
+              type: "text" as const,
+              text: withMeta(meta, formatResults(ranked)),
+            },
+          ],
+          structuredContent: buildSearchStructured(meta, ranked),
+        },
+      };
+    },
   );
 }
 
@@ -234,6 +294,7 @@ export async function handleSearchAndFetch({
   language,
   engines,
   site,
+  min_score,
 }: {
   query: string;
   category?: string;
@@ -244,49 +305,167 @@ export async function handleSearchAndFetch({
   language?: string;
   engines?: string;
   site?: string | string[];
+  min_score?: number;
 }) {
-  return instrumentTool("search_and_fetch", () =>
-    withSearchEvents(
-      {
+  return instrumentSearchTool(
+    "search_and_fetch",
+    {
+      query,
+      profile: domain_profile,
+      expand,
+      time_range,
+      num_results: fetch_count,
+    },
+    async () => {
+      const { results: raw, meta } = await searxSearch(
         query,
-        profile: domain_profile,
-        expand,
+        category ?? "general",
+        5,
         time_range,
-        num_results: fetch_count,
-      },
-      async () => {
-        const { results: raw, meta } = await searxSearch(
-          query,
-          category ?? "general",
-          5,
-          time_range,
-          domain_profile,
-          expand,
-          language,
-          engines,
-          site,
-        );
-        if (raw.length === 0) {
-          return {
-            ranked: [],
-            rerankApplied: false,
-            result: {
-              content: [
-                {
-                  type: "text" as const,
-                  text: withMeta(meta, "No results found."),
-                },
-              ],
+        domain_profile,
+        expand,
+        language,
+        engines,
+        site,
+      );
+      if (raw.length === 0) {
+        return {
+          ranked: [],
+          rerankApplied: false,
+          result: {
+            content: [
+              {
+                type: "text" as const,
+                text: withMeta(meta, "No results found."),
+              },
+            ],
+          },
+        };
+      }
+      const ranked = await rerankWithFallback(
+        query,
+        raw,
+        5,
+        time_range,
+        min_score,
+      );
+      const searchText = formatResults(ranked);
+      const maxCharsPerPage = Math.floor(8000 / fetch_count);
+      const toFetch = ranked.slice(0, fetch_count);
+      const fetched = await Promise.allSettled(
+        toFetch.map((r) => fetchPage(r.url, maxCharsPerPage, domain_profile)),
+      );
+      const fetchedSections = fetched
+        .map((result, i) => {
+          if (result.status === "fulfilled") {
+            const { title, text } = result.value;
+            return `\n\n--- Full content: ${title} ---\n${text}`;
+          }
+          const err =
+            result.reason instanceof Error
+              ? result.reason.message
+              : String(result.reason);
+          return `\n\n--- Could not fetch result ${i + 1}: ${err} ---`;
+        })
+        .join("");
+      return {
+        ranked,
+        rerankApplied: true,
+        result: {
+          content: [
+            {
+              type: "text" as const,
+              text: withMeta(meta, searchText + fetchedSections),
             },
-          };
-        }
-        const ranked = await rerankWithFallback(query, raw, 5, time_range);
-        const searchText = formatResults(ranked);
-        const maxCharsPerPage = Math.floor(8000 / fetch_count);
-        const toFetch = ranked.slice(0, fetch_count);
-        const fetched = await Promise.allSettled(
-          toFetch.map((r) => fetchPage(r.url, maxCharsPerPage, domain_profile)),
+          ],
+        },
+      };
+    },
+  );
+}
+
+export async function handleSearchAndSummarize({
+  query,
+  fetch_count,
+  category,
+  time_range,
+  domain_profile,
+  expand,
+  language,
+  engines,
+  site,
+  min_score,
+}: {
+  query: string;
+  fetch_count: number;
+  category?: string;
+  time_range?: string;
+  domain_profile?: string;
+  expand?: boolean;
+  language?: string;
+  engines?: string;
+  site?: string | string[];
+  min_score?: number;
+}) {
+  return instrumentSearchTool(
+    "search_and_summarize",
+    {
+      query,
+      profile: domain_profile,
+      expand,
+      time_range,
+      num_results: fetch_count,
+    },
+    async () => {
+      const { results: raw, meta } = await searxSearch(
+        query,
+        category ?? "general",
+        fetch_count + 2,
+        time_range,
+        domain_profile,
+        expand,
+        language,
+        engines,
+        site,
+      );
+      if (raw.length === 0) {
+        return {
+          ranked: [],
+          rerankApplied: false,
+          result: {
+            content: [
+              {
+                type: "text" as const,
+                text: withMeta(meta, "No results found."),
+              },
+            ],
+          },
+        };
+      }
+      const ranked = await rerankWithFallback(
+        query,
+        raw,
+        fetch_count,
+        time_range,
+        min_score,
+      );
+      const searchText = formatResults(ranked);
+      const toFetch = ranked.slice(0, fetch_count);
+      const fetched = await Promise.allSettled(
+        toFetch.map((r) => fetchPage(r.url, 4000, domain_profile, true)),
+      );
+      const successfulPages = fetched
+        .map((r) => (r.status === "fulfilled" ? r.value : null))
+        .filter(
+          (r): r is { title: string; url: string; text: string } => r !== null,
         );
+      const summaryResult = await withSpan(
+        "summarize_llm",
+        { "summary.pages": successfulPages.length },
+        () => summarizePages(query, successfulPages),
+      );
+
+      if (!summaryResult.summary) {
         const fetchedSections = fetched
           .map((result, i) => {
             if (result.status === "fulfilled") {
@@ -312,127 +491,16 @@ export async function handleSearchAndFetch({
             ],
           },
         };
-      },
-    ),
-  );
-}
-
-export async function handleSearchAndSummarize({
-  query,
-  fetch_count,
-  category,
-  time_range,
-  domain_profile,
-  expand,
-  language,
-  engines,
-  site,
-}: {
-  query: string;
-  fetch_count: number;
-  category?: string;
-  time_range?: string;
-  domain_profile?: string;
-  expand?: boolean;
-  language?: string;
-  engines?: string;
-  site?: string | string[];
-}) {
-  return instrumentTool("search_and_summarize", () =>
-    withSearchEvents(
-      {
-        query,
-        profile: domain_profile,
-        expand,
-        time_range,
-        num_results: fetch_count,
-      },
-      async () => {
-        const { results: raw, meta } = await searxSearch(
-          query,
-          category ?? "general",
-          fetch_count + 2,
-          time_range,
-          domain_profile,
-          expand,
-          language,
-          engines,
-          site,
-        );
-        if (raw.length === 0) {
-          return {
-            ranked: [],
-            rerankApplied: false,
-            result: {
-              content: [
-                {
-                  type: "text" as const,
-                  text: withMeta(meta, "No results found."),
-                },
-              ],
-            },
-          };
-        }
-        const ranked = await rerankWithFallback(
-          query,
-          raw,
-          fetch_count,
-          time_range,
-        );
-        const searchText = formatResults(ranked);
-        const toFetch = ranked.slice(0, fetch_count);
-        const fetched = await Promise.allSettled(
-          toFetch.map((r) => fetchPage(r.url, 4000, domain_profile, true)),
-        );
-        const successfulPages = fetched
-          .map((r) => (r.status === "fulfilled" ? r.value : null))
-          .filter(
-            (r): r is { title: string; url: string; text: string } =>
-              r !== null,
-          );
-        const summaryResult = await withSpan(
-          "summarize_llm",
-          { "summary.pages": successfulPages.length },
-          () => summarizePages(query, successfulPages),
-        );
-
-        if (!summaryResult.summary) {
-          const fetchedSections = fetched
-            .map((result, i) => {
-              if (result.status === "fulfilled") {
-                const { title, text } = result.value;
-                return `\n\n--- Full content: ${title} ---\n${text}`;
-              }
-              const err =
-                result.reason instanceof Error
-                  ? result.reason.message
-                  : String(result.reason);
-              return `\n\n--- Could not fetch result ${i + 1}: ${err} ---`;
-            })
-            .join("");
-          return {
-            ranked,
-            rerankApplied: true,
-            result: {
-              content: [
-                {
-                  type: "text" as const,
-                  text: withMeta(meta, searchText + fetchedSections),
-                },
-              ],
-            },
-          };
-        }
-        const output = formatSummaryResult(summaryResult);
-        return {
-          ranked,
-          rerankApplied: true,
-          result: {
-            content: [{ type: "text" as const, text: withMeta(meta, output) }],
-          },
-        };
-      },
-    ),
+      }
+      const output = formatSummaryResult(summaryResult);
+      return {
+        ranked,
+        rerankApplied: true,
+        result: {
+          content: [{ type: "text" as const, text: withMeta(meta, output) }],
+        },
+      };
+    },
   );
 }
 
@@ -553,13 +621,38 @@ const TierStatsOutputSchema = z.object({
   success_rate: z.number().nullable(),
 });
 
-const AllTiersOutputSchema = z.object({
-  tier1: TierStatsOutputSchema,
-  tier2: TierStatsOutputSchema,
-  tier3: TierStatsOutputSchema,
-  tier4: TierStatsOutputSchema,
-  github: TierStatsOutputSchema,
-});
+/**
+ * The per-slot tier block, DERIVED from `TIER_SLOT_KEYS` rather than hand-listed.
+ *
+ * This is the fix for vikunja#637, and the derivation is the point of it. Both
+ * payload builders (`aggregateDomainStats`, `summarizeDomainRecord`) already
+ * emit their `tiers` object via `Object.fromEntries(TIER_SLOT_KEYS.map(...))`.
+ * When this schema was a hand-written literal, the two lists were free to
+ * diverge — and they did: v3.19.0 added a sixth slot (`solver`) to the constant
+ * and the payload grew it, while the schema stayed at five. Zod emits
+ * `additionalProperties: false`, so every `domain_stats` call on a
+ * solver-enabled deployment failed structured-output validation outright.
+ *
+ * Deriving from the same constant makes that class of drift unrepresentable:
+ * `TierSlotKey` is itself `(typeof TIER_SLOT_KEYS)[number]`, so the mapped type
+ * below and the runtime keys have one source. Adding a slot to the constant
+ * cannot leave this schema behind.
+ *
+ * Every slot is OPTIONAL, and that is deliberate rather than defensive. A slot
+ * is only written once its tier has run: `tier4` requires `WAYBACK_ENABLED`,
+ * `solver` requires `SOLVER_ENABLED`. Marking them required does not fix the
+ * bug, it inverts which deployments it breaks — `tier4` carried this identical
+ * defect latently for every deployment whose records predate Wayback.
+ */
+type AllTiersShape = {
+  [K in TierSlotKey]: z.ZodOptional<typeof TierStatsOutputSchema>;
+};
+
+const AllTiersOutputSchema = z.object(
+  Object.fromEntries(
+    TIER_SLOT_KEYS.map((slot) => [slot, TierStatsOutputSchema.optional()]),
+  ) as AllTiersShape,
+);
 
 const SingleDomainOutputSchema = z.object({
   domain: z.string(),
@@ -591,7 +684,10 @@ const AggregateOutputSchema = z.object({
   truncated: z.boolean(),
 });
 
-const DomainStatsOutputSchema = z.object({
+// Exported solely so tests can validate real payloads against the *declared*
+// contract rather than a restatement of it. A test that rebuilds the schema
+// locally proves nothing — this is the object actually handed to registerTool.
+export const DomainStatsOutputSchema = z.object({
   mode: z.enum(["single", "aggregate"]),
   hostname: z.string().nullable(),
   found: z.boolean(),
@@ -671,6 +767,43 @@ const SiteSchema = z
     "Restrict results to one domain or a list of domains (e.g. 'github.com'). Best-effort — applied as a site: query operator; most engines honor it but some ignore it.",
   );
 
+/**
+ * `min_score` — a relevance floor applied after reranking.
+ *
+ * The description is long on purpose. Three things about this parameter are
+ * counter-intuitive enough that omitting them would make it actively
+ * misleading, and all three were measured against the live FlashRank service
+ * rather than assumed:
+ *
+ * 1. WHICH SCORE. `rerank()` sorts on `relevance_score + RERANK_RECENCY_WEIGHT
+ *    * recencyScore(...)`, which with the default weight of 0.15 ranges over
+ *    0..1.15, not 0..1. This filters on the RAW `relevance_score`, so a recent
+ *    but irrelevant document cannot be pushed past the floor.
+ *
+ * 2. THE DISTRIBUTION IS BIMODAL, so the knob is far less sensitive than a
+ *    0..1 range suggests. Measured on "how to configure nginx reverse proxy":
+ *    nginx reverse-proxy guide 0.998, Apache mod_proxy 0.967, nginx install
+ *    page 0.0028, banana bread recipe 0.0000151. Anything in roughly 0.01..0.9
+ *    behaves near-identically. 0.5 is NOT a meaningful midpoint.
+ *
+ * 3. A HIGH SCORE MEANS TOPICALLY RELATED, NOT CORRECT. The Apache document
+ *    scored 0.967 on an nginx query. This is a topicality floor and cannot be
+ *    trusted as a correctness filter.
+ */
+const MinScoreSchema = z.coerce
+  .number()
+  .min(0)
+  .max(1)
+  .optional()
+  .describe(
+    "Drop results whose reranker relevance score is below this threshold (0-1, omit for no filtering). " +
+      "Filters on the RAW cross-encoder relevance score, not the recency-adjusted score used for ordering. " +
+      "Scores are strongly bimodal — relevant results cluster near 1.0 and irrelevant ones near 0, with little in between — so any value in roughly 0.01-0.9 behaves about the same; 0.01-0.1 is the useful range and 0.5 is not a midpoint. " +
+      "A high score means topically related, NOT correct: an Apache mod_proxy page scores 0.967 on an nginx query. " +
+      "Thresholds are model-dependent and not comparable across rerankers. " +
+      "No-op (with a logged warning) when the reranker is unavailable, since no scores exist to filter on.",
+  );
+
 // Output schema for the `search` tool — surfaces SearXNG's native answers /
 // infoboxes / corrections / suggestions alongside a minimal result list so
 // callers can check for a direct answer programmatically.
@@ -727,6 +860,7 @@ export function registerTools(server: McpServer): void {
         language: LanguageSchema,
         engines: EnginesSchema,
         site: SiteSchema,
+        min_score: MinScoreSchema,
       },
       outputSchema: SearchOutputSchema,
     },
@@ -762,6 +896,7 @@ export function registerTools(server: McpServer): void {
       language: LanguageSchema,
       engines: EnginesSchema,
       site: SiteSchema,
+      min_score: MinScoreSchema,
     },
     handleSearchAndFetch,
   );
@@ -826,6 +961,7 @@ export function registerTools(server: McpServer): void {
       language: LanguageSchema,
       engines: EnginesSchema,
       site: SiteSchema,
+      min_score: MinScoreSchema,
     },
     handleSearchAndSummarize,
   );

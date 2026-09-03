@@ -6,6 +6,132 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [3.21.0] - 2026-09-03
+
+Search hardening (build `searxng-mcp-search-hardening-2026-09`, vikunja#144; closes vikunja#637).
+Closes the last hard single point of failure, adds a relevance floor, makes the search histogram
+interpretable, and fixes the `domain_stats` output-schema contract so it cannot drift again.
+
+### Added
+- **Multi-instance SearXNG failover** (vikunja#144). `SEARXNG_URL` now accepts an ordered list of
+  interchangeable replicas separated by `,` or `;`. Both separators are taken because the
+  comparable server (`ihor-sokoliuk/mcp-searxng`) documents `;`, and accepting only one would
+  silently collapse that syntax into a single bogus instance. **A scalar value behaves exactly as
+  before** — one request, one host, no health lookup, no added cache traffic, same 10s bound.
+  Three properties worth knowing:
+  - The timeout budget is **total, not per instance** (`SEARXNG_TOTAL_TIMEOUT_MS`, default 10000,
+    with `SEARXNG_ATTEMPT_TIMEOUT_MS` as a per-instance ceiling). Iterating N replicas at 10s each
+    would make a total outage take *longer* to report the more replicas you added.
+  - Health state lives in the cache rather than in process memory, so one process's discovery of a
+    dead instance informs the next call. It deprioritises, never removes: a failed instance goes to
+    the back for `SEARXNG_UNHEALTHY_TTL_SECONDS` (default 30), and if every instance is marked down
+    the full list is still tried. Fail-soft — a cache outage degrades to "try every instance in
+    configured order", never to an error.
+  - Failover is **loud**: a `search.failover` NATS event plus a throttled stderr line. A silent
+    failover is indistinguishable from a healthy primary, which is how a half-dead deployment goes
+    unnoticed for weeks.
+
+  Fan-out is deliberately not implemented — it needs meta reconciliation with no obvious right
+  answer (if two instances return different `answers`/`infoboxes`, which wins?), and `searxSearch`
+  already merges across expanded query variants.
+- **`min_score`** on `search`, `search_and_fetch` and `search_and_summarize`: a relevance floor
+  applied after reranking, absent by default. It filters on the **raw cross-encoder
+  `relevance_score`**, not on the value used for ordering — that sort key is
+  `relevance_score + RERANK_RECENCY_WEIGHT * recencyScore(...)`, which with the default weight of
+  0.15 ranges over 0–1.15, so filtering a "minimum relevance" parameter on it would quietly make it
+  mean "relevant enough *or* recent enough". Filtering runs before the top-N slice, so the floor
+  never costs a result that cleared it.
+
+  Two measured caveats are in the parameter description and the README, because without them the
+  knob is misleading. Probed against the local FlashRank service on "how to configure nginx reverse
+  proxy": nginx reverse-proxy guide 0.998, Apache `mod_proxy` 0.967, nginx install page 0.0028,
+  banana bread recipe 0.0000151. The distribution is strongly bimodal, so anything in roughly
+  0.01–0.9 behaves the same and **0.5 is not a midpoint** (use 0.01–0.1); and a high score means
+  topically *related*, not correct — an Apache page scored 0.967 on an nginx query. Thresholds are
+  model-dependent and not comparable across rerankers. With the reranker unavailable `min_score`
+  becomes a no-op with a throttled warning, since returning unfiltered results silently would imply
+  a floor that was never applied.
+- **A `tool` label on the search histogram and counter.** All three search tools record into one
+  `search` histogram that carried only `profile`, and their normal ranges differ by roughly 3x — a
+  plain `search` is bounded around ~17.5s while `search_and_summarize` routinely reaches ~50s. The
+  observed 7-day maximum of 51.6s was therefore uninterpretable: routine for one tool, alarming for
+  another.
+
+### Fixed
+- **`domain_stats` was dead on every call** from a solver-enabled deployment (vikunja#637), failing
+  with `Additional properties are not allowed ('solver' was unexpected)` since v3.19.0.
+
+  The root cause was not a missing key. The payload is *derived* from `TIER_SLOT_KEYS` in both tool
+  modes, while `AllTiersOutputSchema` hand-listed five of the six slots — so the fix is to derive
+  the schema from the same constant rather than to add `solver` to the list, which would have
+  guaranteed a repeat at the next tier slot. Every slot is now optional: `tier4` requires
+  `WAYBACK_ENABLED` and `solver` requires `SOLVER_ENABLED`, so making them required only inverts
+  which deployments break — `tier4` already carried this defect latently.
+
+  `DomainRecord["tier_stats_30d"]` is now also derived from `TIER_SLOT_KEYS`. It was a third
+  hand-maintained copy of the same closed set, with `newRecord()` as a fourth; as a mapped type the
+  compiler rejects any writer that misses a slot.
+
+  735 tests were green while the tool was 100% dead, because the three `domain_stats` assertions use
+  `toMatchObject`, which is non-exhaustive. The new test does **not** use `.parse()`, and that is
+  the point: server-side the SDK calls zod's `safeParseAsync`, and `z.object()` is *strip*, not
+  *strict* — it silently drops an unrecognised key and succeeds. A `.parse()` test would have passed
+  on the broken build. What actually rejected the call was the client validating against the
+  advertised JSON Schema, so the tests validate real payloads against
+  `toJsonSchemaCompat(...)` using the SDK's own converter and validator.
+- **Search latency is now recorded on the failure path.** The `catch` previously incremented only
+  `errors_total`, so a search that failed after 40s and one that failed instantly were
+  indistinguishable — precisely the question this histogram was consulted about during the 300s
+  stall. Errors carry `outcome: "error"` rather than being folded in unlabelled, so they do not skew
+  the success p99.
+
+  **This does not make the histogram able to see a hang, and does not claim to.** Both the success
+  and failure recordings happen after `await fn()` settles, so a call that never returns still
+  records nothing at all. Closing that gap needs a watchdog timer independent of the awaited
+  promise, which is out of scope here.
+- **Four pre-containerization claims in the README**, each checked against the running container:
+  `schema_version 5` (it is 6, and the same paragraph already described the 5→6 bump); "runs as
+  several concurrent per-agent stdio children" (one shared container since vikunja#149/#321);
+  "stderr is the only telemetry sink wired on the deployed PM2 process" (wrong twice — the
+  deployment is Docker, and OTel and NATS are both wired); and "clean PM2 restart" (the container
+  runs `restart: unless-stopped`). `src/log.ts` carried the same stale claim in its header comment
+  and is fixed too.
+
+### Changed
+- `SEARXNG_URL` entries that are not valid http(s) URLs are dropped with a warning rather than used
+  verbatim. This catches an unset `${SEARXNG_URL}` interpolating to the *literal* placeholder rather
+  than to empty. If no entry survives, the default is used and said so loudly — refusing to boot
+  would turn one bad env var into a total outage. Repeated entries are de-duplicated so a repeat
+  cannot spend the shared timeout budget twice on a host that just failed.
+- `ajv` is now an explicit devDependency. It was reachable only as an auto-installed peer of the
+  MCP SDK, which is not a dependency the new schema-contract tests should rest on.
+
+### Security
+
+- **Basic-auth credentials in `SEARXNG_URL` are extracted into an `Authorization` header.** Found by
+  the security audit of this build. Node's `fetch` refuses a URL containing userinfo *synchronously*,
+  before any network I/O, and embeds the whole URL — password included — in the resulting
+  `TypeError`'s own message. So a credentialed instance had two problems at once: it could never
+  serve a single search, and the password reached every sink that forwards an error message. That
+  is the stderr failover line, the `search.failover` NATS event, the generic `error` event (which
+  fires on the single-instance path too), the OTel span exported over OTLP, and the error returned
+  to the calling agent. Credentials are now lifted out at parse time, so `SEARXNG_URLS` is
+  credential-free by construction, and error messages are scrubbed at the generic sinks rather than
+  at each call site.
+
+  The test that was supposed to cover this mocked `fetch`'s rejection as a generic `Error`, whose
+  message can never contain a URL — it asserted the right property against the wrong failure shape.
+  The replacement mocks nothing: real `fetch`, real servers, real refused connections.
+
+### Not included
+- **`pageno`** was descoped and is tracked as vikunja#639. Pool-and-slice is the right design, but
+  it makes the pool size depend on the requested page, and the cached value records no pool size —
+  so a page-1 entry cannot be distinguished from an exhausted one. That is a cache-schema change
+  with back-compat implications, not a parameter addition, and it deserves its own audit rather
+  than riding along at the tail of this branch. The ticket carries the live measurements taken
+  during the assessment (SearXNG returns 32 results on page 1 and 20 thereafter, so the current
+  `min(numResults * 3, 20)` cap — not SearXNG's page size — is the binding constraint).
+
 ## [3.20.0] - 2026-09-03
 
 Only SearXNG is required, and the code now says so as well as the README (build

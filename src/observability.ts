@@ -8,6 +8,7 @@ import type {
   Span,
   Tracer,
 } from "@opentelemetry/api";
+import { redactUrlCredentialsInText } from "./log.js";
 import { VERSION } from "./version.js";
 
 type SpanStatusCode = 1 | 2; // 1 = OK, 2 = ERROR
@@ -122,10 +123,22 @@ export async function withSpan<T>(
       const result = await fn(span);
       return result;
     } catch (err) {
+      // Scrubbed before it reaches the exporter. An error message can carry a
+      // credentialed URL (Node's fetch embeds one in its own TypeError), and a
+      // span is exported off-host over OTLP — so this is a sink like any other.
+      // The thrown error is left untouched; only what leaves the process is
+      // redacted.
       if (err instanceof Error) {
-        span.recordException(err);
+        const safe = new Error(redactUrlCredentialsInText(err.message));
+        safe.name = err.name;
+        span.recordException(safe);
       }
-      span.setStatus({ code: 2, message: (err as Error)?.message });
+      span.setStatus({
+        code: 2,
+        message: redactUrlCredentialsInText(
+          err instanceof Error ? err.message : String(err),
+        ),
+      });
       throw err;
     } finally {
       span.end();

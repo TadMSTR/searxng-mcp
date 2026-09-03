@@ -158,6 +158,25 @@ export const events = {
   }): void {
     publishEvent("crawl.completed", p);
   },
+  /**
+   * A search fell through from one SearXNG instance to another. Emitted once
+   * per failed instance, so a call that exhausts three replicas emits three
+   * events ordered by `attempt`.
+   *
+   * This exists because a successful failover is otherwise invisible: results
+   * come back normally, and nothing distinguishes a healthy primary from one
+   * that has been dead for a week behind a working replica.
+   */
+  searxFailover(p: {
+    from: string;
+    to: string | null;
+    attempt: number;
+    error_type: string;
+    message: string;
+    exhausted: boolean;
+  }): void {
+    publishEvent("search.failover", p);
+  },
   error(p: {
     stage: string;
     url?: string;
