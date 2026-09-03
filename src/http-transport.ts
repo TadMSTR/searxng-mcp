@@ -6,6 +6,7 @@ import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
 import { cachePing } from "./cache.js";
 import {
   HTTP_AUTH_TOKEN,
+  HTTP_MAX_BODY_BYTES,
   HTTP_MAX_SESSIONS,
   HTTP_SESSION_IDLE_TIMEOUT_MS,
 } from "./config.js";
@@ -18,17 +19,26 @@ function sendJsonRpcError(
   status: number,
   message: string,
   extraHeaders: Record<string, string> = {},
+  onFlushed?: () => void,
 ): void {
   res.writeHead(status, {
     "Content-Type": "application/json",
     ...extraHeaders,
   });
+  // onFlushed runs once the body has actually been handed off, not merely
+  // queued. Only the 413 path needs it — it destroys the socket afterwards,
+  // and doing that while the response is still buffered would replace the
+  // error the client should see with a bare connection reset. Today's payload
+  // is ~100 bytes and flushes synchronously, so this is correct either way;
+  // the callback is what stops that from being a property of the payload size
+  // rather than of the code.
   res.end(
     JSON.stringify({
       jsonrpc: "2.0",
       error: { code: -32600, message },
       id: null,
     }),
+    () => onFlushed?.(),
   );
 }
 
@@ -53,10 +63,26 @@ function tokenMatches(presented: string): boolean {
   );
 }
 
+class BodyTooLargeError extends Error {
+  constructor(readonly limit: number) {
+    super(`Request body exceeds ${limit} bytes`);
+    this.name = "BodyTooLargeError";
+  }
+}
+
 async function readJsonBody(req: IncomingMessage): Promise<unknown> {
   const chunks: Buffer[] = [];
+  let total = 0;
   for await (const chunk of req) {
-    chunks.push(chunk as Buffer);
+    const buf = chunk as Buffer;
+    total += buf.byteLength;
+    // Bail on the chunk that crosses the limit, before it is retained. Reading
+    // to completion and rejecting afterwards would have already paid the
+    // memory cost the limit exists to avoid — the same post-hoc-check mistake
+    // this change removes from the fetch side.
+    if (total > HTTP_MAX_BODY_BYTES)
+      throw new BodyTooLargeError(HTTP_MAX_BODY_BYTES);
+    chunks.push(buf);
   }
   const raw = Buffer.concat(chunks).toString("utf8");
   return raw.length > 0 ? JSON.parse(raw) : undefined;
@@ -191,8 +217,36 @@ export function createHttpRequestListener(
           return;
         }
 
-        const parsedBody =
-          req.method === "POST" ? await readJsonBody(req) : undefined;
+        let parsedBody: unknown;
+        try {
+          parsedBody =
+            req.method === "POST" ? await readJsonBody(req) : undefined;
+        } catch (err: unknown) {
+          if (!(err instanceof BodyTooLargeError)) throw err;
+          logThrottled(
+            "http-body-413",
+            `rejected oversized request body: ${req.method} ${req.url}`,
+          );
+          // Answer first, then tear the connection down — and only once the
+          // response has actually flushed, so the client gets the 413 rather
+          // than a reset.
+          //
+          // The `Connection: close` header is what actually stops the inbound
+          // read: Node will not drain a body it is not going to reuse the
+          // socket for. The explicit destroy is defence-in-depth for the day
+          // someone drops that header, and is deliberately not load-bearing —
+          // removing it changes no observable behaviour today, which is
+          // recorded in tests/http-body-limit.test.ts so the next reader does
+          // not mistake a surviving mutation for dead code.
+          sendJsonRpcError(
+            res,
+            413,
+            "Request body too large",
+            { Connection: "close" },
+            () => req.destroy(),
+          );
+          return;
+        }
 
         if (!isInitializeRequest(parsedBody)) {
           sendJsonRpcError(res, 400, "No valid session ID provided");

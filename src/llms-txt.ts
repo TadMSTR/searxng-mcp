@@ -2,21 +2,36 @@ import { cacheGet, cacheSet } from "./cache.js";
 import { FETCH_CACHE_TTL_SECONDS } from "./config.js";
 import { recordLlmsFullProbe } from "./domain-db.js";
 import { getLlmsTxtAllowlist } from "./domains.js";
-import { safeFetch } from "./fetch-utils.js";
+import { readBoundedText, safeFetch } from "./fetch-utils.js";
 
 const PROBE_PRESENT_TTL_SECONDS = 24 * 60 * 60;
 const PROBE_ABSENT_TTL_SECONDS = 7 * 24 * 60 * 60;
 const PROBE_PRESENT_TTL_MS = PROBE_PRESENT_TTL_SECONDS * 1000;
 const FETCH_TIMEOUT_MS = 30_000;
 const MIN_SIZE_BYTES = 1_024;
-const MAX_SIZE_BYTES = 200 * 1024 * 1024;
+// Ceiling on an accepted llms-full.txt. Was 200 MB — a number no real document
+// approaches, and one that was checked only *after* the whole body had been
+// buffered. Lowered to 64 MB (Ted, 2026-09-03) against measured sizes of the
+// six allowlisted origins: docs.anthropic.com is 40.3 MB, docs.firecrawl.dev
+// 0.93 MB, docs.cursor.com 0.49 MB, the rest absent. 64 MB keeps every real
+// document on the fast path with room to grow. Note this is a capability
+// boundary, not just a memory one: raising or lowering it changes which
+// documents the fast path accepts.
+const MAX_SIZE_BYTES = 64 * 1024 * 1024;
 const USER_AGENT =
   "searxng-mcp/3.8.0 (+https://github.com/TadMSTR/searxng-mcp; personal research)";
 
-// 10MB cap across all domains for the in-process L1 body cache.
-// Note: enforced using body.length (UTF-16 char count). For non-ASCII content,
-// actual heap usage may be ~2× this value; llms-full.txt is almost exclusively ASCII.
-const L1_MAX_BYTES = 10 * 1024 * 1024;
+// Cap across all domains for the in-process L1 body cache, deliberately tied
+// to MAX_SIZE_BYTES: any document the fetch path accepts must be one the cache
+// can hold. These were previously two independently chosen numbers (10 MB vs
+// 200 MB) that disagreed, and the gap between them was a live pathology —
+// docs.anthropic.com at 40.3 MB was accepted, written to Valkey, and then
+// refused by L1 on every single session, so the 40 MB round trip was paid
+// every time and the cache it was meant to warm never held it.
+//
+// Enforced in bytes (see l1Set), matching the constant's name. It was
+// previously enforced with body.length, a UTF-16 character count.
+const L1_MAX_BYTES = MAX_SIZE_BYTES;
 
 interface CachedLlmsFull {
   status: "present" | "absent";
@@ -30,26 +45,29 @@ const bodyCache = new Map<string, { body: string; expiresAt: number }>();
 let bodyCacheTotalBytes = 0;
 
 function l1Set(origin: string, body: string, ttlMs: number): void {
+  const size = Buffer.byteLength(body, "utf-8");
+  // A body larger than the whole cache can never be inserted. Check before
+  // evicting anything: the eviction loop below would otherwise drain every
+  // other entry trying to make room that cannot exist, so one oversized
+  // document flushed the entire cache and still did not get stored.
+  if (size > L1_MAX_BYTES) return;
+
   const existing = bodyCache.get(origin);
   if (existing) {
-    bodyCacheTotalBytes -= existing.body.length;
+    bodyCacheTotalBytes -= Buffer.byteLength(existing.body, "utf-8");
     bodyCache.delete(origin);
   }
   // Evict oldest entries until there is room for the new body.
-  while (
-    bodyCacheTotalBytes + body.length > L1_MAX_BYTES &&
-    bodyCache.size > 0
-  ) {
+  while (bodyCacheTotalBytes + size > L1_MAX_BYTES && bodyCache.size > 0) {
     const oldest = bodyCache.keys().next().value;
     if (!oldest) break;
     const entry = bodyCache.get(oldest);
-    if (entry) bodyCacheTotalBytes -= entry.body.length;
+    if (entry) bodyCacheTotalBytes -= Buffer.byteLength(entry.body, "utf-8");
     bodyCache.delete(oldest);
   }
-  // Only insert if the body fits (a single very large doc may exceed the cap).
-  if (bodyCacheTotalBytes + body.length <= L1_MAX_BYTES) {
+  if (bodyCacheTotalBytes + size <= L1_MAX_BYTES) {
     bodyCache.set(origin, { body, expiresAt: Date.now() + ttlMs });
-    bodyCacheTotalBytes += body.length;
+    bodyCacheTotalBytes += size;
   }
 }
 
@@ -88,8 +106,18 @@ async function fetchLlmsFullTxt(origin: string): Promise<CachedLlmsFull> {
     if (!res.ok) {
       return { status: "absent", fetched: new Date().toISOString() };
     }
-    const body = await res.text();
-    if (body.length < MIN_SIZE_BYTES || body.length > MAX_SIZE_BYTES) {
+    // Read one byte PAST the ceiling, deliberately. Capping at exactly
+    // MAX_SIZE_BYTES would truncate an oversized document to exactly the
+    // limit, the size check below would then pass, and a partial
+    // llms-full.txt would be served as if it were the whole document — a
+    // worse bug than the unbounded read this replaces. The extra byte is what
+    // lets an oversized document still be *detected* as oversized and fall
+    // through to the tier cascade as `absent`.
+    const body = await readBoundedText(res, MAX_SIZE_BYTES + 1);
+    // Byte-based, matching the constants' own names. The previous check used
+    // body.length, a UTF-16 character count, against byte thresholds.
+    const size = Buffer.byteLength(body, "utf-8");
+    if (size < MIN_SIZE_BYTES || size > MAX_SIZE_BYTES) {
       return { status: "absent", fetched: new Date().toISOString() };
     }
     return { status: "present", body, fetched: new Date().toISOString() };

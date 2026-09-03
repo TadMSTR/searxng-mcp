@@ -286,6 +286,8 @@ pnpm restore-domain-db       # re-seed the domain-db from the newest snapshot af
 
 For whitelisted documentation domains in `domains.json` (`llms_txt` array), `fetchPage` tries `<origin>/llms-full.txt` first and extracts the section matching the requested URL before invoking any tier. This avoids running puppeteer against well-instrumented docs sites and returns a clean markdown section directly. Probe outcomes and the full body are cached in Valkey (`llms:<origin>:full`, 24 h / 7 d for present/absent). Default whitelist: `docs.anthropic.com`, `docs.openai.com`, `docs.stripe.com`, `docs.crawl4ai.com`, `docs.firecrawl.dev`, `docs.cursor.com`. Extend by editing `domains.json` — the file is hot-reloaded.
 
+A document is accepted only if it is between 1 KB and 64 MB; anything outside that is treated as absent and falls through to the normal tier cascade. The upper bound is a capability boundary as much as a memory one — for reference, `docs.anthropic.com/llms-full.txt` was 40.3 MB as of 2026-09-03, so lowering it much further would drop that domain off the fast path.
+
 ### Kiwix fast path
 
 When `KIWIX_URL` is set, fetch requests for known offline-capable hosts are intercepted
@@ -670,6 +672,7 @@ All service URLs are configurable via environment variables.
 | `SEARXNG_MCP_AUTH_TOKEN` | *(unset)* | HTTP transport only. When set, every request except `GET /health` must send `Authorization: Bearer <token>` or get a `401`. Unset (the default) disables the check entirely. **Set this whenever `SEARXNG_MCP_HOST` is not loopback** — see [HTTP transport authentication](#http-transport-authentication). |
 | `HTTP_SESSION_IDLE_TIMEOUT_MS` | `600000` | HTTP transport only. A session idle longer than this is evicted by a background sweep (sessions with an in-flight request are exempt, so a long `crawl_site` call is never closed mid-request). Bounds session-map growth from clients killed mid-turn, which never fire `transport.onclose`. |
 | `HTTP_MAX_SESSIONS` | `256` | HTTP transport only. Hard-cap backstop — if the session map ever exceeds this, the least-recently-used idle session is evicted regardless of the idle timeout. |
+| `HTTP_MAX_BODY_BYTES` | `1048576` | HTTP transport only. Maximum request body read on the pre-session `initialize` path; a larger body gets `413` and the read stops at the limit rather than buffering to completion first. Requests carrying an `Mcp-Session-Id` are read by the MCP SDK's own transport and are not covered by this — see [Bounded reads](#bounded-reads). |
 | `NATS_USER` | *(unset)* | NATS username for bcrypt username/password auth, used alongside `NATS_PASSWORD`. Ignored if `NATS_CREDS` is also set (creds-file JWT auth wins). |
 | `NATS_PASSWORD` | *(unset)* | NATS password — see `NATS_USER`. |
 
@@ -796,6 +799,22 @@ The raw-HTTP and GitHub fast-path fetches additionally use `redirect: "manual"` 
 ### Transport exposure
 
 stdio has no network surface. The HTTP transport binds `127.0.0.1` by default and is unauthenticated in that configuration; moving it off loopback without setting `SEARXNG_MCP_AUTH_TOKEN` exposes every tool — including arbitrary-URL `fetch_url` and destructive `clear_cache` — to anything that can route to the port. See [HTTP transport authentication](#http-transport-authentication).
+
+### Bounded reads
+
+Every response body read from a third party, and the one request body this server reads itself, stops at a byte limit and cancels the rest of the stream rather than buffering the whole thing and checking its size afterwards. A post-hoc size check has already paid the memory cost it is trying to avoid.
+
+| Read | Limit | Notes |
+|---|---|---|
+| Fetch tiers (raw, Firecrawl, Crawl4AI, solver, Wayback, Reddit, YouTube, GitHub, sitemap/crawl) | `RAW_HTML_MAX_BYTES` (2 MB) | Shared `readBoundedText` helper. |
+| `llms-full.txt` probe | `MAX_SIZE_BYTES` (64 MB) | Read one byte past the ceiling so an oversized document is still *detected* as oversized and reported absent, rather than truncated to the limit and served as if complete. |
+| HTTP transport request body | `HTTP_MAX_BODY_BYTES` (1 MB) | `initialize` path only; `413` on exceeding. |
+
+The bound is on **bytes retained**, not bytes transferred. Cancellation is not instantaneous — socket buffers and in-flight data mean a peer can still push some way past the cap — so this hard-bounds memory and only reduces transfer (measured roughly 10x against a 40 MB stub).
+
+**One limitation, out of this server's control:** requests carrying an `Mcp-Session-Id` are handled by the MCP SDK's `StreamableHTTPServerTransport.handleRequest()`, which reads its own request body. That read is not bounded by anything here. It is reachable only by a caller that has already authenticated and established a session.
+
+Reads from first-party services configured by the operator — SearXNG and Ollama — are deliberately left unbounded. They are not attacker-influenced, and bounding them would add ceremony without changing a threat.
 
 ### Dependency auditing
 

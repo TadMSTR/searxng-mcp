@@ -22,19 +22,24 @@ beforeEach(() => {
 
 const URL = "https://example.com/dead-page";
 
-const cdxHit = (snapshotUrl: string) => {
-  const body = JSON.stringify({
-    archived_snapshots: {
-      closest: { url: snapshotUrl, available: true, timestamp: "20240101" },
-    },
-  });
-  return { ok: true, body: null, text: () => Promise.resolve(body) };
-};
+// waybackFetch reads the CDX response through readBoundedText, so these need
+// a real body stream rather than `body: null`.
+const cdxResponse = (body: string) => ({
+  ok: true,
+  body: new Response(body).body as ReadableStream<Uint8Array>,
+  text: () => Promise.resolve(body),
+});
 
-const cdxMiss = () => {
-  const body = JSON.stringify({ archived_snapshots: {} });
-  return { ok: true, body: null, text: () => Promise.resolve(body) };
-};
+const cdxHit = (snapshotUrl: string) =>
+  cdxResponse(
+    JSON.stringify({
+      archived_snapshots: {
+        closest: { url: snapshotUrl, available: true, timestamp: "20240101" },
+      },
+    }),
+  );
+
+const cdxMiss = () => cdxResponse(JSON.stringify({ archived_snapshots: {} }));
 
 describe("waybackFetch", () => {
   it("fetches snapshot and returns result with [Archived] title prefix", async () => {

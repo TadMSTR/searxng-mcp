@@ -98,12 +98,38 @@ export function isPdfUrl(url: string): boolean {
   }
 }
 
-export async function readBoundedText(res: Response): Promise<string> {
+/**
+ * Read a response body as text, stopping at `limit` bytes and cancelling the
+ * rest of the stream. Use this for every body read of third-party content:
+ * `res.text()` buffers the whole thing first, so a post-hoc size check has
+ * already paid the memory cost it is trying to avoid.
+ *
+ * The bound is on **bytes retained**, not bytes transferred. Cancellation is
+ * not instantaneous — socket buffers and in-flight data mean the peer may
+ * still push past the cap — so this reduces transfer (measured ~10x against a
+ * 40 MB stub) while hard-bounding what is held in memory.
+ *
+ * Truncation is byte-based throughout: the accumulated buffer is cut to
+ * `limit` bytes before decoding, so the unit matches what the loop counts. A
+ * multi-byte UTF-8 sequence straddling the boundary decodes to U+FFFD, which
+ * is the honest result for a truncated document.
+ *
+ * @param res   Response to read. A response with no readable stream (204, 304,
+ *              HEAD) yields "" — those genuinely have no body, and failing
+ *              closed here is the point: an unbounded `res.text()` fallback
+ *              would reintroduce the exact defect this helper exists to fix.
+ * @param limit Maximum bytes to retain. Defaults to RAW_HTML_MAX_BYTES (2 MB).
+ */
+export async function readBoundedText(
+  res: Response,
+  limit: number = RAW_HTML_MAX_BYTES,
+): Promise<string> {
+  const cap = Math.max(0, Math.floor(limit));
   const reader = res.body?.getReader();
-  if (!reader) return (await res.text()).slice(0, RAW_HTML_MAX_BYTES);
+  if (!reader) return "";
   const chunks: Uint8Array[] = [];
   let total = 0;
-  while (total < RAW_HTML_MAX_BYTES) {
+  while (total < cap) {
     const { value, done } = await reader.read();
     if (done) break;
     chunks.push(value);
@@ -111,7 +137,9 @@ export async function readBoundedText(res: Response): Promise<string> {
   }
   // Drop any in-flight remainder if we hit the cap.
   reader.cancel().catch(() => {});
-  return Buffer.concat(chunks.map((c) => Buffer.from(c)))
-    .toString("utf-8")
-    .slice(0, RAW_HTML_MAX_BYTES);
+  const buf = Buffer.concat(chunks.map((c) => Buffer.from(c)));
+  // Byte-based truncation: the loop may overshoot by at most one chunk, and
+  // `total` counts bytes, so the cut must too. A character-based .slice() here
+  // would be a no-op on multi-byte content.
+  return (buf.byteLength > cap ? buf.subarray(0, cap) : buf).toString("utf-8");
 }

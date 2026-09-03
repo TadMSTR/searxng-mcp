@@ -6,6 +6,69 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [3.22.0] - 2026-09-03
+
+Cap every read (build `searxng-mcp-bounded-reads-2026-09`, vikunja#638; closes vikunja#423).
+Finishes propagating the bounded-read pattern SXNG-23 introduced and only half-applied: every
+site that reads a response or request body now stops at a limit instead of buffering the whole
+thing and checking its size afterwards.
+
+### Fixed
+- **`readBoundedText` had three defects of its own**, fixed before propagating it anywhere.
+  Its `!reader` fallback did `(await res.text()).slice(...)` — an unbounded read sitting in the
+  fallback path of the fix — and now returns `""`, failing closed. It counted bytes while
+  reading and then sliced *characters* off the decoded string, so for any multi-byte body the
+  trailing slice could not cut anything the loop had not already bounded; truncation is now
+  byte-based end to end. And it hardcoded `RAW_HTML_MAX_BYTES`, so a caller with its own
+  ceiling could not express one — there is now an optional limit parameter.
+- **Four fetch-side sites buffered whole third-party bodies before capping** and now read
+  bounded: the `llms-full.txt` probe (`llms-txt.ts`), the GitHub raw-content and two GitHub API
+  reads (`tiers/github.ts`), and the Firecrawl crawl poll (`crawl.ts`).
+- **The `llms-full.txt` ceiling was 200 MB**, checked *after* `res.text()` had already
+  materialised the body — roughly 400 MB resident at UTF-16. Now 64 MB, checked during the
+  read. The read deliberately goes one byte past the ceiling so an oversized document is still
+  *detected* as oversized and reported absent; capping at exactly the limit would truncate it
+  to the limit, pass the size check, and serve a partial document as if it were complete.
+- **The L1 body cache refused the one document it existed for.** `L1_MAX_BYTES` (10 MB) and
+  `MAX_SIZE_BYTES` (200 MB) were independently chosen and disagreed, so a document in between
+  was accepted, written to Valkey, and then rejected by the in-process cache on every session —
+  `docs.anthropic.com/llms-full.txt` is 40.3 MB and hit this every time. Worse, `l1Set` ran its
+  eviction loop before discovering the body would not fit, so one oversized document drained
+  every other entry to make room that could not exist. The two constants are now tied together,
+  and `l1Set` checks whether a body can ever fit before evicting anything.
+- **The HTTP transport read request bodies unbounded** (vikunja#423) — a `for await` into
+  `Buffer.concat` with no ceiling. Now bails on the chunk that crosses the limit and answers
+  `413`. **This is a robustness fix, not an exposure fix.** The ticket reads as an
+  unauthenticated DoS and it is not: the bearer gate runs before the body is read, the token is
+  set in production, and this path is only reachable before a session exists. What it actually
+  closes is a *credentialed* caller — a buggy agent, a runaway retry — being able to OOM a
+  container that now serves every agent. The gate ordering is asserted by a test rather than
+  left to this paragraph.
+
+### Added
+- `HTTP_MAX_BODY_BYTES` (default 1 MB) — maximum request body on the pre-session `initialize`
+  path. Named and parsed like `HTTP_MAX_SESSIONS` / `HTTP_SESSION_IDLE_TIMEOUT_MS`.
+- README **Bounded reads** section recording every read and its limit, that the bound is on
+  bytes *retained* rather than bytes transferred, and the one limitation this repo cannot fix —
+  the MCP SDK's own `handleRequest` body read, reachable only post-authentication.
+- `sendJsonRpcError` takes an optional completion callback. The 413 path destroys the socket
+  from it rather than on the following line, so the client cannot receive a bare connection
+  reset in place of the error if that response body ever grows past a synchronous flush.
+
+### Changed
+- `MAX_SIZE_BYTES` 200 MB → 64 MB. This is a capability boundary, not only a memory one: it
+  changes which documents the llms.txt fast path accepts. 64 MB was chosen against the measured
+  sizes of all six allowlisted origins rather than the single-digit-MB figure originally
+  proposed, which would have dropped `docs.anthropic.com` (40.3 MB) off the fast path entirely.
+
+### Notes
+- Reads from first-party SearXNG and Ollama are deliberately left unbounded and documented as
+  such — not attacker-influenced, and bounding them would add ceremony without changing a
+  threat.
+- Tier tests for raw, solver, wayback and GitHub were mocking responses with `body: null`,
+  which meant they had been exercising the no-reader fallback rather than the streaming read
+  those tiers use in production. Retargeted onto real body streams.
+
 ## [3.21.0] - 2026-09-03
 
 Search hardening (build `searxng-mcp-search-hardening-2026-09`, vikunja#144; closes vikunja#637).
