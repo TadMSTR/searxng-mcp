@@ -51,6 +51,9 @@ thing and checking its size afterwards.
 - README **Bounded reads** section recording every read and its limit, that the bound is on
   bytes *retained* rather than bytes transferred, and the one limitation this repo cannot fix —
   the MCP SDK's own `handleRequest` body read, reachable only post-authentication.
+- `sendJsonRpcError` takes an optional completion callback. The 413 path destroys the socket
+  from it rather than on the following line, so the client cannot receive a bare connection
+  reset in place of the error if that response body ever grows past a synchronous flush.
 
 ### Changed
 - `MAX_SIZE_BYTES` 200 MB → 64 MB. This is a capability boundary, not only a memory one: it
