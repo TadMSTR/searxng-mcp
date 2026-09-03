@@ -21,16 +21,47 @@ const SEARXNG_URL_DEFAULT = "http://localhost:8081";
  * nonsense host. If nothing survives, fall back to the default and say so
  * loudly; refusing to boot would turn one bad env var into a total outage.
  */
-export function parseSearxngUrls(
+export interface SearxInstance {
+  /**
+   * The endpoint with any userinfo REMOVED. Safe to hand to `fetch()`, safe to
+   * log, safe to use as a cache key.
+   */
+  url: string;
+  /**
+   * `Basic <base64>` when the configured entry carried userinfo, else absent.
+   * Sent as an explicit header instead of being left in the URL.
+   */
+  authHeader?: string;
+}
+
+/**
+ * Parse `SEARXNG_URL` into instances, splitting any embedded basic-auth
+ * credentials out of the URL and into an `Authorization` header.
+ *
+ * THE SPLIT IS NOT COSMETIC — IT IS THE ONLY WAY A CREDENTIALED URL WORKS.
+ * The WHATWG Fetch spec forbids constructing a request from a URL containing
+ * userinfo, and Node's `fetch` enforces it:
+ *
+ *     fetch("http://user:pw@host/x")
+ *     -> TypeError: Request cannot be constructed from a URL that includes
+ *        credentials: http://user:pw@host/x
+ *
+ * That rejection is synchronous, happens before any network I/O, and embeds the
+ * full URL — password included — as the error's own `.message`. So leaving
+ * userinfo in the URL both (a) broke every search against such an instance and
+ * (b) fed the password into every sink that forwards an error message. Neither
+ * was caught by mocking `fetch`'s rejection as a generic `Error`.
+ */
+export function parseSearxngInstances(
   raw: string | undefined,
   warn: (msg: string) => void = () => {},
-): string[] {
+): SearxInstance[] {
   const entries = (raw ?? SEARXNG_URL_DEFAULT)
     .split(/[,;]/)
     .map((s) => s.trim())
     .filter((s) => s.length > 0);
 
-  const valid: string[] = [];
+  const valid: SearxInstance[] = [];
   for (const entry of entries) {
     try {
       const u = new URL(entry);
@@ -40,9 +71,22 @@ export function parseSearxngUrls(
         );
         continue;
       }
+
+      // Lift userinfo out of the URL before it can reach fetch() or any sink.
+      // `username`/`password` are percent-encoded by URL, so decode before
+      // base64 or a credential containing e.g. '@' would be sent wrong.
+      let authHeader: string | undefined;
+      if (u.username || u.password) {
+        const user = decodeURIComponent(u.username);
+        const pass = decodeURIComponent(u.password);
+        authHeader = `Basic ${Buffer.from(`${user}:${pass}`).toString("base64")}`;
+        u.username = "";
+        u.password = "";
+      }
+
       // Normalise away a trailing slash so `${base}/search` cannot become
       // `//search`, which some reverse proxies 404 rather than normalising.
-      valid.push(u.toString().replace(/\/$/, ""));
+      valid.push({ url: u.toString().replace(/\/$/, ""), authHeader });
     } catch {
       warn(
         `SEARXNG_URL entry is not a valid URL, ignoring: ${redactUrlCredentials(entry)}`,
@@ -50,23 +94,58 @@ export function parseSearxngUrls(
     }
   }
 
-  // De-duplicate: a repeated instance would be retried as though it were a
-  // distinct replica, burning the shared timeout budget on a host already known
-  // to have just failed.
-  const deduped = [...new Set(valid)];
+  // De-duplicate on the credential-free URL: a repeated instance would be
+  // retried as though it were a distinct replica, burning the shared timeout
+  // budget on a host already known to have just failed. First entry wins, so a
+  // credentialed entry is not silently replaced by a later bare one.
+  const seen = new Set<string>();
+  const deduped: SearxInstance[] = [];
+  for (const instance of valid) {
+    if (seen.has(instance.url)) continue;
+    seen.add(instance.url);
+    deduped.push(instance);
+  }
 
   if (deduped.length === 0) {
     warn(
       `SEARXNG_URL had no usable entries, falling back to ${SEARXNG_URL_DEFAULT}`,
     );
-    return [SEARXNG_URL_DEFAULT];
+    return [{ url: SEARXNG_URL_DEFAULT }];
   }
   return deduped;
 }
 
-export const SEARXNG_URLS = parseSearxngUrls(process.env.SEARXNG_URL, (m) =>
-  console.error(`[searxng-mcp] ${m}`),
+/** Convenience wrapper: just the credential-free endpoints, in order. */
+export function parseSearxngUrls(
+  raw: string | undefined,
+  warn: (msg: string) => void = () => {},
+): string[] {
+  return parseSearxngInstances(raw, warn).map((i) => i.url);
+}
+
+export const SEARXNG_INSTANCES = parseSearxngInstances(
+  process.env.SEARXNG_URL,
+  (m) => console.error(`[searxng-mcp] ${m}`),
 );
+
+/**
+ * Credential-free endpoints. Everything downstream — candidate ordering, cache
+ * keys, logs, events — deals only in these, so a credential cannot reach those
+ * paths by construction rather than by remembering to redact.
+ */
+export const SEARXNG_URLS = SEARXNG_INSTANCES.map((i) => i.url);
+
+const SEARXNG_AUTH_BY_URL = new Map(
+  SEARXNG_INSTANCES.filter((i) => i.authHeader).map((i) => [
+    i.url,
+    i.authHeader as string,
+  ]),
+);
+
+/** The `Authorization` header for an instance, if it was configured with one. */
+export function searxAuthHeader(url: string): string | undefined {
+  return SEARXNG_AUTH_BY_URL.get(url);
+}
 
 /**
  * The primary instance. Retained as a named export because it is what the

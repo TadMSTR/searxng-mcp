@@ -240,7 +240,13 @@ describe("credential redaction", () => {
     spy.mockRestore();
   });
 
-  it("the NATS failover event and the thrown error carry no credentials", async () => {
+  // NOTE: this test mocks `fetch`'s rejection as a generic Error, so it only
+  // covers the *label* redaction — it cannot reproduce the failure mode where
+  // the credential rides in the error MESSAGE, because Node's real fetch is the
+  // thing that puts it there. That gap is what the audit found. The real-fetch
+  // coverage lives in tests/integration/searxng-credentials-live.test.ts; this
+  // one is kept for the label path and deliberately no longer claims more.
+  it("the NATS failover event carries no credentials in its instance labels", async () => {
     process.env.SEARXNG_URL = `${WITH_CREDS},http://admin:${SECRET}@replica:8080`;
     vi.doMock("../src/cache.js", () => ({
       cacheGet: vi.fn().mockResolvedValue(null),

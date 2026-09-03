@@ -18,6 +18,7 @@ import {
 import { events } from "./events.js";
 import { fetchPage } from "./fetch.js";
 import type { FetchTuning } from "./fetch-utils.js";
+import { redactUrlCredentialsInText } from "./log.js";
 import { incCounter, recordHistogram, withSpan } from "./observability.js";
 import { formatSummaryResult, summarizePages } from "./ollama.js";
 import { rerankWithFallback } from "./reranker.js";
@@ -103,10 +104,15 @@ async function withSearchEvents<T>(
       stage: "search",
       error_type: err instanceof Error ? err.name : "unknown",
     });
+    // Scrubbed: this is a generic sink reached by errors from any source, and
+    // it fires even on the single-instance path where the failover-specific
+    // redaction above never runs.
     events.error({
       stage: "search",
       error_type: err instanceof Error ? err.name : "unknown",
-      message: err instanceof Error ? err.message : String(err),
+      message: redactUrlCredentialsInText(
+        err instanceof Error ? err.message : String(err),
+      ),
     });
     throw err;
   }

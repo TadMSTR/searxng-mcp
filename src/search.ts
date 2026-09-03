@@ -4,6 +4,7 @@ import {
   EXPAND_QUERIES_DEFAULT,
   SEARXNG_ATTEMPT_TIMEOUT_MS,
   SEARXNG_TOTAL_TIMEOUT_MS,
+  searxAuthHeader,
 } from "./config.js";
 import { normalizeHostname, recordSearchAppearance } from "./domain-db.js";
 import { applyDomainFilters } from "./domains.js";
@@ -14,6 +15,7 @@ import {
   logFailover,
   markHealthy,
   markUnhealthy,
+  toRedactedError,
 } from "./instances.js";
 import { withSpan } from "./observability.js";
 import { expandQuery } from "./ollama.js";
@@ -138,8 +140,12 @@ export async function searxSearchSingle(
         const attemptMs = Math.min(SEARXNG_ATTEMPT_TIMEOUT_MS, remaining);
 
         try {
+          // Credentials travel as a header, never in the URL — see
+          // parseSearxngInstances. `base` is already credential-free.
+          const auth = searxAuthHeader(base);
           const res = await fetch(`${base}/search?${params}`, {
             signal: AbortSignal.timeout(attemptMs),
+            ...(auth ? { headers: { Authorization: auth } } : {}),
           });
           if (!res.ok)
             throw new Error(`SearXNG error: ${res.status} ${res.statusText}`);
@@ -154,17 +160,23 @@ export async function searxSearchSingle(
             meta: normalizeSearxMeta(data),
           };
         } catch (err) {
-          lastError = err;
+          // Scrub HERE, once, rather than at each sink below. The message can
+          // itself contain a credentialed URL (fetch's own TypeError does), and
+          // it flows to the NATS event, the stderr line, the OTel span and the
+          // caller — guarding some of those and not others is the exact mistake
+          // this finding was.
+          const scrubbed = toRedactedError(err);
+          lastError = scrubbed;
           const next = candidates[attempt + 1] ?? null;
           if (multi) {
             await markUnhealthy(base);
-            const reason = err instanceof Error ? err.message : String(err);
+            const reason = scrubbed.message;
             events.searxFailover({
               // Redacted at the sink: these leave the process onto NATS.
               from: instanceLabel(base),
               to: next === null ? null : instanceLabel(next),
               attempt,
-              error_type: err instanceof Error ? err.name : "unknown",
+              error_type: scrubbed.name,
               message: reason,
               exhausted: next === null,
             });

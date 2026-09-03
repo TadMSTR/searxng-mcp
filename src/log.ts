@@ -63,3 +63,30 @@ export function redactUrlCredentials(url: string): string {
     return "<url>";
   }
 }
+
+/**
+ * Strip userinfo from every URL-shaped substring of arbitrary text.
+ *
+ * `redactUrlCredentials` above takes a string that IS a URL. This takes a
+ * string that merely CONTAINS one — which is the shape a credential actually
+ * escapes in. Node's `fetch` rejects a credentialed URL with
+ *
+ *     TypeError: Request cannot be constructed from a URL that includes
+ *     credentials: http://user:pw@host/search?q=x
+ *
+ * so the secret arrives embedded in an error message, not as a bare URL. Any
+ * sink that forwards `err.message` — a log line, a NATS event, an OTel span, an
+ * error returned to the caller — leaks it unless the whole message is scrubbed.
+ *
+ * Applied at the generic sinks rather than at each call site: this class of leak
+ * has already been introduced twice in this subsystem by guarding one path and
+ * missing the others, and error text can originate from any library.
+ */
+export function redactUrlCredentialsInText(text: string): string {
+  // scheme:// then a userinfo segment (no '/', '@' or whitespace) ending at '@'.
+  // Requires a ':' so a bare `http://host@` style is left alone.
+  return text.replace(
+    /\b([a-z][a-z0-9+.-]*:\/\/)[^\s/@]*:[^\s/@]*@/gi,
+    "$1<redacted>@",
+  );
+}

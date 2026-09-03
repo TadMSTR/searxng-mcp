@@ -32,7 +32,11 @@
 
 import { cacheGet, cacheSet } from "./cache.js";
 import { SEARXNG_UNHEALTHY_TTL_SECONDS, SEARXNG_URLS } from "./config.js";
-import { logThrottled, redactUrlCredentials } from "./log.js";
+import {
+  logThrottled,
+  redactUrlCredentials,
+  redactUrlCredentialsInText,
+} from "./log.js";
 
 /**
  * Cache key for an instance's unhealthy marker.
@@ -65,6 +69,29 @@ export function instanceLabel(url: string): string {
   } catch {
     return redactUrlCredentials(url);
   }
+}
+
+/**
+ * Re-wrap an arbitrary thrown value as an Error whose message carries no URL
+ * credentials, preserving the original `name` so `error_type` stays useful.
+ *
+ * Needed because the message is where a credential actually escapes.
+ * `instanceLabel` redacts the instance NAME, but Node's `fetch` rejects a
+ * credentialed URL with a `TypeError` whose message embeds the whole URL —
+ * so the sinks that forward `err.message` leaked what the label-redaction had
+ * carefully kept out.
+ *
+ * The original error is deliberately NOT attached as `cause`: anything that
+ * later serialises the cause chain would reintroduce the unredacted text, which
+ * is the same "one more sink nobody thought of" failure being fixed here.
+ */
+export function toRedactedError(err: unknown): Error {
+  const message = redactUrlCredentialsInText(
+    err instanceof Error ? err.message : String(err),
+  );
+  const wrapped = new Error(message);
+  if (err instanceof Error) wrapped.name = err.name;
+  return wrapped;
 }
 
 /**
