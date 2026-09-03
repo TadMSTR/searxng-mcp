@@ -78,6 +78,7 @@ MCP client (stdio)
       │                     ├→ Firecrawl ($FIRECRAWL_URL) → page markdown (tier 1)
       │                     ├→ Crawl4AI ($CRAWL4AI_URL)  → page markdown (tier 2, optional; via $ADBLOCK_PROXY_URL if set)
       │                     ├→ Raw HTTP + Readability     → page markdown (tier 3 fallback; via $ADBLOCK_PROXY_URL if set)
+      │                     ├→ Byparr solver (opt-in)     → challenge-solved page markdown (only on a detected challenge, $SOLVER_ENABLED)
       │                     └→ Wayback Machine (opt-in)  → archived page markdown (tier 4, $WAYBACK_ENABLED)
       ├── crawl_site ───────┬→ Firecrawl crawl           → page manifest (phase 1)
       │                     ├→ Sitemap parsing           → page manifest (phase 2 fallback, fast-xml-parser)
@@ -102,6 +103,8 @@ flowchart TD
     t1["Tier 1 — Firecrawl\n$FIRECRAWL_URL"]
     t2["Tier 2 — Crawl4AI\n$CRAWL4AI_URL · optional\nadblock proxy if $ADBLOCK_PROXY_URL"]
     t3["Tier 3 — Raw HTTP + Readability\nfallback: raw HTML slice\nadblock proxy if $ADBLOCK_PROXY_URL"]
+    challenge(["Challenge detected\non this URL, this request?"])
+    solver["Solver — Byparr\n$SOLVER_URL · opt-in, SOLVER_ENABLED=true\nSSRF-guarded replay"]
     t4["Tier 4 — Wayback Machine CDX API\narchived snapshot · WAYBACK_ENABLED=true"]
     post["Post-extraction\nJSON-LD Article · title cascade\nog:title → twitter:title → title → h1 → URL"]
     result["→ return { title, url, text }"]
@@ -124,7 +127,11 @@ flowchart TD
     t2 -->|success| post
     t2 -->|"empty / error"| t3
     t3 -->|success| post
-    t3 -->|"empty / error"| t4
+    t3 -->|"empty / error"| challenge
+    challenge -->|"yes, SOLVER_ENABLED"| solver
+    challenge -->|no| t4
+    solver -->|success| post
+    solver -->|"miss / disabled"| t4
     t4 -->|success| result
     post --> result
 
@@ -143,6 +150,8 @@ flowchart TD
     style t1 fill:#d5e8d4,stroke:#5a8a4a,color:#000000
     style t2 fill:#d5e8d4,stroke:#5a8a4a,color:#000000
     style t3 fill:#d5e8d4,stroke:#5a8a4a,color:#000000
+    style challenge fill:#f5f5f5,stroke:#666666,color:#000000
+    style solver fill:#d5e8d4,stroke:#5a8a4a,color:#000000
     style t4 fill:#f8cecc,stroke:#a03030,color:#000000
     style post fill:#e1d5e7,stroke:#7a5a8a,color:#000000
     style result fill:#ffffff,stroke:#333333,color:#000000
@@ -183,6 +192,8 @@ docker compose -f ~/docker/firecrawl-simple/docker-compose.yml up -d --build fir
 
 Set `ADBLOCK_PROXY_URL` (e.g. `http://adblock-proxy:8118`) to route Crawl4AI and raw Node fetch requests through an HTTP forward proxy that filters ad and tracker requests. HTTPS CONNECT tunnels are passed through unmodified — no MITM, so filtering applies to plain-HTTP ad domains only. The tier-1 puppeteer hook already handles full HTTPS filtering for that tier; the proxy covers what leaks through at tiers 2 and 3.
 
+As of v3.19.0, the proxy validates the **resolved** address — not just the requested hostname string — on both its CONNECT and plain-HTTP paths before connecting, closing a DNS-rebinding gap (audit finding SSRF-10).
+
 See [`docker/adblock-proxy/`](docker/adblock-proxy/) for the service definition, configuration options, and deployment instructions (included in `docker-compose.full.yml`).
 
 ### Data-driven tier routing
@@ -215,7 +226,7 @@ Guarantees:
 
 Every fetch records what searxng-mcp learns about the target domain to Valkey under `domain:<hostname>` (90-day TTL, schema_version 5). Captured per record:
 
-- `tier_stats_30d.{tier1,tier2,tier3,tier4,github}.{attempts, ok, fail, last_fail_reason, window_start_ms}` — fetch success rate per tier over a rolling 30-day window. The cutoff is applied at **read time**, shared by tier-routing decisions and `domain_stats` reporting, so the two cannot disagree — a domain fetched once and then left idle reports a genuinely empty window rather than stale numbers surviving until the next write. The `tier4` (Wayback Machine) slot is recorded only when `WAYBACK_ENABLED=true`. The `github` slot records the [GitHub fast path](#github-urls) (`raw.githubusercontent.com` / `api.github.com` / `github.com` README fetches), which bypasses the tier cascade but is still tracked here. A `schema_version` bump rebuilds existing records fresh — accumulated windows for currently-idle domains are discarded (precedented across the 1→2, 2→3, 3→4, 4→5 bumps).
+- `tier_stats_30d.{tier1,tier2,tier3,tier4,solver,github}.{attempts, ok, fail, last_fail_reason, window_start_ms}` — fetch success rate per tier over a rolling 30-day window. The cutoff is applied at **read time**, shared by tier-routing decisions and `domain_stats` reporting, so the two cannot disagree — a domain fetched once and then left idle reports a genuinely empty window rather than stale numbers surviving until the next write. The `tier4` (Wayback Machine) slot is recorded only when `WAYBACK_ENABLED=true`; the `solver` slot (Byparr challenge-solving tier, see [Challenge detection and solver tier](#challenge-detection-and-solver-tier)) only when `SOLVER_ENABLED=true`. The `github` slot records the [GitHub fast path](#github-urls) (`raw.githubusercontent.com` / `api.github.com` / `github.com` README fetches), which bypasses the tier cascade but is still tracked here. A `schema_version` bump rebuilds existing records fresh — accumulated windows for currently-idle domains are discarded (precedented across the 1→2, 2→3, 3→4, 4→5, 5→6 bumps).
 - `capabilities.metadata_fetch.{attempts, ok, fail, last_fail_reason}` — success/failure of the metadata side-channel fetch (`fetchRawHtmlForMetadata`, used for JSON-LD/og:title sampling). Tracked separately from `tier_stats_30d` since it answers "is this domain reachable at all", not "did full-content delivery succeed".
 - `capabilities.seen_in_search.{count, last_seen_ms}` — how often the domain appears in `search` results. Written fire-and-forget by `searxSearch()` on every return path (including cache hits) with no fetch performed, so a domain can be tracked before it is ever fetched.
 - `capabilities.robots_txt.{present, fetched, allows_us}` — robots.txt presence and whether it permits us
@@ -303,6 +314,32 @@ The manifest cache can be cleared with `clear_cache(target="crawl")`.
 
 When `WAYBACK_ENABLED=true`, a fourth tier queries the Wayback Machine CDX API for an archived snapshot when all three main tiers fail. Returned content is prefixed with a provenance header (`[Archived snapshot – <timestamp> – <original_url>]`) so callers know the content may not reflect the current page state.
 
+### Challenge detection and solver tier
+
+A Cloudflare-style challenge interstitial is frequently served with **HTTP 200** — routine for
+Managed Challenge and Turnstile — which used to pass straight through the tier cascade as a
+successful fetch: Readability-extracted, cached, and written to the domain capability database
+as evidence the tier works on that domain, feeding tier-skip decisions on nothing but a wrong
+signal. As of v3.19.0, tiers 1–3 detect this case (matched on Cloudflare edge headers at
+403/503, and on interstitial markers in a 200-status body) and report it as a distinct miss
+(`reason: challenge_detected`) instead of a hit. A detected challenge is never cached and never
+written to domain-db.
+
+When `SOLVER_ENABLED=true` and `SOLVER_URL` points at a running solver — Byparr, or any service
+implementing FlareSolverr's `POST /v1` contract — a challenge detected on a given request
+triggers one solve attempt, dispatched after the tier 3 cascade fails and before the Wayback
+fallback. The solve is **strictly per-request**: the tier never fires on a URL that was not
+challenged in that same request, so it adds no overhead to the ordinary path. The solver's
+response is replayed through the normal bounded-fetch and extraction path — re-validated for
+SSRF (`assertPublicUrl` + `assertResolvedPublic` against the solver's resulting URL, since it
+may differ from the one requested) and re-checked for a challenge — rather than trusted
+directly, so a "solved" page that is still an interstitial registers as a miss, not a cache
+write. Solver-returned cookies are scoped to the solved host and never forwarded elsewhere.
+
+**This is not a guaranteed bypass.** Byparr's own documentation is explicit that a solve is not
+guaranteed and often needs residential-IP traffic. A miss here is the expected common case and
+degrades cleanly into the Wayback tier — not an error, and not something to alert on.
+
 ### Fetch quality
 
 After any tier returns content with raw HTML, a post-extraction pass improves title and body quality:
@@ -324,7 +361,7 @@ Tracing, metrics, and event publishing are entirely opt-in — with none of the 
 
 **OpenTelemetry (traces + metrics)** — set `OTEL_EXPORTER_OTLP_ENDPOINT` to your collector's HTTP endpoint and the server emits:
 
-- Spans (per request): `tool.<name>` → `expand_query`? → `searxng_request` → `rerank` → `fetch` (×N) → `tier1_firecrawl` | `tier2_crawl4ai` | `tier3_rawfetch` → `post_extract`; plus `summarize_llm` for `search_and_summarize`.
+- Spans (per request): `tool.<name>` → `expand_query`? → `searxng_request` → `rerank` → `fetch` (×N) → `tier1_firecrawl` | `tier2_crawl4ai` | `tier3_rawfetch` | `solver_byparr` → `post_extract`; plus `summarize_llm` for `search_and_summarize`.
 - Counters: `searxng_search_total{profile, expand}`, `searxng_fetch_total{tier, outcome}`, `searxng_cache_total{namespace, outcome}`, `searxng_errors_total{stage, error_type}`.
 - Histograms: `searxng_search_duration_seconds{profile}`, `searxng_fetch_duration_seconds{tier, outcome}`.
 
@@ -529,6 +566,9 @@ All service URLs are configurable via environment variables.
 | `CRAWL4AI_URL` | *(unset)* | Crawl4AI instance URL — enables second-tier fetch fallback when Firecrawl fails |
 | `CRAWL4AI_API_TOKEN` | *(unset)* | Optional Bearer token for Crawl4AI instances with API token protection |
 | `WAYBACK_ENABLED` | `false` | Set to `true` to enable Wayback Machine tier-4 fallback — fetches archived snapshots when all three tiers fail |
+| `SOLVER_URL` | *(unset)* | Base URL of a Byparr (or other FlareSolverr `POST /v1`-compatible) challenge-solving service, e.g. `http://byparr:8191`. Unset leaves the tier inert regardless of `SOLVER_ENABLED`. |
+| `SOLVER_ENABLED` | `false` | Kill switch for the challenge-solving tier — mirrors `WAYBACK_ENABLED`. Requires `SOLVER_URL` to also be set; fires only when a challenge was actually detected on the current request, never on an unchallenged URL. |
+| `SOLVER_MAX_TIMEOUT_MS` | `60000` | Per-request ceiling passed to the solver as `maxTimeout`. |
 | `ADBLOCK_PROXY_URL` | *(unset)* | HTTP proxy URL for tier-2 (Crawl4AI) and tier-3 (raw Node fetch) adblocking — e.g. `http://adblock-proxy:8118`. See `docker/adblock-proxy/`. |
 | `KIWIX_URL` | *(unset)* | kiwix-serve base URL (e.g. `http://localhost:8292`) — enables Kiwix fast path for Wikipedia, Stack Overflow, and Arch Wiki. Feature is disabled and zero-overhead when unset. |
 | `HISTER_URL` | *(unset)* | Hister browsing-history index base URL — enables Hister fast path before the tier cascade for login-walled and JS-heavy pages. Feature disabled and zero-overhead when unset. |
