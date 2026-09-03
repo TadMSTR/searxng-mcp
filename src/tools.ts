@@ -3,7 +3,11 @@ import { z } from "zod";
 import { cacheClear } from "./cache.js";
 import { newRequestId, withRequestId } from "./context.js";
 import { crawlSite, formatCrawlManifest } from "./crawl.js";
-import { getDomainRecord } from "./domain-db.js";
+import {
+  getDomainRecord,
+  TIER_SLOT_KEYS,
+  type TierSlotKey,
+} from "./domain-db.js";
 import {
   aggregateDomainStats,
   enumerateDomains,
@@ -553,13 +557,38 @@ const TierStatsOutputSchema = z.object({
   success_rate: z.number().nullable(),
 });
 
-const AllTiersOutputSchema = z.object({
-  tier1: TierStatsOutputSchema,
-  tier2: TierStatsOutputSchema,
-  tier3: TierStatsOutputSchema,
-  tier4: TierStatsOutputSchema,
-  github: TierStatsOutputSchema,
-});
+/**
+ * The per-slot tier block, DERIVED from `TIER_SLOT_KEYS` rather than hand-listed.
+ *
+ * This is the fix for vikunja#637, and the derivation is the point of it. Both
+ * payload builders (`aggregateDomainStats`, `summarizeDomainRecord`) already
+ * emit their `tiers` object via `Object.fromEntries(TIER_SLOT_KEYS.map(...))`.
+ * When this schema was a hand-written literal, the two lists were free to
+ * diverge — and they did: v3.19.0 added a sixth slot (`solver`) to the constant
+ * and the payload grew it, while the schema stayed at five. Zod emits
+ * `additionalProperties: false`, so every `domain_stats` call on a
+ * solver-enabled deployment failed structured-output validation outright.
+ *
+ * Deriving from the same constant makes that class of drift unrepresentable:
+ * `TierSlotKey` is itself `(typeof TIER_SLOT_KEYS)[number]`, so the mapped type
+ * below and the runtime keys have one source. Adding a slot to the constant
+ * cannot leave this schema behind.
+ *
+ * Every slot is OPTIONAL, and that is deliberate rather than defensive. A slot
+ * is only written once its tier has run: `tier4` requires `WAYBACK_ENABLED`,
+ * `solver` requires `SOLVER_ENABLED`. Marking them required does not fix the
+ * bug, it inverts which deployments it breaks — `tier4` carried this identical
+ * defect latently for every deployment whose records predate Wayback.
+ */
+type AllTiersShape = {
+  [K in TierSlotKey]: z.ZodOptional<typeof TierStatsOutputSchema>;
+};
+
+const AllTiersOutputSchema = z.object(
+  Object.fromEntries(
+    TIER_SLOT_KEYS.map((slot) => [slot, TierStatsOutputSchema.optional()]),
+  ) as AllTiersShape,
+);
 
 const SingleDomainOutputSchema = z.object({
   domain: z.string(),
@@ -591,7 +620,10 @@ const AggregateOutputSchema = z.object({
   truncated: z.boolean(),
 });
 
-const DomainStatsOutputSchema = z.object({
+// Exported solely so tests can validate real payloads against the *declared*
+// contract rather than a restatement of it. A test that rebuilds the schema
+// locally proves nothing — this is the object actually handed to registerTool.
+export const DomainStatsOutputSchema = z.object({
   mode: z.enum(["single", "aggregate"]),
   hostname: z.string().nullable(),
   found: z.boolean(),

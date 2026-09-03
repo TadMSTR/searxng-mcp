@@ -126,14 +126,14 @@ export interface DomainRecord {
   first_seen: string;
   last_fetch: string;
   capabilities: DomainCapabilities;
-  tier_stats_30d: {
-    tier1: TierStat;
-    tier2: TierStat;
-    tier3: TierStat;
-    tier4: TierStat;
-    github: TierStat;
-    solver: TierStat;
-  };
+  // Derived from TIER_SLOT_KEYS, not restated. Written out as an object literal
+  // this was a third hand-maintained copy of the same closed set — with
+  // `newRecord` below as a fourth and `AllTiersOutputSchema` in tools.ts as a
+  // fifth. The fifth is the one that drifted (vikunja#637). As a mapped type
+  // the compiler now rejects any writer that misses a slot, so adding one to
+  // the constant surfaces as a build error naming the exact sites to update,
+  // rather than as a record that is silently short a slot at runtime.
+  tier_stats_30d: Record<TierSlotKey, TierStat>;
   preferred_strategy?: PreferredStrategy;
   notes?: string;
 }
