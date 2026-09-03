@@ -226,6 +226,7 @@ export async function handleSearch({
   language,
   engines,
   site,
+  min_score,
 }: {
   query: string;
   num_results: number;
@@ -236,6 +237,7 @@ export async function handleSearch({
   language?: string;
   engines?: string;
   site?: string | string[];
+  min_score?: number;
 }) {
   return instrumentSearchTool(
     "search",
@@ -257,6 +259,7 @@ export async function handleSearch({
         raw,
         num_results,
         time_range,
+        min_score,
       );
       return {
         ranked,
@@ -285,6 +288,7 @@ export async function handleSearchAndFetch({
   language,
   engines,
   site,
+  min_score,
 }: {
   query: string;
   category?: string;
@@ -295,6 +299,7 @@ export async function handleSearchAndFetch({
   language?: string;
   engines?: string;
   site?: string | string[];
+  min_score?: number;
 }) {
   return instrumentSearchTool(
     "search_and_fetch",
@@ -331,7 +336,13 @@ export async function handleSearchAndFetch({
           },
         };
       }
-      const ranked = await rerankWithFallback(query, raw, 5, time_range);
+      const ranked = await rerankWithFallback(
+        query,
+        raw,
+        5,
+        time_range,
+        min_score,
+      );
       const searchText = formatResults(ranked);
       const maxCharsPerPage = Math.floor(8000 / fetch_count);
       const toFetch = ranked.slice(0, fetch_count);
@@ -377,6 +388,7 @@ export async function handleSearchAndSummarize({
   language,
   engines,
   site,
+  min_score,
 }: {
   query: string;
   fetch_count: number;
@@ -387,6 +399,7 @@ export async function handleSearchAndSummarize({
   language?: string;
   engines?: string;
   site?: string | string[];
+  min_score?: number;
 }) {
   return instrumentSearchTool(
     "search_and_summarize",
@@ -428,6 +441,7 @@ export async function handleSearchAndSummarize({
         raw,
         fetch_count,
         time_range,
+        min_score,
       );
       const searchText = formatResults(ranked);
       const toFetch = ranked.slice(0, fetch_count);
@@ -747,6 +761,43 @@ const SiteSchema = z
     "Restrict results to one domain or a list of domains (e.g. 'github.com'). Best-effort — applied as a site: query operator; most engines honor it but some ignore it.",
   );
 
+/**
+ * `min_score` — a relevance floor applied after reranking.
+ *
+ * The description is long on purpose. Three things about this parameter are
+ * counter-intuitive enough that omitting them would make it actively
+ * misleading, and all three were measured against the live FlashRank service
+ * rather than assumed:
+ *
+ * 1. WHICH SCORE. `rerank()` sorts on `relevance_score + RERANK_RECENCY_WEIGHT
+ *    * recencyScore(...)`, which with the default weight of 0.15 ranges over
+ *    0..1.15, not 0..1. This filters on the RAW `relevance_score`, so a recent
+ *    but irrelevant document cannot be pushed past the floor.
+ *
+ * 2. THE DISTRIBUTION IS BIMODAL, so the knob is far less sensitive than a
+ *    0..1 range suggests. Measured on "how to configure nginx reverse proxy":
+ *    nginx reverse-proxy guide 0.998, Apache mod_proxy 0.967, nginx install
+ *    page 0.0028, banana bread recipe 0.0000151. Anything in roughly 0.01..0.9
+ *    behaves near-identically. 0.5 is NOT a meaningful midpoint.
+ *
+ * 3. A HIGH SCORE MEANS TOPICALLY RELATED, NOT CORRECT. The Apache document
+ *    scored 0.967 on an nginx query. This is a topicality floor and cannot be
+ *    trusted as a correctness filter.
+ */
+const MinScoreSchema = z.coerce
+  .number()
+  .min(0)
+  .max(1)
+  .optional()
+  .describe(
+    "Drop results whose reranker relevance score is below this threshold (0-1, omit for no filtering). " +
+      "Filters on the RAW cross-encoder relevance score, not the recency-adjusted score used for ordering. " +
+      "Scores are strongly bimodal — relevant results cluster near 1.0 and irrelevant ones near 0, with little in between — so any value in roughly 0.01-0.9 behaves about the same; 0.01-0.1 is the useful range and 0.5 is not a midpoint. " +
+      "A high score means topically related, NOT correct: an Apache mod_proxy page scores 0.967 on an nginx query. " +
+      "Thresholds are model-dependent and not comparable across rerankers. " +
+      "No-op (with a logged warning) when the reranker is unavailable, since no scores exist to filter on.",
+  );
+
 // Output schema for the `search` tool — surfaces SearXNG's native answers /
 // infoboxes / corrections / suggestions alongside a minimal result list so
 // callers can check for a direct answer programmatically.
@@ -803,6 +854,7 @@ export function registerTools(server: McpServer): void {
         language: LanguageSchema,
         engines: EnginesSchema,
         site: SiteSchema,
+        min_score: MinScoreSchema,
       },
       outputSchema: SearchOutputSchema,
     },
@@ -838,6 +890,7 @@ export function registerTools(server: McpServer): void {
       language: LanguageSchema,
       engines: EnginesSchema,
       site: SiteSchema,
+      min_score: MinScoreSchema,
     },
     handleSearchAndFetch,
   );
@@ -902,6 +955,7 @@ export function registerTools(server: McpServer): void {
       language: LanguageSchema,
       engines: EnginesSchema,
       site: SiteSchema,
+      min_score: MinScoreSchema,
     },
     handleSearchAndSummarize,
   );
