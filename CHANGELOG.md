@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [3.20.0] - 2026-09-03
+
 Only SearXNG is required, and the code now says so as well as the README (build
 `searxng-mcp-lite-mode-2026-09`, vikunja#636). `README.md:160` claimed "SearXNG and Firecrawl are
 required" while `README.md:16` correctly said only SearXNG is. The stricter claim was wrong:
