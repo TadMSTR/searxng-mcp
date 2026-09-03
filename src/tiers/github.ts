@@ -1,5 +1,10 @@
 import { GITHUB_TOKEN } from "../config.js";
-import { assertPublicUrl, safeFetch, USER_AGENT } from "../fetch-utils.js";
+import {
+  assertPublicUrl,
+  readBoundedText,
+  safeFetch,
+  USER_AGENT,
+} from "../fetch-utils.js";
 import type { GitHubReadmeResponse } from "../types.js";
 
 /** Hostnames handled by this tier's fast path. */
@@ -68,7 +73,11 @@ async function fetchRawContent(
     rawHeaders(),
     "GitHub raw fetch error",
   );
-  const text = (await res.text()).slice(0, maxChars);
+  // Bounded read before the slice: res.text() materialised the whole file
+  // first, so the slice was capping the *result*, not the read. The 2 MB
+  // default is far above any reachable maxChars (schema max is 10000 tokens =
+  // 40000 chars), so nothing that used to be returned is lost.
+  const text = (await readBoundedText(res)).slice(0, maxChars);
   const parts = new URL(url).pathname.split("/").filter(Boolean);
   const fileName = parts[parts.length - 1] ?? url;
   return { title: fileName, url, text };
@@ -85,7 +94,12 @@ async function fetchApiUrl(
     apiHeaders(),
     "GitHub API error",
   );
-  const data = (await res.json()) as Record<string, unknown>;
+  // Bounded read before JSON.parse — same pattern as tiers/firecrawl.ts.
+  // res.json() has no size limit of its own.
+  const data = JSON.parse(await readBoundedText(res)) as Record<
+    string,
+    unknown
+  >;
 
   if (
     typeof data.content === "string" &&
@@ -140,7 +154,8 @@ export async function githubFetch(
     apiHeaders(),
     "GitHub API error",
   );
-  const data = (await res.json()) as GitHubReadmeResponse;
+  // Bounded read before JSON.parse — see fetchApiUrl above.
+  const data = JSON.parse(await readBoundedText(res)) as GitHubReadmeResponse;
   const text = Buffer.from(data.content, "base64")
     .toString("utf-8")
     .slice(0, maxChars);

@@ -15,14 +15,24 @@ beforeEach(() => {
   vi.clearAllMocks();
 });
 
+// These mocks need a real body stream: the tier reads through
+// readBoundedText, which streams from res.body. A mock carrying only text()
+// or json() would send it down the no-reader path and assert nothing about
+// the code that actually ships.
+function bodyStream(text: string): ReadableStream<Uint8Array> {
+  return new Response(text).body as ReadableStream<Uint8Array>;
+}
+
 function jsonResponse(body: unknown, opts?: { status?: number }) {
   const status = opts?.status ?? 200;
+  const serialized = JSON.stringify(body);
   return {
     ok: status >= 200 && status < 300,
     status,
     statusText: status === 200 ? "OK" : "Error",
+    body: bodyStream(serialized),
     json: () => Promise.resolve(body),
-    text: () => Promise.resolve(JSON.stringify(body)),
+    text: () => Promise.resolve(serialized),
   };
 }
 
@@ -32,6 +42,7 @@ function textResponse(body: string, opts?: { status?: number }) {
     ok: status >= 200 && status < 300,
     status,
     statusText: status === 200 ? "OK" : "Error",
+    body: bodyStream(body),
     text: () => Promise.resolve(body),
   };
 }

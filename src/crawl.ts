@@ -73,7 +73,12 @@ async function pollFirecrawlJob(
         signal: AbortSignal.timeout(10_000),
       });
       if (!res.ok) return null;
-      const body = (await res.json()) as FirecrawlPollResponse;
+      // Bounded read before JSON.parse — consistent with the rest of the
+      // fetch layer. Firecrawl is first-party, so this is uniformity rather
+      // than a threat, but res.json() is unbounded either way.
+      const body = JSON.parse(
+        await readBoundedText(res),
+      ) as FirecrawlPollResponse;
       if (body.status === "completed") return body;
       if (body.status === "failed" || body.status === "cancelled") return null;
     } catch {

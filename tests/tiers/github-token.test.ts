@@ -15,20 +15,29 @@ beforeEach(() => {
   vi.clearAllMocks();
 });
 
+// Real body streams — the tier reads via readBoundedText, which needs
+// res.body. See tests/tiers/github.test.ts for the same note.
+function bodyStream(text: string): ReadableStream<Uint8Array> {
+  return new Response(text).body as ReadableStream<Uint8Array>;
+}
+
 function textResponse(body: string) {
   return {
     ok: true,
     status: 200,
     statusText: "OK",
+    body: bodyStream(body),
     text: () => Promise.resolve(body),
   };
 }
 
 function jsonResponse(body: unknown) {
+  const serialized = JSON.stringify(body);
   return {
     ok: true,
     status: 200,
     statusText: "OK",
+    body: bodyStream(serialized),
     json: () => Promise.resolve(body),
   };
 }
