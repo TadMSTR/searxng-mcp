@@ -1,5 +1,16 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+// These suites exercise the operator-override and stats passes, which are
+// orthogonal to whether a tier is configured at all. Pin a fully-configured
+// baseline so every pre-existing assertion keeps meaning what it meant before
+// `not_configured` existed — CRAWL4AI_URL is unset in the test env, which would
+// otherwise skip tier2 in every case here and hide what these cases check.
+// The not_configured pass has its own cases, which drive this mock explicitly.
+vi.mock("../src/config.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../src/config.js")>()),
+  tierConfigured: vi.fn(() => ({ tier1: true, tier2: true, tier3: true })),
+}));
+
 vi.mock("../src/cache.js", () => ({
   cacheGet: vi.fn(),
   cacheSet: vi.fn(),
@@ -10,6 +21,7 @@ vi.mock("../src/domains.js", () => ({
 }));
 
 import { cacheGet } from "../src/cache.js";
+import { tierConfigured } from "../src/config.js";
 import type { DomainRecord } from "../src/domain-db.js";
 import { getOperatorTierSkips } from "../src/domains.js";
 import { computeTierSkips } from "../src/routing.js";
@@ -237,5 +249,122 @@ describe("computeTierSkips", () => {
   it("returns no skips when no record exists and no operator overrides", async () => {
     cacheGetMock.mockResolvedValue(null);
     expect(await computeTierSkips("https://example.com/p")).toEqual([]);
+  });
+});
+
+// The `not_configured` pass. Unlike the two passes above, this one is a
+// property of the deployment rather than of the domain, which is why it is
+// seeded before them and cannot be overridden.
+describe("computeTierSkips — not_configured", () => {
+  const tierConfiguredMock = vi.mocked(tierConfigured);
+
+  beforeEach(() => {
+    cacheGetMock.mockReset();
+    cacheGetMock.mockResolvedValue(null);
+    getOpSkipMock.mockReset();
+    getOpSkipMock.mockReturnValue([]);
+    tierConfiguredMock.mockReturnValue({
+      tier1: true,
+      tier2: true,
+      tier3: true,
+    });
+  });
+
+  it("produces zero not_configured skips when every tier is configured", async () => {
+    expect(await computeTierSkips("https://example.com/p")).toEqual([]);
+  });
+
+  it("skips tier1 when Firecrawl is disabled", async () => {
+    tierConfiguredMock.mockReturnValue({
+      tier1: false,
+      tier2: true,
+      tier3: true,
+    });
+    expect(await computeTierSkips("https://example.com/p")).toEqual([
+      { tier: "tier1", reason: "not_configured" },
+    ]);
+  });
+
+  it("skips tier2 when Crawl4AI is unconfigured", async () => {
+    tierConfiguredMock.mockReturnValue({
+      tier1: true,
+      tier2: false,
+      tier3: true,
+    });
+    expect(await computeTierSkips("https://example.com/p")).toEqual([
+      { tier: "tier2", reason: "not_configured" },
+    ]);
+  });
+
+  it("leaves tier3 active in a fully unconfigured deployment", async () => {
+    tierConfiguredMock.mockReturnValue({
+      tier1: false,
+      tier2: false,
+      tier3: true,
+    });
+    const skips = await computeTierSkips("https://example.com/p");
+    expect(skips).toEqual([
+      { tier: "tier1", reason: "not_configured" },
+      { tier: "tier2", reason: "not_configured" },
+    ]);
+    expect(skips.some((s) => s.tier === "tier3")).toBe(false);
+  });
+
+  // The precedence rule. An operator override cannot un-skip an unconfigured
+  // tier, because there is nothing to call — so the reason must stay
+  // not_configured rather than being relabelled by a later pass.
+  it("wins over an operator override for the same tier", async () => {
+    tierConfiguredMock.mockReturnValue({
+      tier1: false,
+      tier2: true,
+      tier3: true,
+    });
+    getOpSkipMock.mockReturnValue(["tier1"]);
+    expect(await computeTierSkips("https://example.com/p")).toEqual([
+      { tier: "tier1", reason: "not_configured" },
+    ]);
+  });
+
+  // Same precedence against the stats pass: an unconfigured tier that also has
+  // a terrible historical success rate is reported as not_configured, since
+  // that is the actionable cause.
+  it("wins over a low_success_rate skip for the same tier", async () => {
+    tierConfiguredMock.mockReturnValue({
+      tier1: false,
+      tier2: true,
+      tier3: true,
+    });
+    cacheGetMock.mockResolvedValue(
+      JSON.stringify(
+        record({
+          tier_stats_30d: {
+            tier1: stat(20, 4, 16), // 20% success rate
+            tier2: stat(0, 0, 0),
+            tier3: stat(0, 0, 0),
+            tier4: stat(0, 0, 0),
+            github: stat(0, 0, 0),
+            solver: stat(0, 0, 0),
+          },
+        }),
+      ),
+    );
+    expect(await computeTierSkips("https://example.com/p")).toEqual([
+      { tier: "tier1", reason: "not_configured" },
+    ]);
+  });
+
+  it("combines a not_configured tier with an operator override on another", async () => {
+    tierConfiguredMock.mockReturnValue({
+      tier1: false,
+      tier2: true,
+      tier3: true,
+    });
+    getOpSkipMock.mockReturnValue(["tier2"]);
+    expect(await computeTierSkips("https://example.com/p")).toEqual(
+      expect.arrayContaining([
+        { tier: "tier1", reason: "not_configured" },
+        { tier: "tier2", reason: "operator_override" },
+      ]),
+    );
   });
 });

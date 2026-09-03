@@ -5,7 +5,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![npm](https://img.shields.io/npm/v/@tadmstr/searxng-mcp)](https://www.npmjs.com/package/@tadmstr/searxng-mcp)
 
-An MCP server for private web search via a self-hosted [SearXNG](https://github.com/searxng/searxng) instance. Results are reranked by a local ML model, full-page content is fetched via Firecrawl, and an optional Ollama instance provides query expansion and LLM-synthesized summaries.
+An MCP server for private web search via a self-hosted [SearXNG](https://github.com/searxng/searxng) instance. SearXNG is the only requirement; everything else is optional and layers on top — a local ML model reranks results, a three-tier cascade (Firecrawl, Crawl4AI, in-process raw fetch) retrieves full-page content, and an Ollama instance provides query expansion and LLM-synthesized summaries.
 
 Designed for use with Claude Code and LibreChat agents that need web search without sending queries to a third-party search API.
 
@@ -13,9 +13,29 @@ Built with [Claude Code](https://claude.ai/code) using the multi-agent workflow 
 
 ## Quick Start
 
-A running [SearXNG](https://github.com/searxng/searxng) instance is required. A cache backend is strongly recommended.
+**A running [SearXNG](https://github.com/searxng/searxng) instance is the only requirement.**
+Everything else is optional and improves a specific dimension — see [Prerequisites](#prerequisites).
 
-**Minimal stack** — start a Dragonfly/Valkey cache backend and run searxng-mcp:
+**SearXNG only** — nothing else deployed:
+
+```bash
+SEARXNG_URL=http://localhost:8081 \
+  FIRECRAWL_ENABLED=false \
+  npx @tadmstr/searxng-mcp
+```
+
+What works in this configuration: `search` returns ranked results, and `fetch_url` /
+`search_and_fetch` return extracted page content via tier 3 (raw HTTP fetch + Readability, wholly
+in-process). What does not: semantic reranking (results keep SearXNG's ordering), query expansion
+and `search_and_summarize` (no LLM), caching (every call is live), JS-heavy page rendering, and
+offline serving. The startup capability line tells you which of these are off.
+
+`FIRECRAWL_ENABLED=false` is what makes it a *clean* minimal run rather than merely a working one:
+`FIRECRAWL_URL` defaults to `http://localhost:3002`, so without the switch every fetch first
+attempts a connection to a Firecrawl that is not there, and books the failure into the domain
+capability database.
+
+**Recommended minimum** — add a cache backend, which is the single largest latency win:
 
 ```bash
 docker compose -f docker-compose.example.yml up -d
@@ -157,7 +177,7 @@ flowchart TD
     style result fill:#ffffff,stroke:#333333,color:#000000
 ```
 
-SearXNG and Firecrawl are required. Crawl4AI, Valkey, Ollama, Kiwix, and the reranker are optional — the server degrades gracefully when any of these are unavailable.
+**Only SearXNG is required.** Every tier below it is optional: Firecrawl, Crawl4AI, Valkey, Ollama, Kiwix, the reranker, the solver and Wayback each improve a named dimension, and the server degrades gracefully when any of them is unavailable. Tier 3 is a raw HTTP fetch plus Readability running in-process, so `fetch_url` still returns extracted content with nothing else deployed. Set `FIRECRAWL_ENABLED=false` and leave `CRAWL4AI_URL` unset to say so explicitly — those tiers are then skipped with `reason: not_configured` rather than attempted and missed.
 
 ### Adblocking
 
@@ -198,7 +218,7 @@ See [`docker/adblock-proxy/`](docker/adblock-proxy/) for the service definition,
 
 ### Data-driven tier routing
 
-Before invoking the fetch cascade, searxng-mcp reads the domain's `tier_stats_30d` (see [domain capability database](#domain-capability-database)) and skips any tier with success rate below 30% over at least 10 attempts. Cold-start domains (<10 attempts) keep the default cascade. Each skip emits a `searxng.fetch.tier.skipped` NATS event with `reason: low_success_rate` and increments `searxng_fetch_total{outcome=skipped}`.
+Before invoking the fetch cascade, searxng-mcp reads the domain's `tier_stats_30d` (see [domain capability database](#domain-capability-database)) and skips any tier with success rate below 30% over at least 10 attempts. Cold-start domains (<10 attempts) keep the default cascade. Each skip emits a `searxng.fetch.tier.skipped` NATS event and increments `searxng_fetch_total{outcome=skipped}`, both carrying the reason. Three reasons exist: `low_success_rate` (the stats rule above), `operator_override` (a `tier_skip` entry in `domains.json`), and `not_configured` (the tier's service is switched off, or has no URL). `not_configured` takes precedence over both others — an override cannot un-skip a tier there is nothing to call. Because a skipped tier is never recorded as an attempt, an unconfigured tier no longer books misses into `tier_stats_30d` meaning “not deployed” rather than “tried and failed”.
 
 **Operator override.** Add a `tier_skip` map to `domains.json` to force-skip tiers regardless of stats:
 
@@ -454,13 +474,48 @@ or, when the cache backend is unreachable:
 
 ## Prerequisites
 
-- Node.js 20+
-- pnpm (or npm)
-- A running [SearXNG](https://github.com/searxng/searxng) instance
-- A running [Firecrawl](https://github.com/mendableai/firecrawl) instance
-- A running reranker exposing a Jina-compatible `/v1/rerank` endpoint (optional)
-- A running [Valkey](https://valkey.io/) or Redis-compatible instance (optional, for result caching)
-- A running [Ollama](https://ollama.com/) instance with `qwen3:4b` and/or `qwen3:14b` pulled (optional, for query expansion and summarization)
+**Runtime:** Node.js 20+, and pnpm (or npm).
+
+### Required
+
+- A running [SearXNG](https://github.com/searxng/searxng) instance, with JSON output enabled (see below).
+
+That is the whole list. Everything under it is progressive enhancement.
+
+### Strongly recommended
+
+| Service | What it buys you |
+|---------|------------------|
+| [Valkey](https://valkey.io/), Dragonfly or any Redis-compatible cache | Repeat searches and fetches are served from cache instead of re-run. The single largest latency win. Fail-soft: a cache timeout serves live. |
+| A reranker with a Jina-compatible `/v1/rerank` endpoint | Reorders results by semantic relevance to the query. Without it results keep SearXNG's own ordering and a throttled degradation line is logged. |
+
+Neither has a kill switch — both have a default URL and are always attempted, because both fail
+soft. Absence costs quality and latency, never correctness.
+
+### Optional
+
+| Service | Capability it unlocks | Turn it on with |
+|---------|----------------------|-----------------|
+| [Firecrawl](https://github.com/mendableai/firecrawl) | Fetch tier 1 — Puppeteer-rendered pages, best extraction quality on JS-heavy sites | On by default; `FIRECRAWL_URL`, or `FIRECRAWL_ENABLED=false` to skip the tier |
+| [Crawl4AI](https://github.com/unclecode/crawl4ai) | Fetch tier 2 — browser automation fallback when tier 1 returns empty content | `CRAWL4AI_URL` |
+| [Ollama](https://ollama.com/) with `qwen3:4b` and/or `qwen3:14b`, or any OpenAI-compatible endpoint | Query expansion and LLM-synthesized summaries (`search_and_summarize`) | `OLLAMA_URL` or `LLM_BASE_URL` |
+| [kiwix-serve](https://github.com/kiwix/kiwix-tools) | Offline serving of Wikipedia, Stack Overflow and the Arch Wiki from local ZIM archives | `KIWIX_URL` |
+| Hister | Archived-page fallback from a private archive | `HISTER_URL` |
+| [Byparr](https://github.com/ThePhaseless/Byparr) or FlareSolverr | Solves Cloudflare-style interstitials on the domains that serve them | `SOLVER_URL` + `SOLVER_ENABLED=true` |
+| Wayback Machine | Tier-4 fallback to an archived snapshot when all three tiers fail | `WAYBACK_ENABLED=true` |
+| An OTLP collector / NATS | Traces and metrics; a JetStream event stream of every search and fetch | `OTEL_EXPORTER_OTLP_ENDPOINT` / `NATS_URL` |
+
+On startup the server logs one line naming exactly which of these are configured, so a
+lower-quality result set can be traced to a missing service rather than guessed at:
+
+```
+[searxng-mcp] capabilities on=tier3,cache,reranker off=tier1,tier2,llm,kiwix,hister,solver,wayback,otel,nats
+```
+
+It reports configuration, not reachability — nothing is probed, so the line never delays startup.
+
+The rest of this section is setup reference for whichever of the above you chose to deploy —
+skip any you did not.
 
 ### SearXNG
 
@@ -473,15 +528,15 @@ search:
     - json
 ```
 
-### Reranker
+### Reranker (recommended)
 
 The reranker must expose a Jina-compatible `/v1/rerank` endpoint. A lightweight FlashRank wrapper works well — see the [`docker/reranker/`](https://github.com/TadMSTR/homelab-agent/tree/main/docker/reranker) reference in [homelab-agent](https://github.com/TadMSTR/homelab-agent).
 
-### Firecrawl
+### Firecrawl (optional — fetch tier 1)
 
 Any Firecrawl-compatible instance works. The local [firecrawl-simple](https://github.com/mendableai/firecrawl/tree/main/apps/api) deployment is sufficient. Set `FIRECRAWL_API_KEY` if your instance requires authentication (defaults to `placeholder-local` for local deployments that skip auth).
 
-### Crawl4AI
+### Crawl4AI (optional — fetch tier 2)
 
 [Crawl4AI](https://github.com/unclecode/crawl4ai) is an optional second-tier fetch fallback used when Firecrawl returns empty content (bot-blocked pages, JS-heavy sites). Set `CRAWL4AI_URL` to enable it. If unset, the cascade skips to raw HTTP fetch.
 
@@ -539,6 +594,7 @@ All service URLs are configurable via environment variables.
 |----------|---------|-------------|
 | `SEARXNG_URL` | `http://localhost:8081` | SearXNG instance URL |
 | `FIRECRAWL_URL` | `http://localhost:3002` | Firecrawl instance URL |
+| `FIRECRAWL_ENABLED` | `true` | Set to `false` when no Firecrawl is deployed — tier 1 is then skipped with `reason: not_configured` instead of attempting a connection on every fetch |
 | `RERANKER_URL` | `http://localhost:8787` | Reranker instance URL |
 | `FIRECRAWL_API_KEY` | `placeholder-local` | Firecrawl API key (if required) |
 | `GITHUB_TOKEN` | *(unset)* | GitHub personal access token — increases rate limit from 60 to 5,000 req/hour |
@@ -564,6 +620,7 @@ All service URLs are configurable via environment variables.
 | `FIRECRAWL_CRAWL_MAX_WAIT_MS` | `120000` | Maximum time to wait for a Firecrawl crawl job before falling back to sitemap |
 | `EXPAND_QUERIES` | `false` | Set to `true` to enable query expansion globally |
 | `CRAWL4AI_URL` | *(unset)* | Crawl4AI instance URL — enables second-tier fetch fallback when Firecrawl fails |
+| `CRAWL4AI_ENABLED` | `true` | Set to `false` to skip tier 2 regardless of `CRAWL4AI_URL`. Tier 2 is also skipped when `CRAWL4AI_URL` is unset |
 | `CRAWL4AI_API_TOKEN` | *(unset)* | Optional Bearer token for Crawl4AI instances with API token protection |
 | `WAYBACK_ENABLED` | `false` | Set to `true` to enable Wayback Machine tier-4 fallback — fetches archived snapshots when all three tiers fail |
 | `SOLVER_URL` | *(unset)* | Base URL of a Byparr (or other FlareSolverr `POST /v1`-compatible) challenge-solving service, e.g. `http://byparr:8191`. Unset leaves the tier inert regardless of `SOLVER_ENABLED`. |

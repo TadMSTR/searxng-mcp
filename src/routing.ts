@@ -1,8 +1,9 @@
-// Data-driven tier routing. Skips tiers that are clearly bad fits for a
-// domain — either by operator override (`tier_skip` in domains.json) or by
-// observed success rate (Phase 4 stats). Falls back to the full cascade
-// during cold start (<10 attempts).
+// Data-driven tier routing. Skips tiers that cannot or should not run for a
+// domain — because the tier is not configured at all, by operator override
+// (`tier_skip` in domains.json), or by observed success rate (Phase 4 stats).
+// Falls back to the full cascade during cold start (<10 attempts).
 
+import { tierConfigured } from "./config.js";
 import {
   currentWindowStat,
   getDomainRecord,
@@ -15,7 +16,10 @@ import type { TierSlot } from "./types.js";
 const MIN_ATTEMPTS_FOR_DECISION = 10;
 const LOW_SUCCESS_THRESHOLD = 0.3;
 
-export type SkipReason = "operator_override" | "low_success_rate";
+export type SkipReason =
+  | "operator_override"
+  | "low_success_rate"
+  | "not_configured";
 
 export interface TierSkipDecision {
   tier: TierSlot;
@@ -33,8 +37,24 @@ export async function computeTierSkips(
 ): Promise<TierSkipDecision[]> {
   const decisions = new Map<TierSlot, SkipReason>();
 
-  // Operator overrides always win.
+  // Seeded FIRST, and this ordering is the one precedence rule a reader will
+  // not guess: `not_configured` is absolute. An operator override cannot
+  // un-skip an unconfigured tier — there is nothing to call — so the later
+  // passes must not be able to overwrite this entry. Both of them skip slots
+  // already in the map, so seeding first is what makes it absolute.
+  //
+  // Routing an unconfigured tier through the skip machinery (rather than
+  // letting it fail inside runTier) is also what keeps the domain database
+  // honest: a skipped tier is never recorded as an attempt, so tier_stats_30d
+  // stops accumulating misses that mean "not configured" rather than "tried
+  // and failed" — the same stats that drive the low_success_rate pass below.
+  for (const [slot, configured] of Object.entries(tierConfigured())) {
+    if (!configured) decisions.set(slot as TierSlot, "not_configured");
+  }
+
+  // Operator overrides win over the stats pass.
   for (const tier of getOperatorTierSkips(url)) {
+    if (decisions.has(tier)) continue;
     decisions.set(tier, "operator_override");
   }
 

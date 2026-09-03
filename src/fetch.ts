@@ -399,7 +399,12 @@ export async function fetchPage(
       // Announce all skipped tiers up front (metrics + events + logs).
       for (const { tier: slot, reason } of skipDecisions) {
         const tierName = TIER_NAME[slot];
-        incCounter("fetch", { tier: tierName, outcome: "skipped" });
+        // `reason` is labelled here, not just carried on the event: without it
+        // searxng_fetch_total{outcome="skipped"} cannot tell a tier that is not
+        // configured from one that is failing. Three values, so cardinality is
+        // a non-issue, and existing queries that do not select on reason still
+        // aggregate the same total.
+        incCounter("fetch", { tier: tierName, outcome: "skipped", reason });
         events.fetchTierSkipped({ url, tier: tierName, reason });
         console.error(
           `[searxng-mcp] fetch ${slot} skipped url=${url} reason=${reason}`,

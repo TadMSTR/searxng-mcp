@@ -1,3 +1,5 @@
+import type { TierSlot } from "./types.js";
+
 export const SEARXNG_URL = process.env.SEARXNG_URL ?? "http://localhost:8081";
 export const FIRECRAWL_URL =
   process.env.FIRECRAWL_URL ?? "http://localhost:3002";
@@ -70,6 +72,36 @@ export const HISTER_URL = process.env.HISTER_URL?.replace(/\/$/, "") ?? "";
 export const HISTER_TOKEN = process.env.HISTER_TOKEN ?? "";
 export const CRAWL4AI_URL = process.env.CRAWL4AI_URL ?? null;
 export const CRAWL4AI_API_TOKEN = process.env.CRAWL4AI_API_TOKEN;
+// Fetch-tier kill switches. Only SearXNG is genuinely required — tier 3 is an
+// in-process raw fetch + Readability, so a deployment with no Firecrawl and no
+// Crawl4AI still serves fetch_url. These switches let such a deployment say so,
+// and the tier is then skipped as `not_configured` rather than attempted and
+// missed (see computeTierSkips in routing.ts).
+//
+// They default to *true* and are read as `!== "false"`, matching
+// YOUTUBE_TRANSCRIPT_ENABLED / REDDIT_FASTPATH_ENABLED. Deliberately NOT
+// derived from whether FIRECRAWL_URL was explicitly set: it defaults to
+// http://localhost:3002, so an instance already running Firecrawl on the
+// default port without an env var would silently lose tier 1. An explicit
+// switch is behaviour-neutral by construction.
+export const FIRECRAWL_ENABLED = process.env.FIRECRAWL_ENABLED !== "false";
+export const CRAWL4AI_ENABLED = process.env.CRAWL4AI_ENABLED !== "false";
+/**
+ * Effective per-tier availability, derived from the switches above and the URL
+ * each one gates. Single source of truth: the `not_configured` skips in
+ * routing.ts and the startup capability line in index.ts both read this, so
+ * they cannot disagree about what is on.
+ *
+ * Reports *configuration*, never reachability — nothing here probes a service.
+ * Tier 3 is in-process (raw fetch + Readability) and so is always available.
+ */
+export function tierConfigured(): Record<TierSlot, boolean> {
+  return {
+    tier1: FIRECRAWL_ENABLED,
+    tier2: CRAWL4AI_ENABLED && Boolean(CRAWL4AI_URL),
+    tier3: true,
+  };
+}
 export const WAYBACK_ENABLED = process.env.WAYBACK_ENABLED === "true";
 // Challenge-solving tier. SOLVER_URL points at a FlareSolverr-v1-compatible
 // solver — Byparr on forge (`http://byparr:8191`); FlareSolverr itself speaks
