@@ -6,6 +6,62 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [3.23.0] - 2026-09-04
+
+Firecrawl v2 client behind a configuration axis (build
+`firecrawl-upstream-2026-09-p2-searxng-client`, part 2 of 4; closes vikunja#644). searxng-mcp
+can now target either the legacy v1 backend or upstream Firecrawl 2.x, selected by
+`FIRECRAWL_API_VERSION`. **The default is `v1`, so an upgrade changes nothing in the live
+fetch path.**
+
+### Fixed
+- **`crawl_site`'s Firecrawl phase had never once succeeded** (vikunja#644). `crawl.ts` called
+  `/v2/crawl` and `/v2/crawl/{id}` while the deployed backend serves only `/v1`, so every call
+  404'd — and `crawl_site` swallowed the 404 into its sitemap fallback and kept returning
+  healthy-looking manifests, which is why a wholly dead code path survived the life of the
+  feature. `src/tiers/firecrawl.ts` had the same URL built correctly, one file away.
+- **Both call sites now derive their path from one helper** (`src/firecrawl-api.ts`) instead of
+  each hardcoding a version prefix. The two files could disagree because nothing made them
+  agree.
+
+### Added
+- **`FIRECRAWL_API_VERSION`** (`v1` | `v2`, default `v1`). An unrecognised value **throws at
+  startup** rather than falling back — a silent fallback would rebuild the exact failure above.
+- **`/v2/map` as a `crawl_site` phase**, ahead of the hand-rolled sitemap parse and skipped
+  entirely under `v1`. Purpose-built for the same job, and it copes with sites whose sitemap is
+  absent, stale or split across nested indexes.
+- **A `crawl` slot in `tier_stats_30d`** (schema 6 → 7). `crawl_site`'s Firecrawl phase had no
+  slot, so `domain_stats` could not show it — no amount of reading the numbers would have
+  revealed #644. Non-2xx responses from the crawl start, the crawl poll and the map endpoint
+  are now logged and recorded with a typed reason instead of vanishing into the fallback.
+  Existing records are rebuilt fresh on the bump, as with every bump before it.
+- **`FIRECRAWL_WAIT_FOR_MS`** (default `2000`), the bound on the `v2` `wait_for_selector`
+  downgrade below.
+- **A page-level status check under `v2`.** v2 returns a 200/`success: true` envelope wrapping
+  an error page, with the page's own status under `data.metadata.statusCode`; that used to land
+  in `domain_stats` as a tier-1 success and cache the error page as content. Applied under `v2`
+  only — adding it to `v1` would change live behaviour, which this build does not do.
+
+### Changed
+- **`wait_for_selector` is a semantic downgrade under `v2`.** Upstream Firecrawl implements
+  page `actions` in Fire-engine, which is closed-source and cloud-only; every engine a
+  self-hosted deployment can reach reports `actions: false`, and a scrape carrying an `actions`
+  array is rejected outright with HTTP 400 `SCRAPE_ACTIONS_NOT_SUPPORTED` — the whole request
+  fails rather than degrading. Under `v2` the selector is mapped to `waitFor`, a fixed delay,
+  which waits on time rather than on the selector. Under `v1` the wait action is unchanged.
+  Tier 2 (Crawl4AI) still supports real selector waits and the cascade reaches it.
+
+### Documentation
+- **The README's tier-1 adblock section described a deployment that may not exist.** It
+  presented the `docker/puppeteer-adblock/` CDP hook as unconditionally live and gave a rebuild
+  command against a compose path that does not exist. The image is real and
+  `docker-compose.full.yml` does build it, but it reaches a stack only if that stack builds it,
+  and it is Puppeteer-specific — upstream Firecrawl 2.x uses Playwright, so it is not part of a
+  `v2` stack at all. Rewritten to say when it applies, when it does not, and how to check
+  rather than assume.
+- Documented the `v2` capability boundary: no `actions`, no screenshots, no stealth proxy, and
+  no LLM-backed scrape formats on a self-hosted deployment.
+
 ## [3.22.0] - 2026-09-03
 
 Cap every read (build `searxng-mcp-bounded-reads-2026-09`, vikunja#638; closes vikunja#423).

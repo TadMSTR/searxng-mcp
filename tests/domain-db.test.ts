@@ -80,7 +80,7 @@ describe("recordTierAttempt", () => {
     await recordTierAttempt("https://example.com/p", "tier1_firecrawl", "hit");
     const written = lastWrittenRecord(getStored());
     expect(written.domain).toBe("example.com");
-    expect(written.schema_version).toBe(6);
+    expect(written.schema_version).toBe(7);
     expect(written.tier_stats_30d.tier1.attempts).toBe(1);
     expect(written.tier_stats_30d.tier1.ok).toBe(1);
     expect(written.tier_stats_30d.tier1.window_start_ms).toBeGreaterThan(0);
@@ -88,7 +88,7 @@ describe("recordTierAttempt", () => {
 
   it("updates an existing record incrementally", async () => {
     const seed: DomainRecord = {
-      schema_version: 6,
+      schema_version: 7,
       domain: "example.com",
       first_seen: "2026-05-01T00:00:00Z",
       last_fetch: "2026-05-01T00:00:00Z",
@@ -100,6 +100,7 @@ describe("recordTierAttempt", () => {
         tier4: { attempts: 0, ok: 0, fail: 0, window_start_ms: Date.now() },
         github: { attempts: 0, ok: 0, fail: 0, window_start_ms: Date.now() },
         solver: { attempts: 0, ok: 0, fail: 0, window_start_ms: Date.now() },
+        crawl: { attempts: 0, ok: 0, fail: 0, window_start_ms: Date.now() },
       },
     };
     const { getStored } = setupAtomicMock(JSON.stringify(seed));
@@ -118,7 +119,7 @@ describe("recordTierAttempt", () => {
   it("resets window counters when window_start_ms is older than 30 days", async () => {
     const oldWindowMs = Date.now() - 31 * 24 * 60 * 60 * 1000;
     const seed: DomainRecord = {
-      schema_version: 6,
+      schema_version: 7,
       domain: "example.com",
       first_seen: "2026-04-01T00:00:00Z",
       last_fetch: "2026-04-15T00:00:00Z",
@@ -136,6 +137,7 @@ describe("recordTierAttempt", () => {
         tier4: { attempts: 0, ok: 0, fail: 0, window_start_ms: Date.now() },
         github: { attempts: 0, ok: 0, fail: 0, window_start_ms: Date.now() },
         solver: { attempts: 0, ok: 0, fail: 0, window_start_ms: Date.now() },
+        crawl: { attempts: 0, ok: 0, fail: 0, window_start_ms: Date.now() },
       },
     };
     const { getStored } = setupAtomicMock(JSON.stringify(seed));
@@ -233,14 +235,15 @@ describe("recordTierAttempt", () => {
     expect(written.tier_stats_30d.tier3.attempts).toBe(0);
   });
 
-  it("rebuilds a schema-5 record fresh on the 5->6 bump (discards the pre-solver window)", async () => {
-    // Retargeted from the 4->5 bump onto the bump this build introduces. The
-    // assertion is unchanged in substance: a pre-bump record is rebuilt, not
-    // migrated, so accumulated tier stats from a window that never measured the
-    // new slot cannot keep driving tier-skip decisions. A v5 record has no
-    // `solver` slot, which is exactly what makes it unmigratable.
+  it("rebuilds a schema-6 record fresh on the 6->7 bump (discards the pre-crawl window)", async () => {
+    // Retargeted from the 5->6 bump onto the bump this build introduces — the
+    // third time this test has moved forward, and the reason it keeps earning
+    // its place. The assertion is unchanged in substance: a pre-bump record is
+    // rebuilt, not migrated, so accumulated tier stats from a window that never
+    // measured the new slot cannot keep driving tier-skip decisions. A v6
+    // record has no `crawl` slot, which is exactly what makes it unmigratable.
     const staleSeed = JSON.stringify({
-      schema_version: 5,
+      schema_version: 6,
       domain: "example.com",
       first_seen: "2026-05-01T00:00:00Z",
       last_fetch: "2026-05-01T00:00:00Z",
@@ -251,14 +254,15 @@ describe("recordTierAttempt", () => {
         tier3: { attempts: 0, ok: 0, fail: 0, window_start_ms: Date.now() },
         tier4: { attempts: 0, ok: 0, fail: 0, window_start_ms: Date.now() },
         github: { attempts: 0, ok: 0, fail: 0, window_start_ms: Date.now() },
+        solver: { attempts: 0, ok: 0, fail: 0, window_start_ms: Date.now() },
       },
     });
     const { getStored } = setupAtomicMock(staleSeed);
     await recordTierAttempt("https://example.com/p", "github", "hit");
     const written = lastWrittenRecord(getStored());
-    expect(written.schema_version).toBe(6);
+    expect(written.schema_version).toBe(7);
     // The rebuilt record carries the new slot, zeroed.
-    expect(written.tier_stats_30d.solver).toEqual(
+    expect(written.tier_stats_30d.crawl).toEqual(
       expect.objectContaining({ attempts: 0, ok: 0, fail: 0 }),
     );
     // Stale tier1 stats discarded on rebuild — a 40-attempt history that would
@@ -405,7 +409,7 @@ describe("shouldSkipJsonLdPostExtract", () => {
 
   it("returns false until 5 samples are recorded with zero hits", async () => {
     const seed: DomainRecord = {
-      schema_version: 6,
+      schema_version: 7,
       domain: "example.com",
       first_seen: "2026-05-01T00:00:00Z",
       last_fetch: "2026-05-01T00:00:00Z",
@@ -423,6 +427,7 @@ describe("shouldSkipJsonLdPostExtract", () => {
         tier4: { attempts: 0, ok: 0, fail: 0, window_start_ms: Date.now() },
         github: { attempts: 0, ok: 0, fail: 0, window_start_ms: Date.now() },
         solver: { attempts: 0, ok: 0, fail: 0, window_start_ms: Date.now() },
+        crawl: { attempts: 0, ok: 0, fail: 0, window_start_ms: Date.now() },
       },
     };
     cacheGetMock.mockResolvedValue(JSON.stringify(seed));
@@ -433,7 +438,7 @@ describe("shouldSkipJsonLdPostExtract", () => {
 
   it("returns true after 5+ samples with zero JSON-LD hits", async () => {
     const seed: DomainRecord = {
-      schema_version: 6,
+      schema_version: 7,
       domain: "example.com",
       first_seen: "2026-05-01T00:00:00Z",
       last_fetch: "2026-05-01T00:00:00Z",
@@ -451,6 +456,7 @@ describe("shouldSkipJsonLdPostExtract", () => {
         tier4: { attempts: 0, ok: 0, fail: 0, window_start_ms: Date.now() },
         github: { attempts: 0, ok: 0, fail: 0, window_start_ms: Date.now() },
         solver: { attempts: 0, ok: 0, fail: 0, window_start_ms: Date.now() },
+        crawl: { attempts: 0, ok: 0, fail: 0, window_start_ms: Date.now() },
       },
     };
     cacheGetMock.mockResolvedValue(JSON.stringify(seed));
@@ -461,7 +467,7 @@ describe("shouldSkipJsonLdPostExtract", () => {
 
   it("returns false once any JSON-LD hit has been seen, regardless of sample count", async () => {
     const seed: DomainRecord = {
-      schema_version: 6,
+      schema_version: 7,
       domain: "example.com",
       first_seen: "2026-05-01T00:00:00Z",
       last_fetch: "2026-05-01T00:00:00Z",
@@ -479,6 +485,7 @@ describe("shouldSkipJsonLdPostExtract", () => {
         tier4: { attempts: 0, ok: 0, fail: 0, window_start_ms: Date.now() },
         github: { attempts: 0, ok: 0, fail: 0, window_start_ms: Date.now() },
         solver: { attempts: 0, ok: 0, fail: 0, window_start_ms: Date.now() },
+        crawl: { attempts: 0, ok: 0, fail: 0, window_start_ms: Date.now() },
       },
     };
     cacheGetMock.mockResolvedValue(JSON.stringify(seed));

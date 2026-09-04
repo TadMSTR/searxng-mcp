@@ -157,6 +157,40 @@ export const FIRECRAWL_URL =
   process.env.FIRECRAWL_URL ?? "http://localhost:3002";
 export const FIRECRAWL_API_KEY =
   process.env.FIRECRAWL_API_KEY ?? "placeholder-local";
+
+/**
+ * Which Firecrawl API the client speaks. The legacy firecrawl-simple backend
+ * serves only `/v1`; upstream Firecrawl 2.x serves only `/v2`. Both are live on
+ * forge at the same time during the firecrawl-upstream-2026-09 migration, so
+ * this is a configuration axis rather than a one-off path fix.
+ *
+ * Defaults to `v1`: the live fetch path must not change on upgrade.
+ *
+ * Unrecognised values throw at import — which, for a server whose entrypoint
+ * imports this module, is startup. A silent fallback here would rebuild exactly
+ * the failure that hid vikunja#644 for the life of the feature: a wrong version
+ * prefix 404s, `crawl_site` swallows it into the sitemap fallback, and a wholly
+ * dead code path keeps returning healthy-looking manifests.
+ */
+export type FirecrawlApiVersion = "v1" | "v2";
+
+const FIRECRAWL_API_VERSIONS: readonly string[] = ["v1", "v2"];
+
+function parseFirecrawlApiVersion(): FirecrawlApiVersion {
+  const raw = process.env.FIRECRAWL_API_VERSION;
+  if (raw === undefined || raw.trim() === "") return "v1";
+  const v = raw.trim().toLowerCase();
+  if (!FIRECRAWL_API_VERSIONS.includes(v)) {
+    throw new Error(
+      `Invalid FIRECRAWL_API_VERSION: ${JSON.stringify(raw)}. ` +
+        `Must be one of: ${FIRECRAWL_API_VERSIONS.join(", ")}.`,
+    );
+  }
+  return v as FirecrawlApiVersion;
+}
+
+export const FIRECRAWL_API_VERSION: FirecrawlApiVersion =
+  parseFirecrawlApiVersion();
 export const RERANKER_URL = process.env.RERANKER_URL ?? "http://localhost:8787";
 export const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
 export const CACHE_URL =
@@ -389,6 +423,16 @@ export const FIRECRAWL_CRAWL_POLL_INTERVAL_MS = parseInt(
 export const FIRECRAWL_CRAWL_MAX_WAIT_MS = parseInt(
   process.env.FIRECRAWL_CRAWL_MAX_WAIT_MS ?? "120000",
   10,
+);
+
+// How long a v2 scrape waits for the page to settle when wait_for_selector was
+// requested. Under v2 there is no selector-based wait available — `actions` is
+// Fire-engine only — so the selector is downgraded to this fixed delay. Bounded
+// well under the tier's own 15 s AbortSignal so the wait can never be the thing
+// that times the request out. Unused under v1, which sends a real wait action.
+export const FIRECRAWL_WAIT_FOR_MS = positiveIntEnv(
+  "FIRECRAWL_WAIT_FOR_MS",
+  2000,
 );
 
 export const RERANK_RECENCY_WEIGHT = (() => {

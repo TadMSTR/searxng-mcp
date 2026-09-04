@@ -30,7 +30,7 @@ function recordJson(
   tiers: Record<string, ReturnType<typeof stat>> = {},
 ) {
   return JSON.stringify({
-    schema_version: 6,
+    schema_version: 7,
     domain,
     first_seen: "2026-05-01T00:00:00Z",
     last_fetch: "2026-06-01T00:00:00Z",
@@ -42,6 +42,7 @@ function recordJson(
       tier4: stat(0, 0, 0),
       github: stat(0, 0, 0),
       solver: stat(0, 0, 0),
+      crawl: stat(0, 0, 0),
       ...tiers,
     },
   });
@@ -66,6 +67,7 @@ describe("deriveGauges", () => {
         tier4: tierAgg(0, 0, null),
         github: tierAgg(28, 0, 0),
         solver: tierAgg(2, 1, 0.5),
+        crawl: tierAgg(2, 1, 0.5),
       },
     };
     const g = deriveGauges(agg);
@@ -77,6 +79,7 @@ describe("deriveGauges", () => {
       { tier: "tier3", ratio: 0.25 },
       { tier: "github", ratio: 0 },
       { tier: "solver", ratio: 0.5 },
+      { tier: "crawl", ratio: 0.5 },
     ]);
   });
 });

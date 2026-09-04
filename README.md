@@ -181,18 +181,29 @@ flowchart TD
 
 ### Adblocking
 
-searxng-mcp uses two independent adblocking sidecars, one per fetch tier group:
+searxng-mcp ships two adblocking sidecars, but only one of them applies to every deployment:
 
-| Sidecar | Tier | Mechanism |
-|---------|------|-----------|
-| `docker/puppeteer-adblock/` | Tier 1 (Firecrawl) | CDP-level interception — full HTTPS filtering, same browser process |
-| `docker/adblock-proxy/` | Tiers 2+3 (Crawl4AI, raw fetch) | HTTP forward proxy — filters plain-HTTP ad domains |
+| Sidecar | Tier | Mechanism | Applies when |
+|---------|------|-----------|--------------|
+| `docker/adblock-proxy/` | Tiers 2+3 (Crawl4AI, raw fetch) | HTTP forward proxy — filters plain-HTTP ad domains | `ADBLOCK_PROXY_URL` is set |
+| `docker/puppeteer-adblock/` | Tier 1 (Firecrawl) | CDP-level interception in the browser service | **Only** on a `v1` firecrawl-simple stack built from `docker-compose.full.yml` |
 
-#### Tier 1 — Puppeteer adblock
+#### Tier 1 — Puppeteer adblock (v1 stacks only)
 
-The `firecrawl-puppeteer` service used by Firecrawl runs a custom image (`docker/puppeteer-adblock/`) that layers `@ghostery/adblocker-puppeteer` over the upstream `trieve/puppeteer-service-ts`. EasyList + EasyPrivacy are loaded at startup and refreshed every 168 hours; the blocker is applied to every page Firecrawl creates. Speeds up fetches of ad-heavy sites and shrinks rendered DOM size.
+`docker/puppeteer-adblock/` builds an image layering `@ghostery/adblocker-puppeteer` over `trieve/puppeteer-service-ts`. EasyList + EasyPrivacy are loaded at startup and refreshed every 168 hours, and the blocker is applied to every page Firecrawl creates.
 
-Env vars:
+**It is not automatic, and it does not apply under `FIRECRAWL_API_VERSION=v2`:**
+
+- It reaches a deployment only if that deployment builds it. `docker-compose.full.yml` in this repo does; a Firecrawl stack brought up from upstream's own compose, or any stack pointing `PLAYWRIGHT_MICROSERVICE_URL` at a stock `trieve/puppeteer-service-ts` image, does not — tier 1 then has no adblocking, silently.
+- It is Puppeteer-specific. Upstream Firecrawl 2.x replaced the Puppeteer service with `apps/playwright-service-ts`, so on a `v2` backend this image is not part of the stack at all. Porting it would mean rewriting against `@ghostery/adblocker-playwright`, not rebuilding.
+
+To check rather than assume, confirm the browser container carries the hook:
+
+```bash
+docker exec <firecrawl-browser-container> ls node_modules/@ghostery
+```
+
+Env vars, read by that image only:
 
 | Var | Default | Description |
 |-----|---------|-------------|
@@ -200,17 +211,17 @@ Env vars:
 | `ADBLOCK_FILTERS_URL` | EasyList + EasyPrivacy | Comma-separated list of filter list URLs. |
 | `ADBLOCK_REFRESH_HOURS` | `168` | Cadence at which the blocker rebuilds from the configured URLs. |
 
-The base image is pinned by SHA256 digest. To deploy a change, rebuild and restart the service:
+The base image is pinned by SHA256 digest. To rebuild and restart it:
 
 ```bash
-docker compose -f ~/docker/firecrawl-simple/docker-compose.yml up -d --build firecrawl-puppeteer
+docker compose -f docker-compose.full.yml up -d --build firecrawl-puppeteer
 ```
 
-**Per-domain bypass:** `domains.json` reserves an `adblock_skip` slot for future operator overrides. Wiring isn't implemented yet — it would require Firecrawl to forward a custom header through to the puppeteer-service, which isn't part of its current API. Tracked as scope-creep item I.
+**Per-domain bypass:** `domains.json` reserves an `adblock_skip` slot for future operator overrides. Wiring isn't implemented — it would require Firecrawl to forward a custom header through to the browser service, which isn't part of its API. Tracked as scope-creep item I.
 
 #### Tier 2+3 — Adblock proxy
 
-Set `ADBLOCK_PROXY_URL` (e.g. `http://adblock-proxy:8118`) to route Crawl4AI and raw Node fetch requests through an HTTP forward proxy that filters ad and tracker requests. HTTPS CONNECT tunnels are passed through unmodified — no MITM, so filtering applies to plain-HTTP ad domains only. The tier-1 puppeteer hook already handles full HTTPS filtering for that tier; the proxy covers what leaks through at tiers 2 and 3.
+Set `ADBLOCK_PROXY_URL` (e.g. `http://adblock-proxy:8118`) to route Crawl4AI and raw Node fetch requests through an HTTP forward proxy that filters ad and tracker requests. HTTPS CONNECT tunnels are passed through unmodified — no MITM, so filtering applies to plain-HTTP ad domains only. Where the tier-1 hook above is in play it handles HTTPS filtering for that tier; where it is not — including every `v2` deployment — nothing filters tier 1 at all.
 
 As of v3.19.0, the proxy validates the **resolved** address — not just the requested hostname string — on both its CONNECT and plain-HTTP paths before connecting, closing a DNS-rebinding gap (audit finding SSRF-10).
 
@@ -322,11 +333,17 @@ Both rely on **unofficial, undocumented endpoints** (YouTube's timedtext API, Re
 
 ### Site crawling
 
-`crawl_site` crawls an entire site and returns a manifest of URL/title/snippet for each page found. It uses a three-phase strategy cascade:
+`crawl_site` crawls an entire site and returns a manifest of URL/title/snippet for each page found. It uses a four-phase strategy cascade:
 
-1. **Firecrawl crawl** — sends a crawl job to Firecrawl (`/crawl` endpoint), polls until complete, and returns the full page list. Controlled by `FIRECRAWL_CRAWL_POLL_INTERVAL_MS` and `FIRECRAWL_CRAWL_MAX_WAIT_MS`.
-2. **Sitemap parsing** — if Firecrawl fails or returns empty, fetches `/sitemap.xml` (and linked sitemaps) and extracts URLs with titles/snippets. Uses `fast-xml-parser` for sitemap XML parsing.
-3. **BFS crawl** (opt-in) — if sitemap parsing also fails, performs a breadth-first crawl starting from the given URL up to `CRAWL_BFS_MAX_DEPTH` link hops. Only runs when `CRAWL_BFS_ENABLED=true` or the `bfs` tool parameter is `true`.
+1. **Firecrawl crawl** — sends a crawl job to Firecrawl (`/crawl`), polls until complete, and returns the full page list. Targets `/v1/crawl` or `/v2/crawl` per `FIRECRAWL_API_VERSION`. Controlled by `FIRECRAWL_CRAWL_POLL_INTERVAL_MS` and `FIRECRAWL_CRAWL_MAX_WAIT_MS`.
+2. **Firecrawl map** (`v2` only) — asks `/v2/map` for the site's URLs, then fetches them. Purpose-built for exactly what phase 3 hand-rolls, and it copes with sites whose sitemap is absent, stale or split across nested indexes. Skipped entirely under `v1`, where the endpoint does not exist.
+3. **Sitemap parsing** — fetches `/sitemap.xml` (and linked sitemaps) and extracts URLs with titles/snippets. Uses `fast-xml-parser` for sitemap XML parsing.
+4. **BFS crawl** (opt-in) — if sitemap parsing also fails, performs a breadth-first crawl starting from the given URL up to `CRAWL_BFS_MAX_DEPTH` link hops. Only runs when `CRAWL_BFS_ENABLED=true` or the `bfs` tool parameter is `true`.
+
+Each phase falls through to the next, but **no longer silently**: a non-2xx from the crawl
+start, the crawl poll or the map endpoint is logged and recorded against the `crawl` slot in
+the per-domain stats, so `domain_stats` answers "does the Firecrawl phase ever succeed here?"
+without needing a live probe.
 
 Full page content fetched during the crawl is cached in Valkey (TTL: `CRAWL_MANIFEST_TTL_SECONDS`, default 6 hours). Subsequent `fetch_url` calls for any URL in the manifest return immediately from cache — zero fetch overhead for follow-up reads.
 
@@ -565,6 +582,43 @@ The reranker must expose a Jina-compatible `/v1/rerank` endpoint. A lightweight 
 
 Any Firecrawl-compatible instance works. The local [firecrawl-simple](https://github.com/mendableai/firecrawl/tree/main/apps/api) deployment is sufficient. Set `FIRECRAWL_API_KEY` if your instance requires authentication (defaults to `placeholder-local` for local deployments that skip auth).
 
+#### Firecrawl API version
+
+`FIRECRAWL_API_VERSION` selects which API the client speaks — `v1` (default) or `v2`. The two
+are not interchangeable and no backend serves both:
+
+| Backend | Version | Notes |
+|---|---|---|
+| [firecrawl-simple](https://github.com/devflowinc/firecrawl-simple) | `v1` | Serves `/v1/scrape` and `/v1/crawl` only. No `/map`. |
+| [Upstream Firecrawl 2.x](https://github.com/firecrawl/firecrawl) | `v2` | Serves `/v2/scrape`, `/v2/crawl` and `/v2/map`. |
+
+An unrecognised value fails at startup rather than falling back. That is deliberate: a wrong
+version prefix produces a 404 that `crawl_site` would swallow into its sitemap fallback, and a
+wholly dead code path returning healthy-looking manifests is exactly how the `/v2`-against-`v1`
+mismatch survived unnoticed for the life of the feature.
+
+**Capability boundary under `v2` self-hosting.** Upstream Firecrawl implements page `actions`,
+screenshots and the stealth proxy in **Fire-engine**, which is closed-source and cloud-only.
+Every engine a self-hosted deployment can reach (`fetch`, `playwright`, `pdf`, `document`)
+reports `actions: false`, and a scrape carrying an `actions` array is rejected outright with
+HTTP 400 `SCRAPE_ACTIONS_NOT_SUPPORTED` — the whole request fails, it does not degrade.
+
+The practical consequence is one **semantic downgrade**:
+
+| Tuning parameter | Under `v1` | Under `v2` |
+|---|---|---|
+| `target_selector` | `includeTags` | `includeTags` — unchanged |
+| `wait_for_selector` | a real wait action on the selector | `waitFor`, a **fixed delay** of `FIRECRAWL_WAIT_FOR_MS` |
+
+Under `v2`, `wait_for_selector` waits on *time*, not on the selector. The page may still be
+unsettled when the delay elapses, and the delay is paid in full even when the selector was
+already present. If that matters for a given site, tier 2 (Crawl4AI) does support real
+selector waits and the cascade will reach it when tier 1 returns nothing useful.
+
+The LLM-backed scrape formats (`json`, `summary`, `query`, `highlights`) are also unavailable
+on a self-hosted deployment without an LLM endpoint configured on the backend; searxng-mcp
+does not request them.
+
 ### Crawl4AI (optional — fetch tier 2)
 
 [Crawl4AI](https://github.com/unclecode/crawl4ai) is an optional second-tier fetch fallback used when Firecrawl returns empty content (bot-blocked pages, JS-heavy sites). Set `CRAWL4AI_URL` to enable it. If unset, the cascade skips to raw HTTP fetch.
@@ -626,6 +680,8 @@ All service URLs are configurable via environment variables.
 | `SEARXNG_ATTEMPT_TIMEOUT_MS` | `10000` | Per-instance ceiling, further capped by whatever remains of `SEARXNG_TOTAL_TIMEOUT_MS`. |
 | `SEARXNG_UNHEALTHY_TTL_SECONDS` | `30` | How long a failed instance is deprioritised for. A hint that reorders candidates, not a circuit breaker — an unhealthy instance is moved to the back, never removed, and if every instance is marked down the full list is still tried. Stored in the cache so the hint is shared across processes; a cache outage degrades to "try every instance in configured order". |
 | `FIRECRAWL_URL` | `http://localhost:3002` | Firecrawl instance URL |
+| `FIRECRAWL_API_VERSION` | `v1` | Which Firecrawl API to speak — `v1` or `v2`. Any other value **fails at startup** rather than silently constructing a URL that 404s. See [Firecrawl API version](#firecrawl-api-version). |
+| `FIRECRAWL_WAIT_FOR_MS` | `2000` | Under `v2` only: how long a scrape waits for the page to settle when `wait_for_selector` is requested. v2 has no selector-based wait — see the capability boundary below. |
 | `FIRECRAWL_ENABLED` | `true` | Set to `false` when no Firecrawl is deployed — tier 1 is then skipped with `reason: not_configured` instead of attempting a connection on every fetch |
 | `RERANKER_URL` | `http://localhost:8787` | Reranker instance URL |
 | `FIRECRAWL_API_KEY` | `placeholder-local` | Firecrawl API key (if required) |

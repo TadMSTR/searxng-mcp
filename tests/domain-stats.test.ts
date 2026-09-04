@@ -8,7 +8,12 @@ vi.mock("../src/cache.js", () => ({
 
 import { getValkey } from "../src/cache.js";
 import type { DomainRecord, TierStat } from "../src/domain-db.js";
-import { aggregateDomainStats, enumerateDomains } from "../src/domain-stats.js";
+import { TIER_SLOT_KEYS } from "../src/domain-db.js";
+import {
+  aggregateDomainStats,
+  enumerateDomains,
+  formatDomainRecord,
+} from "../src/domain-stats.js";
 
 const getValkeyMock = vi.mocked(getValkey);
 
@@ -24,7 +29,7 @@ function mkRecord(
   capabilities: DomainRecord["capabilities"] = {},
 ): DomainRecord {
   return {
-    schema_version: 6,
+    schema_version: 7,
     domain,
     first_seen: "2026-05-01T00:00:00Z",
     last_fetch: "2026-06-01T00:00:00Z",
@@ -36,6 +41,7 @@ function mkRecord(
       tier4: stat(0, 0, 0),
       github: stat(0, 0, 0),
       solver: stat(0, 0, 0),
+      crawl: stat(0, 0, 0),
       ...tiers,
     },
   };
@@ -322,5 +328,41 @@ describe("aggregateDomainStats", () => {
   it("passes the truncated flag through", () => {
     expect(aggregateDomainStats([], true).truncated).toBe(true);
     expect(aggregateDomainStats([]).truncated).toBe(false);
+  });
+});
+
+// formatDomainRecord had no coverage at all, which is how it came to be a
+// hand-written roster of a closed set that TIER_SLOT_KEYS is supposed to own.
+// A slot added to the record but missed here records forever and never renders
+// in single-domain mode — the exact invisibility the `crawl` slot was added to
+// remove. Pinned generically so the next slot fails here until it is rendered,
+// rather than being discovered by an operator who cannot find their numbers.
+describe("formatDomainRecord renders every tier slot", () => {
+  /** The tier-stats rows, in order, from a formatted record. */
+  function tierBlock(record: DomainRecord): string[] {
+    const lines = formatDomainRecord(record, NOW).split("\n");
+    const start = lines.findIndex((l) => l.includes("tier stats (30d window)"));
+    expect(start).toBeGreaterThanOrEqual(0);
+    return lines.slice(start + 1, start + 1 + TIER_SLOT_KEYS.length);
+  }
+
+  it.each(TIER_SLOT_KEYS)("renders the %s slot's own numbers", (slot) => {
+    const block = tierBlock(mkRecord("example.com", { [slot]: stat(7, 3, 4) }));
+    // 3/7 is unique to the slot under test — every other slot is 0/0 ("no
+    // data") — so this cannot be satisfied by a neighbouring row.
+    const carrying = block.filter((l) => l.includes("(3/7)"));
+    expect(carrying).toHaveLength(1);
+    // Matched on the row's leading label rather than `includes(slot)`: every
+    // label contains "firecrawl", and "crawl" is a substring of both that and
+    // "crawl4ai", so a containment check passes against the wrong row.
+    expect(carrying[0].trim().startsWith(slot)).toBe(true);
+  });
+
+  it("renders the slots in roster order, one row each", () => {
+    const block = tierBlock(mkRecord("example.com"));
+    expect(block).toHaveLength(TIER_SLOT_KEYS.length);
+    TIER_SLOT_KEYS.forEach((slot, i) => {
+      expect(block[i].trim().startsWith(slot)).toBe(true);
+    });
   });
 });

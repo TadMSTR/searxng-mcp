@@ -104,7 +104,7 @@ function mkRecord(
   overrides: Partial<DomainRecord["tier_stats_30d"]> = {},
 ): DomainRecord {
   return {
-    schema_version: 6,
+    schema_version: 7,
     domain,
     first_seen: "2026-05-01T00:00:00Z",
     last_fetch: "2026-06-01T00:00:00Z",

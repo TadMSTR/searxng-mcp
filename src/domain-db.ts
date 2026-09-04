@@ -24,7 +24,14 @@ export const DOMAIN_RECORD_TTL_SECONDS = 90 * 24 * 60 * 60;
 // the alternative, back-filling an empty slot, would leave the record claiming
 // a 30-day window it never measured. The reset is accepted (Ted, 2026-09-02):
 // the v5 window only began 2026-08-19, so little is discarded.
-export const SCHEMA_VERSION = 6;
+// Bumped 6->7 to add the `crawl` slot for crawl_site's Firecrawl phase, which
+// had no slot at all and so could not appear in domain_stats — which is how a
+// phase that 404'd on every call for the life of the feature went unnoticed
+// (vikunja#644). Same rebuild-fresh migration as every bump before it. The
+// reset cost is near zero here: the firecrawl-upstream-2026-09 bake window that
+// decides the v1/v2 cutover is measured from this release's ship date anyway,
+// so the window being discarded is one that had not started counting.
+export const SCHEMA_VERSION = 7;
 export const TIER_STATS_WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
 const WINDOW_MS = TIER_STATS_WINDOW_MS;
 
@@ -42,7 +49,12 @@ export type TierName =
   // no TierSlot: it is dispatched directly in fetchPage rather than being part
   // of the ordered cascade, so it stays out of computeTierSkips and the
   // tier_skip domain config entirely.
-  | "solver_byparr";
+  | "solver_byparr"
+  // crawl_site's Firecrawl crawl phase. Like solver_byparr and github, a
+  // TierName with no TierSlot in the fetch cascade: computeTierSkips only
+  // consults tier1/tier2/tier3, so this slot records without ever influencing
+  // fetch routing.
+  | "crawl_firecrawl";
 
 /**
  * The tier_stats_30d slot keys — the single roster of this closed set.
@@ -59,6 +71,12 @@ export const TIER_SLOT_KEYS = [
   "tier4",
   "github",
   "solver",
+  // crawl_site's Firecrawl crawl phase. Not a fetch tier — crawl_site has its
+  // own strategy cascade and never goes through runTier() — but it is a
+  // per-domain attempt with a hit/miss outcome, and giving it a slot is what
+  // makes "this phase never succeeds" legible in domain_stats instead of
+  // needing a live probe to discover.
+  "crawl",
 ] as const;
 export type TierSlotKey = (typeof TIER_SLOT_KEYS)[number];
 export type PreferredStrategy = "llms_full_txt" | "tier1" | "tier2" | "tier3";
@@ -185,6 +203,7 @@ function newRecord(domain: string, now: string): DomainRecord {
       tier4: emptyStat(),
       github: emptyStat(),
       solver: emptyStat(),
+      crawl: emptyStat(),
     },
   };
 }
@@ -270,6 +289,7 @@ const TIER_KEY: Record<TierName, TierSlotKey> = {
   tier4_wayback: "tier4",
   github: "github",
   solver_byparr: "solver",
+  crawl_firecrawl: "crawl",
 };
 
 export async function recordTierAttempt(
