@@ -76,6 +76,10 @@ export interface FirecrawlScrapeResponse {
     metadata?: {
       title?: string;
       sourceURL?: string;
+      // The *page's* HTTP status, distinct from the API envelope's. v2 reports
+      // it; the legacy v1 backend may omit it, so absence means "unknown", not
+      // "failed".
+      statusCode?: number;
     };
   };
   error?: string;

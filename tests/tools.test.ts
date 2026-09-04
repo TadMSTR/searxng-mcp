@@ -331,7 +331,7 @@ describe("handleDomainStats", () => {
     capabilities: DomainRecord["capabilities"] = {},
   ): DomainRecord {
     return {
-      schema_version: 6,
+      schema_version: 7,
       domain,
       first_seen: "2026-05-01T00:00:00Z",
       last_fetch: "2026-06-01T00:00:00Z",
@@ -343,6 +343,7 @@ describe("handleDomainStats", () => {
         tier4: stat(0, 0, 0),
         github: stat(0, 0, 0),
         solver: stat(0, 0, 0),
+        crawl: stat(0, 0, 0),
         ...tiers,
       },
     };

@@ -38,6 +38,26 @@ export const DEFAULT_MAX_KEYS = 5000;
 export type TierSlotName = TierSlotKey;
 const TIER_SLOTS = TIER_SLOT_KEYS;
 
+/**
+ * Display labels for the single-domain rendering, one per slot.
+ *
+ * A `Record<TierSlotKey, ...>` rather than a list of `tierLine(...)` calls,
+ * which is what this block used to be: an array literal is not
+ * exhaustiveness-checked, so a slot added to TIER_SLOT_KEYS but missed here
+ * would record forever and never appear in single-domain output — the same
+ * class of invisibility that let crawl_site's Firecrawl phase 404 unnoticed for
+ * the life of the feature. Missing a key here is now a compile error.
+ */
+const TIER_SLOT_LABELS: Record<TierSlotKey, string> = {
+  tier1: "tier1 (firecrawl)",
+  tier2: "tier2 (crawl4ai) ",
+  tier3: "tier3 (raw)      ",
+  tier4: "tier4 (wayback)  ",
+  github: "github (fastpath)",
+  solver: "solver (byparr)  ",
+  crawl: "crawl (firecrawl)",
+};
+
 // A domain is "failing" if it has enough attempts to judge and a low overall
 // success rate. Tuned to surface the raw.githubusercontent.com-style cases
 // (many attempts, near-zero successes) that the blind spot was hiding.
@@ -308,12 +328,7 @@ export function formatDomainRecord(
     `preferred strategy: ${record.preferred_strategy ?? "none"}`,
     "",
     "--- tier stats (30d window) ---",
-    tierLine("tier1 (firecrawl)", t.tier1, now),
-    tierLine("tier2 (crawl4ai) ", t.tier2, now),
-    tierLine("tier3 (raw)      ", t.tier3, now),
-    tierLine("tier4 (wayback)  ", t.tier4, now),
-    tierLine("github (fastpath)", t.github, now),
-    tierLine("solver (byparr) ", t.solver, now),
+    ...TIER_SLOTS.map((slot) => tierLine(TIER_SLOT_LABELS[slot], t[slot], now)),
   ];
 
   const meta = record.capabilities.metadata_fetch;
