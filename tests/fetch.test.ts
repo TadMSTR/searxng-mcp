@@ -1,6 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { assertPublicUrl, rawFetch } from "../src/fetch.js";
-import { isPdfUrl } from "../src/fetch-utils.js";
 
 describe("assertPublicUrl", () => {
   it("accepts a normal public HTTPS URL", () => {
@@ -258,24 +257,8 @@ describe("rawFetch", () => {
   });
 });
 
-describe("isPdfUrl", () => {
-  it("returns true for .pdf URL", () => {
-    expect(isPdfUrl("https://example.com/doc.pdf")).toBe(true);
-  });
-
-  it("returns true for .PDF URL (case-insensitive)", () => {
-    expect(isPdfUrl("https://example.com/doc.PDF")).toBe(true);
-  });
-
-  it("returns false for non-PDF URL", () => {
-    expect(isPdfUrl("https://example.com/page.html")).toBe(false);
-  });
-
-  it("returns false for URL with .pdf in query string but not path", () => {
-    expect(isPdfUrl("https://example.com/view?file=doc.pdf")).toBe(false);
-  });
-
-  it("returns false for invalid URL", () => {
-    expect(isPdfUrl("not a url")).toBe(false);
-  });
-});
+// `isPdfUrl` and its five tests were deleted with the PDF fast path
+// (vikunja#682). Suffix matching was never the right predicate — it missed every
+// PDF served from an extensionless URL, and those hit the tier-3 rejection
+// instead. PDF handling is now keyed on Content-Type plus the `%PDF-` body
+// signature, covered in tests/tiers/raw-pdf.test.ts.

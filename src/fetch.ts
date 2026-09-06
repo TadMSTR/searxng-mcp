@@ -18,7 +18,6 @@ import { postExtract } from "./extractors/post-extract.js";
 import {
   assertPublicUrl,
   type FetchTuning,
-  isPdfUrl,
   type TierResult,
 } from "./fetch-utils.js";
 import { histerFetch } from "./hister.js";
@@ -33,7 +32,6 @@ import {
   fetchRawHtmlForMetadata,
   githubFetch,
   isGithubUrl,
-  tier2 as pdfTier,
   rawFetch,
   solverFetch,
   waybackFetch,
@@ -420,31 +418,16 @@ export async function fetchPage(
       // resolution (surfaces to the caller as a fetch error).
       await assertResolvedPublic(url);
 
-      // PDF fast path — Firecrawl can't extract PDF text; route directly to tier2.
-      if (isPdfUrl(url)) {
-        const pdfResult = await runTier("tier2_crawl4ai", url, () =>
-          pdfTier.fetch(url, storeChars, preferFit),
-        );
-        if (!pdfResult) {
-          throw new Error(
-            "PDF extraction requires Crawl4AI (CRAWL4AI_URL not configured)",
-          );
-        }
-        const persisted = {
-          title: pdfResult.title,
-          url: pdfResult.url,
-          text: pdfResult.text,
-        };
-        await cacheSet(key, JSON.stringify(persisted), FETCH_CACHE_TTL_SECONDS);
-        events.fetchCompleted({
-          url,
-          tier_served: "tier2_crawl4ai",
-          title: pdfResult.title,
-          text_len: pdfResult.text.length,
-          latency_ms: Date.now() - t_total,
-        });
-        return { ...persisted, text: persisted.text.slice(0, maxChars) };
-      }
+      // No PDF fast path. There used to be one here, routing every `.pdf` URL
+      // straight to tier 2 on the strength of "Firecrawl can't extract PDF
+      // text". That was true of trieve/firecrawl v0.0.55 and is false of v2,
+      // which extracts PDFs natively (see FirecrawlCapabilities.pdf). Worse,
+      // the tier it diverted to cannot do the job at all: Crawl4AI renders the
+      // PDF in a browser, finds no text nodes, and misfires its anti-bot
+      // heuristic, and the resulting null was reported as "CRAWL4AI_URL not
+      // configured" on containers where it plainly was. PDFs now take the
+      // ordinary cascade, so tier 1 serves them and a v1 backend degrades
+      // through to the message in tiers/raw.ts (vikunja#682).
 
       // Content-type fast path — a JSON/XML/YAML/CSV/plain-text endpoint has
       // nothing for a headless browser to render. Firecrawl returns empty

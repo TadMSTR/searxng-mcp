@@ -10,6 +10,7 @@ import {
 } from "../fetch-utils.js";
 import {
   firecrawlEndpoint,
+  firecrawlHtmlFormat,
   firecrawlSupportsActions,
 } from "../firecrawl-api.js";
 import type { FirecrawlScrapeResponse } from "../types.js";
@@ -28,9 +29,14 @@ export async function firecrawlScrape(
   maxChars = 8000,
   tuning?: FetchTuning,
 ): Promise<TierResult> {
+  // v1's format enum is `markdown | rawHtml | screenshot`; it rejects `html`
+  // with a 400 that fails the entire scrape, so an unconditional "html" here
+  // meant every tier-1 request failed under FIRECRAWL_API_VERSION=v1 — latent
+  // today, live the moment anyone rolls back (vikunja#649).
+  const htmlFormat = firecrawlHtmlFormat();
   const body: Record<string, unknown> = {
     url,
-    formats: ["markdown", "html"],
+    formats: ["markdown", htmlFormat],
   };
   // Only add selector fields when requested, so default scrapes are byte-for-
   // byte identical to before. target_selector → includeTags (keep only the
@@ -94,7 +100,10 @@ export async function firecrawlScrape(
 
   const title = data.data.metadata?.title ?? url;
   const text = (data.data.markdown ?? "").slice(0, maxChars);
-  const html = data.data.html;
+  // Same axis on the way back out: the response field carries the name that was
+  // requested, so reading `data.data.html` unconditionally left TierResult.html
+  // undefined under v1 even once the request itself was accepted.
+  const html = data.data[htmlFormat];
 
   return { title, url: data.data.metadata?.sourceURL ?? url, text, html };
 }
