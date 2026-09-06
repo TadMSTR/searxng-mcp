@@ -13,6 +13,7 @@ import {
   currentWindowStat,
   type DomainRecord,
   parseDomainRecord,
+  SCHEMA_VERSION,
   TIER_SLOT_KEYS,
   type TierSlotKey,
   type TierStat,
@@ -90,7 +91,32 @@ export interface FailingDomain {
   success_rate: number;
 }
 
+/**
+ * The measurement period an aggregate actually covers.
+ *
+ * Distinct from `TIER_STATS_WINDOW_MS`, which is a TTL ceiling — the age at
+ * which counts are discarded — not a period anyone measured. The rendered
+ * header said "30d window" unconditionally, so an aggregate built minutes after
+ * a schema reset presented as thirty days of evidence (vikunja#686).
+ */
+export interface AggregateWindow {
+  // Epoch ms of the oldest counting window contributing to this aggregate, or
+  // null when nothing has been counted yet.
+  oldest_sample_ms: number | null;
+  // How long that window has actually been open. Null when there is no sample.
+  elapsed_ms: number | null;
+  // The TTL ceiling counts are discarded at. Present so a caller can tell how
+  // far the real window is from the maximum without hardcoding it.
+  ttl_ceiling_ms: number;
+}
+
 export interface DomainAggregate {
+  // The record schema every contributing record is on. Every schema bump
+  // deliberately discards prior records (see domain-db.ts) — surfacing the
+  // version is what lets a reader recognise a post-reset aggregate without
+  // going to the snapshot directory.
+  schema_version: number;
+  window: AggregateWindow;
   domains_tracked: number;
   // Domains seen in search results but never actually fetched (no tier
   // attempts) — candidates the cascade has never exercised.
@@ -104,6 +130,45 @@ export interface DomainAggregate {
   top_failing: FailingDomain[];
   // True when enumeration hit the key cap — the aggregate covers a subset.
   truncated: boolean;
+}
+
+/**
+ * Below this many attempts, render the count instead of a percentage.
+ *
+ * Five, because at n=4 a single outcome moves the rate by 25 points and at n=5
+ * by 20 — so any percentage drawn from fewer than five samples implies a
+ * precision the sample cannot support. "100% ok (1/1)" and "0% ok (0/1)" are the
+ * same amount of evidence about a domain, and rendering them as percentages
+ * invites a reader to treat them as opposite findings. `no data` was already
+ * distinguished from a number; *barely any data* was not (vikunja#686).
+ *
+ * Deliberately not the same constant as MIN_ATTEMPTS_FOR_DECISION in routing.ts,
+ * which is 10 and governs whether to *act* on a rate by skipping a tier. Acting
+ * needs more evidence than displaying, and tying the two would mean a change to
+ * one silently retuning the other.
+ */
+export const MIN_ATTEMPTS_FOR_RATE = 5;
+
+/**
+ * How a tier's success should be shown: a rate, a low-confidence count, or
+ * nothing at all. Shared by the per-domain and aggregate renderings so the two
+ * cannot disagree about what counts as enough evidence.
+ */
+function renderRate(ok: number, attempts: number): string {
+  if (attempts === 0) return "no data";
+  if (attempts < MIN_ATTEMPTS_FOR_RATE) {
+    return `insufficient data (${ok}/${attempts})`;
+  }
+  return `${Math.round((ok / attempts) * 100)}% ok (${ok}/${attempts})`;
+}
+
+/** Compact human duration for an elapsed window — "14h", "3d", "45m". */
+function humanDuration(ms: number): string {
+  const minutes = Math.floor(ms / 60000);
+  if (minutes < 60) return `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 48) return `${hours}h`;
+  return `${Math.floor(hours / 24)}d`;
 }
 
 function round2(value: number): number {
@@ -179,6 +244,11 @@ export function aggregateDomainStats(
   ) as Record<TierSlotName, TierAggregate>;
   let seenNeverFetched = 0;
   const failing: FailingDomain[] = [];
+  // Oldest counting window across every contributing stat. Only windows that
+  // actually counted something are considered: a zeroed slot's window_start is
+  // bookkeeping, not evidence, and letting it in would report a measurement
+  // period longer than anything was measured over.
+  let oldestSampleMs: number | null = null;
 
   for (const record of records) {
     let domainAttempts = 0;
@@ -197,6 +267,12 @@ export function aggregateDomainStats(
       agg.fail += stat.fail;
       domainAttempts += stat.attempts;
       domainOk += stat.ok;
+      if (
+        stat.attempts > 0 &&
+        (oldestSampleMs === null || stat.window_start_ms < oldestSampleMs)
+      ) {
+        oldestSampleMs = stat.window_start_ms;
+      }
     }
 
     if (domainAttempts === 0) {
@@ -222,6 +298,12 @@ export function aggregateDomainStats(
   failing.sort((a, b) => b.attempts - a.attempts);
 
   return {
+    schema_version: SCHEMA_VERSION,
+    window: {
+      oldest_sample_ms: oldestSampleMs,
+      elapsed_ms: oldestSampleMs === null ? null : now - oldestSampleMs,
+      ttl_ceiling_ms: WINDOW_MS,
+    },
     domains_tracked: records.length,
     seen_never_fetched: seenNeverFetched,
     tiers,
@@ -293,10 +375,7 @@ export function summarizeDomainRecord(
 function tierLine(label: string, raw: TierStat, now: number): string {
   const stat = currentWindowStat(raw, now);
   const expired = stat !== raw;
-  const successRate =
-    stat.attempts > 0
-      ? `${Math.round((stat.ok / stat.attempts) * 100)}% ok (${stat.ok}/${stat.attempts})`
-      : "no data";
+  const successRate = renderRate(stat.ok, stat.attempts);
   const daysLeft = Math.max(
     0,
     Math.round((WINDOW_MS - (now - stat.window_start_ms)) / 86400000),
@@ -349,6 +428,19 @@ export function formatDomainRecord(
 }
 
 /**
+ * Render the window an aggregate actually covers, with the TTL ceiling named
+ * separately so the two are never confused for each other again.
+ */
+function describeWindow(window: AggregateWindow): string {
+  const ceiling = humanDuration(window.ttl_ceiling_ms);
+  if (window.oldest_sample_ms === null || window.elapsed_ms === null) {
+    return `no samples yet, ${ceiling} ceiling`;
+  }
+  const since = new Date(window.oldest_sample_ms).toISOString();
+  return `window ${humanDuration(window.elapsed_ms)} since ${since}, ${ceiling} ceiling`;
+}
+
+/**
  * Human-readable rendering of an aggregate across the whole domain-db. Shared by
  * the domain_stats tool's text `content` and available to the maintenance job.
  */
@@ -357,14 +449,15 @@ export function formatDomainAggregate(agg: DomainAggregate): string {
     `domains tracked: ${agg.domains_tracked}${agg.truncated ? " (truncated — scan cap hit)" : ""}`,
     `seen in search but never fetched: ${agg.seen_never_fetched}`,
     "",
-    "--- per-tier success (all domains, 30d window) ---",
+    // The measured period, not the TTL ceiling. This header read "30d window"
+    // unconditionally, so an aggregate taken an hour after a schema reset
+    // presented as a month of evidence — which is how the 6->7 reset was read
+    // as a bug twice (vikunja#686). The schema version is here for the same
+    // reason: it is the thing that explains a suddenly-empty database.
+    `--- per-tier success (all domains, ${describeWindow(agg.window)}, schema ${agg.schema_version}) ---`,
   ];
   for (const [slot, ta] of Object.entries(agg.tiers)) {
-    const rate =
-      ta.success_rate === null
-        ? "no data"
-        : `${Math.round(ta.success_rate * 100)}% ok (${ta.ok}/${ta.attempts})`;
-    lines.push(`  ${slot.padEnd(7)}: ${rate}`);
+    lines.push(`  ${slot.padEnd(7)}: ${renderRate(ta.ok, ta.attempts)}`);
   }
 
   const more =
