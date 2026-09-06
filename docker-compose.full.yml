@@ -40,14 +40,17 @@ services:
     #   image: redis:7-alpine
     #   image: valkey/valkey:8-alpine
     restart: unless-stopped
-    # Dragonfly's entrypoint drops privileges with setpriv, so a bare
-    # `cap_drop: [ALL]` kills it at startup with
-    # "setpriv: setresuid failed: Operation not permitted" (exit 127).
-    # Verified: ALL alone fails, ALL + SETUID/SETGID runs. This is the finding
-    # that would have broken every adopter's cache had the block been applied
-    # from a diff read.
+    # Dragonfly's entrypoint drops privileges with setpriv, so with the image's
+    # default (root) user a bare `cap_drop: [ALL]` kills it at startup with
+    # "setpriv: setresuid failed: Operation not permitted" (exit 127) — the
+    # finding that would have broken every adopter's cache had this block been
+    # applied from a diff read.
+    #
+    # Running as uid 1000 removes the need for those capabilities entirely:
+    # the drop is not attempted, so SETUID/SETGID are not granted. Verified
+    # both ways.
+    user: "1000:1000"
     cap_drop: [ALL]
-    cap_add: [SETUID, SETGID]
     security_opt: [no-new-privileges:true]
     read_only: true
     tmpfs: [/tmp]
@@ -70,6 +73,8 @@ services:
   firecrawl-api:
     image: ghcr.io/mendableai/firecrawl:latest # SECURITY[accepted]: latest tag — example file; pin for production
     restart: unless-stopped
+    # No `user:`: image not available here to confirm its default user, so this
+    # is UNVERIFIED rather than assumed safe — flagged for audit.
     cap_drop: [ALL]
     security_opt: [no-new-privileges:true]
     # No `read_only`: NOT verified. This image is not published under a tag
@@ -101,8 +106,10 @@ services:
     # one present on the build host. It passed, and the tag this file actually
     # declares did not. Every probe below is now run against the exact
     # reference in this file.
+    # As with `cache`: running as uid 1000 means the setpriv drop is not
+    # attempted, so SETUID/SETGID are not needed. Verified both ways.
+    user: "1000:1000"
     cap_drop: [ALL]
-    cap_add: [SETUID, SETGID]
     security_opt: [no-new-privileges:true]
     read_only: true
     mem_limit: 512m
@@ -126,6 +133,8 @@ services:
     build:
       context: ./docker/playwright-adblock
     restart: unless-stopped
+    # No `user:`: the base image already runs as `node` (non-root). Overriding
+    # it with a guessed uid risks breaking file ownership inside the image.
     cap_drop: [ALL]
     security_opt: [no-new-privileges:true]
     # No `read_only`: not verified — Chromium writes outside /tmp. Left off
@@ -153,6 +162,7 @@ services:
     # build:
     #   context: ./docker/adblock-proxy
     restart: unless-stopped
+    # No `user:`: the image's Dockerfile already sets `USER proxy` (non-root).
     cap_drop: [ALL]
     security_opt: [no-new-privileges:true]
     # Verified running fully read-only.
@@ -172,6 +182,7 @@ services:
   crawl4ai:
     image: unclecode/crawl4ai:latest # SECURITY[accepted]: latest tag — example file; pin for production
     restart: unless-stopped
+    # No `user:`: the image already runs as `appuser` (non-root).
     cap_drop: [ALL]
     security_opt: [no-new-privileges:true]
     # NO `read_only`. Three configurations were run, and none is fit for a file
@@ -209,6 +220,7 @@ services:
   ollama:
     image: ollama/ollama:latest # SECURITY[accepted]: latest tag — example file; pin for production
     restart: unless-stopped
+    user: "1000:1000"
     cap_drop: [ALL]
     security_opt: [no-new-privileges:true]
     # NO `read_only`, and not for lack of trying: verified failing both with
@@ -243,6 +255,10 @@ services:
     # To build from source instead of pulling:
     # build: ./docker/reranker
     restart: unless-stopped
+    # Matches docker/reranker/docker-compose.yml, which pins the same uid: the
+    # image already runs as 10001, and naming it here means a `docker run` that
+    # overrides the entrypoint cannot quietly regain root.
+    user: "10001"
     cap_drop: [ALL]
     security_opt: [no-new-privileges:true]
     # Matches docker/reranker/docker-compose.yml, which carries the same block
@@ -262,6 +278,7 @@ services:
   kiwix:
     image: ghcr.io/kiwix/kiwix-serve:latest # SECURITY[accepted]: latest tag — example file; pin for production
     restart: unless-stopped
+    # No `user:`: the image already runs as `user` (non-root).
     cap_drop: [ALL]
     security_opt: [no-new-privileges:true]
     # No `read_only`: NOT verified. kiwix-serve needs a .zim corpus to start
@@ -280,6 +297,7 @@ services:
   nats:
     image: nats:2-alpine
     restart: unless-stopped
+    user: "1000:1000"
     cap_drop: [ALL]
     security_opt: [no-new-privileges:true]
     # Verified: read_only alone exits 1, read_only + a writable /tmp runs.

@@ -19,7 +19,11 @@
 # to a test that works.
 #
 # Usage:  ./verify-ssrf-guard.sh [image-tag]
-set -uo pipefail
+# -e is on, so the two `grep -c` calls below are explicitly guarded: grep exits
+# 1 when it matches nothing, and "matches nothing" is the EXPECTED result for
+# the regression build. Without the guard, -e would abort the script at exactly
+# the moment the control succeeds.
+set -euo pipefail
 
 IMAGE="${1:-playwright-adblock:verify}"
 NET=pwverify-net
@@ -68,7 +72,8 @@ probe() {
     "http://$name:3003/scrape" -o /dev/null -w '%{http_code}' > "$WORK/$name.http"
   sleep 3
   docker logs "$name" 2>&1 | grep -cE '^(doubleclick\.net|googletagservices\.com|adnxs\.com)$' \
-    > "$WORK/$name.markers"
+    > "$WORK/$name.markers" || true
+  [ -s "$WORK/$name.markers" ] || echo 0 > "$WORK/$name.markers"
   docker rm -f "$name" >/dev/null 2>&1
 }
 

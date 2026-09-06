@@ -27,8 +27,10 @@ services:
     # Dragonfly's entrypoint drops privileges with setpriv, so a bare
     # `cap_drop: [ALL]` kills it at startup with "setpriv: setresuid failed:
     # Operation not permitted" (exit 127). ALL + SETUID/SETGID runs.
+    # uid 1000, so the setpriv drop is not attempted and SETUID/SETGID are not
+    # needed. Verified both ways.
+    user: "1000:1000"
     cap_drop: [ALL]
-    cap_add: [SETUID, SETGID]
     security_opt: [no-new-privileges:true]
     read_only: true
     tmpfs: [/tmp]
