@@ -119,12 +119,73 @@ describe("backend capability predicates", () => {
     expect(firecrawlSupportsMap("v2")).toBe(true);
   });
 
-  it("defaults both predicates from the configured version", async () => {
+  it("reports PDF extraction available under v2 only", async () => {
+    // v2 parses PDFs natively — verified live against firecrawl 2.11.162.
+    // v1 (trieve/firecrawl 0.0.55) cannot, which is the whole reason this is a
+    // capability and not an assumption (vikunja#682).
+    const { firecrawlSupportsPdf } = await import("../src/firecrawl-api.js");
+    expect(firecrawlSupportsPdf("v1")).toBe(false);
+    expect(firecrawlSupportsPdf("v2")).toBe(true);
+  });
+
+  it("names the HTML format per version — v1 rejects `html` outright", async () => {
+    // Not cosmetic: v1's enum is markdown|rawHtml|screenshot and it 400s on
+    // `html`, failing the entire scrape (vikunja#649).
+    const { firecrawlHtmlFormat } = await import("../src/firecrawl-api.js");
+    expect(firecrawlHtmlFormat("v1")).toBe("rawHtml");
+    expect(firecrawlHtmlFormat("v2")).toBe("html");
+  });
+
+  it("defaults every predicate from the configured version", async () => {
     process.env.FIRECRAWL_API_VERSION = "v2";
-    const { firecrawlSupportsActions, firecrawlSupportsMap } = await import(
-      "../src/firecrawl-api.js"
-    );
+    const {
+      firecrawlSupportsActions,
+      firecrawlSupportsMap,
+      firecrawlSupportsPdf,
+      firecrawlHtmlFormat,
+    } = await import("../src/firecrawl-api.js");
     expect(firecrawlSupportsActions()).toBe(false);
     expect(firecrawlSupportsMap()).toBe(true);
+    expect(firecrawlSupportsPdf()).toBe(true);
+    expect(firecrawlHtmlFormat()).toBe("html");
+  });
+});
+
+describe("firecrawlCapabilities table", () => {
+  // The predicates are readers over this table. Asserting the exact row pins
+  // every capability at once, so adding a field without deciding its v1 value
+  // shows up here rather than as a silent `undefined` at a call site.
+  it("describes v1 completely", async () => {
+    const { firecrawlCapabilities } = await import("../src/firecrawl-api.js");
+    expect(firecrawlCapabilities("v1")).toEqual({
+      actions: true,
+      map: false,
+      pdf: false,
+      htmlFormat: "rawHtml",
+    });
+  });
+
+  it("describes v2 completely", async () => {
+    const { firecrawlCapabilities } = await import("../src/firecrawl-api.js");
+    expect(firecrawlCapabilities("v2")).toEqual({
+      actions: false,
+      map: true,
+      pdf: true,
+      htmlFormat: "html",
+    });
+  });
+
+  it("gives the two versions different answers on every axis", async () => {
+    // A copy-paste that left both rows identical would still satisfy the
+    // per-row assertions above if they were written from the same source.
+    const { firecrawlCapabilities } = await import("../src/firecrawl-api.js");
+    const v1 = firecrawlCapabilities("v1");
+    const v2 = firecrawlCapabilities("v2");
+    for (const key of Object.keys(v1) as (keyof typeof v1)[]) {
+      expect(
+        v1[key],
+        `capability ${key} is identical on both versions`,
+      ).not.toBe(v2[key]);
+    }
   });
 });

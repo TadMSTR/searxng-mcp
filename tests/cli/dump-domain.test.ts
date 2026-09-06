@@ -70,11 +70,18 @@ describe("dump-domain CLI — present-domain case", () => {
     expect(output).toContain("tier1 (firecrawl)");
     expect(output).toContain("90% ok (9/10)");
     expect(output).toContain("tier2 (crawl4ai)");
-    expect(output).toContain("0% ok (0/2)");
+    // n=2 is below MIN_ATTEMPTS_FOR_RATE, so this renders as a count rather
+    // than "0% ok (0/2)" — two failures and ten failures are not the same
+    // finding, and a percentage presented them as though they were
+    // (vikunja#686). tier1 above keeps its rate at n=10.
+    expect(output).toContain("insufficient data (0/2)");
+    expect(output).not.toContain("0% ok (0/2)");
     expect(output).toContain("tier3 (raw)");
     expect(output).toContain("tier4 (wayback)");
-    expect(output).toContain("67% ok (2/3)");
+    // n=3, likewise below the threshold.
+    expect(output).toContain("insufficient data (2/3)");
     expect(output).toContain("github (fastpath)");
+    // n=5 is the first size a rate is rendered for.
     expect(output).toContain("100% ok (5/5)");
     expect(output).toContain("metadata_fetch");
     expect(output).toContain("75% ok (3/4)");

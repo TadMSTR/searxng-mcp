@@ -1,0 +1,152 @@
+name: Publish container image
+
+# Same trigger as release.yml, so the image and the npm package are cut from
+# one tag and cannot drift apart (vikunja#681).
+on:
+  push:
+    tags:
+      - "v*"
+
+env:
+  IMAGE: ghcr.io/tadmstr/searxng-mcp
+
+jobs:
+  publish:
+    name: Build, smoke test, publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      # Provenance attestation, matching the `npm publish --provenance`
+      # posture release.yml already has.
+      id-token: write
+      attestations: write
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      # linux/amd64 only. arm64 would need QEMU emulation on this runner, which
+      # roughly triples the job for a platform with no consumer today. Add it
+      # when something actually needs it, not speculatively.
+      #
+      # Built with plain docker, and loaded into the local daemon rather than
+      # pushed. That is what lets the smoke test below run against the exact
+      # image this job will push — a build-then-rebuild-to-push would test one
+      # artefact and publish another.
+      - name: Build image
+        run: docker build -t "$IMAGE:candidate" .
+
+      # The gate. Identical assertions to ci.yml's docker job, run here before
+      # anything is pushed, because a published image is the thing consumers
+      # pull — CI having been green on some earlier commit is not the same
+      # claim. Deliberately duplicated rather than factored out: a shared
+      # script that silently stopped running would leave both jobs green.
+      - name: Smoke test the image
+        run: |
+          set -euo pipefail
+          TOKEN=$(openssl rand -hex 32)
+          docker run -d --name sxng-publish -p 127.0.0.1:3001:3001 \
+            -e SEARXNG_MCP_AUTH_TOKEN="$TOKEN" "$IMAGE:candidate"
+
+          code() { curl -s -o /dev/null -w '%{http_code}' "$@"; }
+          mcp() {
+            code -X POST http://127.0.0.1:3001/mcp \
+              -H 'Content-Type: application/json' \
+              -H 'Accept: application/json, text/event-stream' "$@"
+          }
+
+          # 503 is expected — there is no cache backend here. This only asserts
+          # the route answers at all.
+          for i in $(seq 1 30); do
+            health=$(code http://127.0.0.1:3001/health || true)
+            case "$health" in 200|503) break ;; esac
+            if [ "$i" = 30 ]; then
+              echo "server never came up"; docker logs sxng-publish; exit 1
+            fi
+            sleep 1
+          done
+
+          echo "GET /health (no credentials) -> $health"
+          case "$health" in 200|503) ;; *) exit 1 ;; esac
+
+          unauth=$(mcp -d '{}')
+          echo "POST /mcp (no credentials) -> $unauth"
+          [ "$unauth" = 401 ]
+
+          wrong=$(mcp -H 'Authorization: Bearer not-the-token' -d '{}')
+          echo "POST /mcp (wrong token) -> $wrong"
+          [ "$wrong" = 401 ]
+
+          ok=$(mcp -H "Authorization: Bearer $TOKEN" \
+            -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"ci","version":"0.0.0"}}}')
+          echo "POST /mcp (correct token) -> $ok"
+          [ "$ok" = 200 ]
+
+          uid=$(docker exec sxng-publish id -u)
+          echo "runtime uid -> $uid"
+          [ "$uid" = 1000 ]
+
+      - name: Container logs
+        if: always()
+        run: docker logs sxng-publish || true
+
+      # The token arrives through `env`, not `${{ }}` interpolation into the
+      # script body. Interpolation splices the secret into the shell text the
+      # runner executes, which puts it in reach of anything that reads the
+      # rendered command; via env it stays a variable. `--password-stdin` for
+      # the same reason on the argv side — a `--password <token>` would put it
+      # in the process table.
+      - name: Log in to GHCR
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GHCR_USER: ${{ github.actor }}
+        run: |
+          set -euo pipefail
+          printf '%s' "$GHCR_TOKEN" \
+            | docker login ghcr.io -u "$GHCR_USER" --password-stdin
+
+      # Both `v3.24.0` and `3.24.0` are published, deliberately. The git tag
+      # carries the `v`; the conventional Docker tag does not; and
+      # docker/metadata-action's {{version}} silently strips it. Publishing a
+      # documented `v`-prefixed tag that then does not exist is a real failure
+      # mode this fleet has already hit once. Publishing both removes the
+      # question rather than answering it.
+      #
+      # `latest` moves only for a plain release tag. A prerelease (v3.24.0-rc1)
+      # publishes its own tags and leaves `latest` where it was.
+      - name: Tag and push
+        id: push
+        env:
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          V="${REF_NAME#v}"                      # 3.24.0        (or 3.24.0-rc1)
+          MINOR="$(echo "$V" | cut -d. -f1,2)"   # 3.24
+
+          # Exact tags always. The FLOATING tags — :3.24 and :latest — move only
+          # for a plain release: someone pinned to :3.24 is asking for the
+          # newest stable 3.24.x, and quietly handing them an rc is the kind of
+          # surprise a floating tag exists to avoid.
+          TAGS=("$REF_NAME" "$V")
+          case "$V" in
+            *-*) echo "prerelease $V — publishing exact tags only, not :$MINOR or :latest" ;;
+            *)   TAGS+=("$MINOR" "latest") ;;
+          esac
+
+          for t in "${TAGS[@]}"; do
+            echo "pushing $IMAGE:$t"
+            docker tag "$IMAGE:candidate" "$IMAGE:$t"
+            docker push "$IMAGE:$t"
+          done
+
+          # The digest of what was actually pushed, for the attestation below.
+          DIGEST=$(docker inspect --format='{{index .RepoDigests 0}}' "$IMAGE:$V" | cut -d@ -f2)
+          echo "digest=$DIGEST" >> "$GITHUB_OUTPUT"
+          echo "pushed digest $DIGEST"
+
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ${{ env.IMAGE }}
+          subject-digest: ${{ steps.push.outputs.digest }}
+          push-to-registry: true

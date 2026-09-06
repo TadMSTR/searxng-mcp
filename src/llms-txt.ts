@@ -2,7 +2,7 @@ import { cacheGet, cacheSet } from "./cache.js";
 import { FETCH_CACHE_TTL_SECONDS } from "./config.js";
 import { recordLlmsFullProbe } from "./domain-db.js";
 import { getLlmsTxtAllowlist } from "./domains.js";
-import { readBoundedText, safeFetch } from "./fetch-utils.js";
+import { readBoundedText, safeFetch, USER_AGENT } from "./fetch-utils.js";
 
 const PROBE_PRESENT_TTL_SECONDS = 24 * 60 * 60;
 const PROBE_ABSENT_TTL_SECONDS = 7 * 24 * 60 * 60;
@@ -18,8 +18,6 @@ const MIN_SIZE_BYTES = 1_024;
 // boundary, not just a memory one: raising or lowering it changes which
 // documents the fast path accepts.
 const MAX_SIZE_BYTES = 64 * 1024 * 1024;
-const USER_AGENT =
-  "searxng-mcp/3.8.0 (+https://github.com/TadMSTR/searxng-mcp; personal research)";
 
 // Cap across all domains for the in-process L1 body cache, deliberately tied
 // to MAX_SIZE_BYTES: any document the fetch path accepts must be one the cache

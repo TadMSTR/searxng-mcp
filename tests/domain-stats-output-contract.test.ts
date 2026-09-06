@@ -220,10 +220,138 @@ describe("domain_stats advertised output schema", () => {
     expect(r.valid, JSON.stringify(r.errors ?? r.error)).toBe(true);
   });
 
+  // ── Window and schema reporting (vikunja#686) ─────────────────────────────
+
+  it("delivers schema_version and the real window to the caller, not just the text", async () => {
+    // The declared schema is what binds: the SDK strips undeclared keys before
+    // the payload leaves the server, so a field the handler builds but the
+    // schema omits reaches nobody. Asserting it on the handler's return value
+    // alone would pass in exactly that case.
+    const oldest = NOW - 14 * 3600_000;
+    vi.mocked(getValkey).mockResolvedValueOnce({
+      scan: vi.fn().mockResolvedValueOnce(["0", ["domain:good.com"]]),
+      mget: vi.fn().mockResolvedValueOnce([
+        JSON.stringify(
+          mkRecord("good.com", TIER_SLOT_KEYS, {
+            tier1: { attempts: 10, ok: 9, fail: 1, window_start_ms: oldest },
+          }),
+        ),
+      ]),
+    } as unknown as NonNullable<Awaited<ReturnType<typeof getValkey>>>);
+
+    const result = await handleDomainStats({});
+    const agg = result.structuredContent.aggregate;
+
+    expect(agg?.schema_version).toBe(7);
+    expect(agg?.window.oldest_sample_ms).toBe(oldest);
+    expect(agg?.window.elapsed_ms).toBeGreaterThan(13 * 3600_000);
+    // The ceiling is reported separately, and is NOT the measured window —
+    // conflating the two is the whole defect.
+    expect(agg?.window.ttl_ceiling_ms).toBe(30 * 24 * 3600_000);
+    expect(agg?.window.elapsed_ms).toBeLessThan(
+      agg?.window.ttl_ceiling_ms ?? 0,
+    );
+
+    const r = await validateAsClient(result.structuredContent);
+    expect(r.valid, JSON.stringify(r.errors ?? r.error)).toBe(true);
+  });
+
+  it("reports no window when nothing has been counted, rather than a fabricated one", async () => {
+    vi.mocked(getValkey).mockResolvedValueOnce({
+      scan: vi.fn().mockResolvedValueOnce(["0", ["domain:idle.com"]]),
+      mget: vi
+        .fn()
+        .mockResolvedValueOnce([
+          JSON.stringify(mkRecord("idle.com", TIER_SLOT_KEYS)),
+        ]),
+    } as unknown as NonNullable<Awaited<ReturnType<typeof getValkey>>>);
+
+    const result = await handleDomainStats({});
+    const agg = result.structuredContent.aggregate;
+
+    // Zeroed slots carry a window_start_ms too. Counting them would report a
+    // measurement period over which nothing was measured.
+    expect(agg?.window.oldest_sample_ms).toBeNull();
+    expect(agg?.window.elapsed_ms).toBeNull();
+
+    const text = result.content[0]?.text ?? "";
+    expect(text).toContain("no samples yet");
+    expect(text).not.toMatch(/window \d/);
+  });
+
+  it("no longer prints a constant 30d window header", async () => {
+    // The precise misreport: an aggregate taken minutes after a schema reset
+    // presented as thirty days of evidence.
+    const oldest = NOW - 2 * 3600_000;
+    vi.mocked(getValkey).mockResolvedValueOnce({
+      scan: vi.fn().mockResolvedValueOnce(["0", ["domain:good.com"]]),
+      mget: vi.fn().mockResolvedValueOnce([
+        JSON.stringify(
+          mkRecord("good.com", TIER_SLOT_KEYS, {
+            tier1: { attempts: 10, ok: 9, fail: 1, window_start_ms: oldest },
+          }),
+        ),
+      ]),
+    } as unknown as NonNullable<Awaited<ReturnType<typeof getValkey>>>);
+
+    const text = (await handleDomainStats({})).content[0]?.text ?? "";
+
+    expect(text).toContain("all domains, window 2h since ");
+    expect(text).toContain("schema 7");
+    expect(text).not.toContain("all domains, 30d window");
+  });
+
+  it("renders a low-confidence marker below the threshold and a rate above it", async () => {
+    vi.mocked(getValkey).mockResolvedValueOnce({
+      scan: vi.fn().mockResolvedValueOnce(["0", ["domain:thin.com"]]),
+      mget: vi.fn().mockResolvedValueOnce([
+        JSON.stringify(
+          mkRecord("thin.com", TIER_SLOT_KEYS, {
+            // n=4: one outcome either way moves the rate by 25 points.
+            tier1: { attempts: 4, ok: 0, fail: 4, window_start_ms: NOW },
+            // n=5: the first sample size the rate is rendered for.
+            tier2: { attempts: 5, ok: 0, fail: 5, window_start_ms: NOW },
+          }),
+        ),
+      ]),
+    } as unknown as NonNullable<Awaited<ReturnType<typeof getValkey>>>);
+
+    const text = (await handleDomainStats({})).content[0]?.text ?? "";
+
+    expect(text).toContain("tier1  : insufficient data (0/4)");
+    expect(text).toContain("tier2  : 0% ok (0/5)");
+    // "no data" must stay distinct from "barely any data" — three states, not
+    // two.
+    expect(text).toContain("tier3  : no data");
+  });
+
   // ── Negative controls ─────────────────────────────────────────────────────
   //
   // Without these the suite above cannot fail: a schema that accepted anything
   // would satisfy every positive assertion.
+
+  it("rejects an aggregate missing the new window block", async () => {
+    // Guards the declaration itself. If schema_version/window were dropped from
+    // AggregateOutputSchema the positive tests above would still pass on the
+    // handler's return value, because they read it before the SDK strips it.
+    vi.mocked(getValkey).mockResolvedValueOnce({
+      scan: vi.fn().mockResolvedValueOnce(["0", ["domain:good.com"]]),
+      mget: vi
+        .fn()
+        .mockResolvedValueOnce([
+          JSON.stringify(mkRecord("good.com", TIER_SLOT_KEYS)),
+        ]),
+    } as unknown as NonNullable<Awaited<ReturnType<typeof getValkey>>>);
+
+    const result = await handleDomainStats({});
+    const tampered = structuredClone(result.structuredContent) as {
+      aggregate: Record<string, unknown>;
+    };
+    delete tampered.aggregate.window;
+
+    const r = await validateAsClient(tampered);
+    expect(r.valid).toBe(false);
+  });
 
   it("rejects a slot that is not in TIER_SLOT_KEYS", async () => {
     vi.mocked(cacheGet).mockResolvedValueOnce(

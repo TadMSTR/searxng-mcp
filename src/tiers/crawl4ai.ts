@@ -13,6 +13,60 @@ import {
   type TierResult,
 } from "../fetch-utils.js";
 
+/**
+ * The crawl4ai version this tier is written against.
+ *
+ * Not decoration: the async job API was renamed *and* reshaped between the
+ * version this code was first written for and this one, and both changes failed
+ * silently — a wrong route returns 404 and a wrong shape yields empty markdown,
+ * and each was indistinguishable from "the page had no content". The route and
+ * shape assertions in tests/tiers/crawl4ai-job-api.test.ts run against a
+ * fixture captured from this version's live /openapi.json.
+ */
+export const CRAWL4AI_TARGET_VERSION = "0.8.6";
+
+/**
+ * Pull a TierResult out of one crawl4ai result object — the element of the
+ * `results` array, which is the same shape whether it arrived synchronously
+ * from /crawl or inside a completed job's envelope.
+ */
+function resultToTier(
+  result: Record<string, unknown> | null | undefined,
+  url: string,
+  maxChars: number,
+  preferFit: boolean,
+): TierResult | null {
+  const md = result?.markdown as Record<string, string> | null;
+  const mdRaw = preferFit
+    ? md?.fit_markdown || md?.raw_markdown
+    : md?.raw_markdown || md?.fit_markdown;
+  const text = (mdRaw ?? "").slice(0, maxChars);
+  if (!text) return null;
+  const metadata = result?.metadata as Record<string, string> | null;
+  const title = metadata?.title || url;
+  const html =
+    typeof result?.html === "string" ? (result.html as string) : undefined;
+  return { title, url, text, html };
+}
+
+/**
+ * Poll an enqueued crawl job to completion.
+ *
+ * Two independent defects lived here, both silent (vikunja#684):
+ *
+ * The route was `/task/{id}`, which does not exist on 0.8.6 — it 404s, the
+ * `!resp.ok` guard returned null, and the tier recorded an ordinary miss. That
+ * spelling is still printed in upstream's own installation doc, which is
+ * probably why two forge repos wrote it independently; the deployed
+ * /openapi.json is the only authority.
+ *
+ * The response shape was also wrong, and repointing the route alone would not
+ * have surfaced it. A completed job answers
+ * `{status, task_id, url, created_at, _links, result: {results: [...], success}}`
+ * — the crawl result is one level deeper than the old code's `data.result`.
+ * Reading the old path yields undefined markdown, empty text, and another
+ * silent miss. Older backends returned the flat shape, so both are accepted.
+ */
 export async function pollCrawl4aiTask(
   taskId: string,
   url: string,
@@ -27,27 +81,34 @@ export async function pollCrawl4aiTask(
     if (signal.aborted) return null;
 
     try {
-      const resp = await fetch(`${CRAWL4AI_URL}/task/${taskId}`, { signal });
-      if (!resp.ok) return null;
+      const resp = await fetch(`${CRAWL4AI_URL}/crawl/job/${taskId}`, {
+        signal,
+      });
+      if (!resp.ok) {
+        // A 404 here is the signature of exactly the bug this replaces: the
+        // route moved and every crawl became an unexplained miss. Say so, so
+        // the next rename is a visible failure rather than a silent tier drop.
+        if (resp.status === 404) {
+          console.error(
+            `[searxng-mcp] crawl4ai job poll got 404 for /crawl/job/${taskId} — ` +
+              `route or task expiry changed? this tier targets crawl4ai ${CRAWL4AI_TARGET_VERSION}`,
+          );
+        }
+        return null;
+      }
 
       const data = JSON.parse(await readBoundedText(resp)) as Record<
         string,
         unknown
       >;
       if (data.status === "completed") {
-        const result = data.result as Record<string, unknown> | null;
-        const md = result?.markdown as Record<string, string> | null;
-        const mdRaw = preferFit
-          ? md?.fit_markdown || md?.raw_markdown
-          : md?.raw_markdown || md?.fit_markdown;
-        const text = (mdRaw ?? "").slice(0, maxChars);
-        const metadata = result?.metadata as Record<string, string> | null;
-        const title = metadata?.title || url;
-        const html =
-          typeof result?.html === "string"
-            ? (result.html as string)
-            : undefined;
-        return text ? { title, url, text, html } : null;
+        const envelope = data.result as Record<string, unknown> | null;
+        // 0.8.6: result.results[0]. Older backends put the crawl result
+        // directly in `result`.
+        const nested = Array.isArray(envelope?.results)
+          ? (envelope.results[0] as Record<string, unknown> | undefined)
+          : undefined;
+        return resultToTier(nested ?? envelope, url, maxChars, preferFit);
       }
       if (data.status === "failed") return null;
     } catch {
@@ -107,20 +168,17 @@ export async function crawl4aiFetch(
       unknown
     >;
 
-    // Synchronous response — results returned directly
+    // Synchronous response — results returned directly. This is the path that
+    // actually runs on 0.8.6: POST /crawl is synchronous there and never
+    // returns a task_id. The async branch below is a compatibility path for
+    // backends that answer 202 with one.
     if (Array.isArray(data.results) && data.results.length > 0) {
-      const result = data.results[0] as Record<string, unknown>;
-      const md = result.markdown as Record<string, string> | null;
-      const mdRaw = preferFit
-        ? md?.fit_markdown || md?.raw_markdown
-        : md?.raw_markdown || md?.fit_markdown;
-      const text = (mdRaw ?? "").slice(0, maxChars);
-      if (!text) return null;
-      const metadata = result.metadata as Record<string, string> | null;
-      const title = metadata?.title || url;
-      const html =
-        typeof result.html === "string" ? (result.html as string) : undefined;
-      return { title, url, text, html };
+      return resultToTier(
+        data.results[0] as Record<string, unknown>,
+        url,
+        maxChars,
+        preferFit,
+      );
     }
 
     // Asynchronous response — poll for completion

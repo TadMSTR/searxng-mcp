@@ -12,13 +12,19 @@ beforeEach(() => {
 const URL = "https://example.com/page";
 
 // Real Response so firecrawlScrape's readBoundedText(res) has a body to read.
+//
+// The HTML field is `rawHtml`, not `html`: this file imports firecrawlScrape
+// statically, so it runs at the FIRECRAWL_API_VERSION default, which is v1, and
+// a v1 backend answers in `rawHtml`. The fixture previously said `html` — a v2
+// shape against a v1 client — which only passed because the reader ignored the
+// version. Both spellings are covered per-version in firecrawl-html-format.test.ts.
 function mockSuccess(overrides?: object) {
   return new Response(
     JSON.stringify({
       success: true,
       data: {
         markdown: "# Title\n\nContent here",
-        html: "<h1>Title</h1><p>Content here</p>",
+        rawHtml: "<h1>Title</h1><p>Content here</p>",
         metadata: {
           title: "Title",
           sourceURL: URL,
@@ -67,7 +73,7 @@ describe("firecrawlScrape", () => {
 
   it("returns empty text when markdown is empty (not a throw)", async () => {
     mockFetch.mockResolvedValueOnce(
-      mockSuccess({ markdown: "", html: "<p>x</p>" }),
+      mockSuccess({ markdown: "", rawHtml: "<p>x</p>" }),
     );
     const result = await firecrawlScrape(URL);
     expect(result.text).toBe("");

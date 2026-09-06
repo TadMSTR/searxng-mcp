@@ -2,7 +2,7 @@ import { Readability } from "@mozilla/readability";
 import { JSDOM } from "jsdom";
 import { ProxyAgent } from "undici";
 import { ChallengeDetectedError, detectChallenge } from "../challenge.js";
-import { ADBLOCK_PROXY_URL } from "../config.js";
+import { ADBLOCK_PROXY_URL, FIRECRAWL_API_VERSION } from "../config.js";
 import {
   classifyContentType,
   looksLikeHtml,
@@ -15,6 +15,7 @@ import {
   type TierResult,
   USER_AGENT,
 } from "../fetch-utils.js";
+import { firecrawlSupportsPdf } from "../firecrawl-api.js";
 
 // Create a ProxyAgent once at module init when ADBLOCK_PROXY_URL is configured.
 // Passed as `dispatcher` to undici-backed fetch calls (Node.js 18+ global fetch).
@@ -52,11 +53,6 @@ export async function rawFetch(
 
   const res = await safeFetch(url, fetchOptions);
 
-  if (res.headers.get("content-type")?.includes("application/pdf")) {
-    throw new Error(
-      "PDF content cannot be extracted by raw fetch — use Crawl4AI",
-    );
-  }
   if (res.status >= 300 && res.status < 400) {
     // Don't echo the Location header into the thrown message — a redirect
     // to an internal address would surface that address to the MCP caller
@@ -80,6 +76,34 @@ export async function rawFetch(
   // and the cascade books a hit.
   const bodySignal = detectChallenge(res.status, res.headers, body);
   if (bodySignal) throw new ChallengeDetectedError(bodySignal);
+
+  // Raw fetch cannot extract PDF text, so say so — but only for something that
+  // really is a PDF. Two deliberate choices here:
+  //
+  // Keyed on the header AND the `%PDF-` signature, because a body declared
+  // application/pdf that does not start with those bytes is usually an
+  // interstitial or an error page served with the wrong Content-Type. Rejecting
+  // on the header alone turned those into a hard "this is a PDF" failure when
+  // Readability could have extracted them; they now fall through below.
+  //
+  // Placed after the challenge check, so a Cloudflare interstitial mislabelled
+  // as a PDF is still booked as `challenge_detected` and can reach the solver.
+  //
+  // The message names the actual cause. It used to read "use Crawl4AI", which
+  // was wrong twice over: Crawl4AI cannot parse PDFs either, and reaching here
+  // at all means tier 1 already declined. Under v2 that is a real tier-1
+  // failure worth investigating; under v1 the backend simply has no PDF support
+  // and no amount of config will change it (vikunja#682).
+  if (
+    res.headers.get("content-type")?.includes("application/pdf") &&
+    body.startsWith("%PDF-")
+  ) {
+    throw new Error(
+      firecrawlSupportsPdf()
+        ? "PDF content cannot be extracted by raw fetch — tier 1 (Firecrawl) handles PDFs but returned nothing for this URL"
+        : `PDF content cannot be extracted by raw fetch — FIRECRAWL_API_VERSION is ${FIRECRAWL_API_VERSION}, which has no PDF support; v2 does`,
+    );
+  }
 
   // Structured payloads short-circuit before JSDOM. Readability over a JSON
   // document finds no article, falls through to returning the raw string, and

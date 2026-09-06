@@ -1,0 +1,29 @@
+{
+  "_links": {
+    "refresh": {
+      "href": "http://127.0.0.1:11235//llm/crawl_0b0268d9"
+    },
+    "self": {
+      "href": "http://127.0.0.1:11235//llm/crawl_0b0268d9"
+    }
+  },
+  "created_at": "2026-09-06T10:25:48.823662",
+  "result": {
+    "results": [
+      {
+        "html": "<h1>Example Domain</h1>",
+        "markdown": {
+          "fit_markdown": "# Example Domain\n\nfit markdown body",
+          "raw_markdown": "# Example Domain\n\nraw markdown body"
+        },
+        "metadata": {
+          "title": "Example Domain"
+        }
+      }
+    ],
+    "success": true
+  },
+  "status": "completed",
+  "task_id": "crawl_0b0268d9",
+  "url": "[\"https://example.com/\"]"
+}

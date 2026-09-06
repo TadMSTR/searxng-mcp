@@ -90,14 +90,6 @@ export async function safeFetch(
   return fetch(url, opts);
 }
 
-export function isPdfUrl(url: string): boolean {
-  try {
-    return new URL(url).pathname.toLowerCase().endsWith(".pdf");
-  } catch {
-    return false;
-  }
-}
-
 /**
  * Read a response body as text, stopping at `limit` bytes and cancelling the
  * rest of the stream. Use this for every body read of third-party content:

@@ -14,7 +14,7 @@ Built with [Claude Code](https://claude.ai/code) using the multi-agent workflow 
 ## Quick Start
 
 **A running [SearXNG](https://github.com/searxng/searxng) instance is the only requirement.**
-Everything else is optional and improves a specific dimension — see [Prerequisites](#prerequisites).
+Everything else is optional and improves a specific dimension — see [Prerequisites](docs/configuration.md#prerequisites-and-service-setup).
 
 **SearXNG only** — nothing else deployed:
 
@@ -42,69 +42,54 @@ docker compose -f docker-compose.example.yml up -d
 SEARXNG_URL=http://localhost:8081 CACHE_URL=redis://localhost:6381 npx @tadmstr/searxng-mcp
 ```
 
+**As a container** — published to GHCR on every release:
+
+```bash
+docker pull ghcr.io/tadmstr/searxng-mcp:latest
+```
+
+Tags, uid, and provenance verification: [Deployment](docs/deployment.md#container-image).
+
 For a full local topology including Firecrawl, Crawl4AI, Ollama, Kiwix, the adblock proxy, and NATS, see [`docker-compose.full.yml`](docker-compose.full.yml).
 
 ## Tools
 
-| Tool | Description | Key Parameters |
-|------|-------------|----------------|
-| `search` | Search via SearXNG with local reranking. Fetches a wider result pool, reranks by relevance, returns top N. SearXNG's native direct answers, infoboxes, spelling corrections, and related suggestions are surfaced above the list and in `structuredContent`. | `query`, `num_results` (1–20), `category`, `time_range`, `domain_profile`, `expand`, `language`, `engines`, `site`, `min_score` |
-| `search_and_fetch` | Search, rerank, then fetch full content of the top result(s) using the fetch cascade (Firecrawl → Crawl4AI → raw HTTP). | `query`, `category`, `time_range`, `fetch_count` (1–3), `domain_profile`, `expand`, `language`, `engines`, `site`, `min_score` |
-| `search_and_summarize` | Search, fetch top results, then synthesize a summary with citations via Ollama (`OLLAMA_SUMMARIZE_MODEL`). Falls back to raw fetched content if Ollama is unavailable. | `query`, `fetch_count` (1–5), `category`, `time_range`, `domain_profile`, `expand`, `language`, `engines`, `site`, `min_score` |
-| `fetch_url` | Fetch and extract readable markdown from any public URL. GitHub hosts take the GitHub fast path; YouTube video URLs return the transcript and Reddit thread URLs return post+comments (both opt-in via robots, see below); all others use the fetch cascade (Firecrawl → Crawl4AI → raw HTTP). Trimmed to a token budget (default ~8,000 chars). | `url`, `domain_profile`, `max_tokens`, `target_selector`, `wait_for_selector` |
-| `crawl_site` | Crawl an entire site and return a manifest of URL/title/snippet for each page. Tries Firecrawl crawl first, falls back to sitemap parsing, then optional BFS. Full page content is cached in Valkey so follow-up `fetch_url` calls are zero-cost. | `url`, `max_pages` (default: `CRAWL_MAX_PAGES_DEFAULT`), `bfs` (bool, opt-in BFS) |
-| `clear_cache` | Purge the search cache, fetch cache, crawl manifest cache, or all. Useful when researching fast-moving topics where cached results may be stale. | `target` (`search`, `fetch`, `crawl`, `all`) |
-| `domain_stats` | Read-only view of the [domain capability database](#domain-capability-database). With `hostname`: one domain's per-tier success rates and capability flags. Without: an aggregate across all tracked domains (per-tier success, worst failing domains, seen-but-never-fetched count). Returns MCP structured output (`structuredContent`) for programmatic thresholding. | `hostname` (optional) |
+| Tool | What it does |
+|------|--------------|
+| `search` | Search via SearXNG with local ML reranking, plus SearXNG's own direct answers, infoboxes and suggestions. |
+| `search_and_fetch` | Search, rerank, then fetch full content of the top result(s) through the fetch cascade. |
+| `search_and_summarize` | Search, fetch, then synthesize a cited summary via Ollama. Falls back to raw content if Ollama is absent. |
+| `fetch_url` | Fetch and extract readable markdown from any public URL, via fast paths or the fetch cascade. |
+| `crawl_site` | Crawl a site and return a URL/title/snippet manifest. Page content is cached, so follow-up `fetch_url` calls are free. |
+| `clear_cache` | Purge the search, fetch or crawl cache. |
+| `domain_stats` | Read-only view of the domain capability database — per-tier success rates, as structured output. |
 
-### Parameters
+Full parameter reference: [`docs/tools.md`](docs/tools.md).
 
-**`category`** — `general` (default), `news`, `it`, `science`
+## Why searxng-mcp?
 
-**`time_range`** — `day`, `week`, `month`, `year` — limits results by publication date. Omit for all-time results.
+There are a number of SearXNG MCP servers. Most wrap the search endpoint and stop there. The
+differentiators here are in what happens *after* the search:
 
-**`fetch_count`** — number of top reranked results to fetch full content for (default `1`, max `3` for `search_and_fetch`; default `3`, max `5` for `search_and_summarize`).
+| | searxng-mcp | Typical SearXNG MCP server |
+|---|---|---|
+| SearXNG search | yes | yes |
+| ML reranking of results | local cross-encoder, reorders by relevance | SearXNG's own ordering |
+| Full-page content retrieval | three-tier cascade — Firecrawl, Crawl4AI, in-process raw fetch + Readability | none, or a single raw fetch |
+| Per-domain routing | domain capability database learns which tier works per domain and skips the ones that do not | none |
+| Summarisation | Ollama, with citations back to source URLs | none |
+| Site crawling | `crawl_site` — Firecrawl crawl, sitemap fallback, optional BFS | none |
+| Caching | persistent, shared across clients (Valkey/Redis) | in-process or none |
+| Challenge handling | detection-gated solver tier, plus a Wayback fallback | none |
+| Observability | OpenTelemetry traces and metrics, NATS events, structured logs | none |
 
-**`domain_profile`** — apply a named domain filter profile: `homelab` (surfaces self-hosted/Linux docs) or `dev` (surfaces Stack Overflow, MDN, npm). Omit for default filters.
-
-**`expand`** — when `true`, rewrites the query via Ollama (`OLLAMA_EXPAND_MODEL`) before searching to improve recall. Requires `OLLAMA_URL`. Defaults to the `EXPAND_QUERIES` env var value.
-
-**`language`** — BCP-47 language code (e.g. `en`, `de`) or `all` to restrict to a specific language. Omit to use the SearXNG instance default. Available on `search`, `search_and_fetch`, and `search_and_summarize`.
-
-**`engines`** — comma-separated SearXNG engine names to restrict the search to (e.g. `google,duckduckgo`). Forwarded verbatim; unknown/disabled engines degrade to fewer results rather than erroring. Available on all three search tools.
-
-**`site`** — restrict results to one domain or a list (e.g. `github.com` or `["github.com", "gitlab.com"]`). Applied best-effort as a `site:` query operator — most engines (Google, Bing, DDG, Brave) honor it, some ignore it. Available on all three search tools.
-
-**`max_tokens`** (`fetch_url`) — approximate token budget for returned content (chars ≈ tokens × 4). Omit for the ~2,000-token / 8,000-char default; max 10,000 tokens.
-
-**`target_selector`** (`fetch_url`) — CSS selector to scope extraction to a specific element (e.g. `article`, `main .content`). Honored natively by Firecrawl/Crawl4AI and applied client-side on the raw-HTTP tier; ignored by fast paths and when it matches nothing.
-
-**`wait_for_selector`** (`fetch_url`) — CSS selector to wait for before extracting, for JS-rendered pages. Honored by the rendering tiers (Firecrawl/Crawl4AI); ignored on raw HTTP (no JS).
+**Only SearXNG is required.** Everything in the table above degrades gracefully: with nothing
+else deployed, `fetch_url` still returns extracted content from the in-process tier 3, and the
+startup capability line tells you exactly which features are off.
 
 ## Architecture
 
-```
-MCP client (stdio)
-      │
-      ▼
-  searxng-mcp ──────────────→ cache ($CACHE_URL)           → result cache (search 1h, fetch 24h, crawl 6h)
-      │
-      ├── expand (optional) →  Ollama ($OLLAMA_URL)        → rewritten query (qwen3:4b)
-      ├── search ───────────→ SearXNG ($SEARXNG_URL)      → raw results
-      ├── rerank ───────────→ Reranker ($RERANKER_URL)    → ranked results
-      │                       (fallback: SearXNG order if reranker unavailable)
-      ├── fetch content ────┬→ GitHub API (github.com)    → markdown
-      │                     ├→ Kiwix ($KIWIX_URL)         → ZIM content (Wikipedia/SO/Arch Wiki, fast path)
-      │                     ├→ Hister ($HISTER_URL)       → browsing-history index (login-walled/JS-heavy fast path)
-      │                     ├→ Firecrawl ($FIRECRAWL_URL) → page markdown (tier 1)
-      │                     ├→ Crawl4AI ($CRAWL4AI_URL)  → page markdown (tier 2, optional; via $ADBLOCK_PROXY_URL if set)
-      │                     ├→ Raw HTTP + Readability     → page markdown (tier 3 fallback; via $ADBLOCK_PROXY_URL if set)
-      │                     ├→ Byparr solver (opt-in)     → challenge-solved page markdown (only on a detected challenge, $SOLVER_ENABLED)
-      │                     └→ Wayback Machine (opt-in)  → archived page markdown (tier 4, $WAYBACK_ENABLED)
-      ├── crawl_site ───────┬→ Firecrawl crawl           → page manifest (phase 1)
-      │                     ├→ Sitemap parsing           → page manifest (phase 2 fallback, fast-xml-parser)
-      │                     └→ BFS crawl (opt-in)        → page manifest (phase 3, $CRAWL_BFS_ENABLED)
-      └── summarize (opt.) →  Ollama ($OLLAMA_URL)        → synthesized summary ($OLLAMA_SUMMARIZE_MODEL)
-```
+The fetch cascade, in full. Each stage is optional and skipped cleanly when unconfigured.
 
 ```mermaid
 flowchart TD
@@ -117,10 +102,9 @@ flowchart TD
     llms_fetch["Probe /llms-full.txt\nextract matching section\n→ return"]
     kiwix{"Kiwix host?\nKIWIX_URL set"}
     kiwix_fetch["Local Kiwix ZIM\nWikipedia · Stack Overflow · Arch Wiki\n→ cache + return"]
-    pdf{".pdf URL?"}
     robots["robots.txt pre-check — tiers 1–3\ndisallowed → RobotsDisallowedError (cached 24h)"]
     tier_skip(["Per-domain tier skip\nsuccess rate &lt;30% over ≥10 tries\nor tier_skip operator override"])
-    t1["Tier 1 — Firecrawl\n$FIRECRAWL_URL"]
+    t1["Tier 1 — Firecrawl\n$FIRECRAWL_URL\nserves PDFs under FIRECRAWL_API_VERSION=v2"]
     t2["Tier 2 — Crawl4AI\n$CRAWL4AI_URL · optional\nadblock proxy if $ADBLOCK_PROXY_URL"]
     t3["Tier 3 — Raw HTTP + Readability\nfallback: raw HTML slice\nadblock proxy if $ADBLOCK_PROXY_URL"]
     challenge(["Challenge detected\non this URL, this request?"])
@@ -137,9 +121,7 @@ flowchart TD
     llms -->|yes| llms_fetch
     llms -->|no| kiwix
     kiwix -->|yes| kiwix_fetch
-    kiwix -->|no| pdf
-    pdf -->|"yes — skip tier 1"| t2
-    pdf -->|no| robots
+    kiwix -->|no| robots
     robots --> tier_skip
     tier_skip --> t1
     t1 -->|success| post
@@ -164,7 +146,6 @@ flowchart TD
     style llms_fetch fill:#dae8fc,stroke:#6c8ebf,color:#000000
     style kiwix fill:#fff9c4,stroke:#b8860b,color:#000000
     style kiwix_fetch fill:#fff9c4,stroke:#b8860b,color:#000000
-    style pdf fill:#ffffff,stroke:#333333,color:#000000
     style robots fill:#ffffff,stroke:#333333,color:#000000
     style tier_skip fill:#f5f5f5,stroke:#666666,color:#000000
     style t1 fill:#d5e8d4,stroke:#5a8a4a,color:#000000
@@ -177,714 +158,20 @@ flowchart TD
     style result fill:#ffffff,stroke:#333333,color:#000000
 ```
 
-**Only SearXNG is required.** Every tier below it is optional: Firecrawl, Crawl4AI, Valkey, Ollama, Kiwix, the reranker, the solver and Wayback each improve a named dimension, and the server degrades gracefully when any of them is unavailable. Tier 3 is a raw HTTP fetch plus Readability running in-process, so `fetch_url` still returns extracted content with nothing else deployed. Set `FIRECRAWL_ENABLED=false` and leave `CRAWL4AI_URL` unset to say so explicitly — those tiers are then skipped with `reason: not_configured` rather than attempted and missed.
+Read the rest — tier semantics, the domain capability database, adblocking, every fast path,
+resilience and observability — in [`docs/architecture.md`](docs/architecture.md).
 
-### Adblocking
+## Documentation
 
-searxng-mcp ships two adblocking sidecars, but only one of them applies to every deployment:
-
-| Sidecar | Tier | Mechanism | Applies when |
-|---------|------|-----------|--------------|
-| `docker/adblock-proxy/` | Tiers 2+3 (Crawl4AI, raw fetch) | HTTP forward proxy — filters plain-HTTP ad domains | `ADBLOCK_PROXY_URL` is set |
-| `docker/puppeteer-adblock/` | Tier 1 (Firecrawl) | CDP-level interception in the browser service | **Only** on a `v1` firecrawl-simple stack built from `docker-compose.full.yml` |
-
-#### Tier 1 — Puppeteer adblock (v1 stacks only)
-
-`docker/puppeteer-adblock/` builds an image layering `@ghostery/adblocker-puppeteer` over `trieve/puppeteer-service-ts`. EasyList + EasyPrivacy are loaded at startup and refreshed every 168 hours, and the blocker is applied to every page Firecrawl creates.
-
-**It is not automatic, and it does not apply under `FIRECRAWL_API_VERSION=v2`:**
-
-- It reaches a deployment only if that deployment builds it. `docker-compose.full.yml` in this repo does; a Firecrawl stack brought up from upstream's own compose, or any stack pointing `PLAYWRIGHT_MICROSERVICE_URL` at a stock `trieve/puppeteer-service-ts` image, does not — tier 1 then has no adblocking, silently.
-- It is Puppeteer-specific. Upstream Firecrawl 2.x replaced the Puppeteer service with `apps/playwright-service-ts`, so on a `v2` backend this image is not part of the stack at all. Porting it would mean rewriting against `@ghostery/adblocker-playwright`, not rebuilding.
-
-To check rather than assume, confirm the browser container carries the hook:
-
-```bash
-docker exec <firecrawl-browser-container> ls node_modules/@ghostery
-```
-
-Env vars, read by that image only:
-
-| Var | Default | Description |
-|-----|---------|-------------|
-| `ADBLOCK_DISABLE` | _unset_ | Set to `true` to skip filter loading entirely. |
-| `ADBLOCK_FILTERS_URL` | EasyList + EasyPrivacy | Comma-separated list of filter list URLs. |
-| `ADBLOCK_REFRESH_HOURS` | `168` | Cadence at which the blocker rebuilds from the configured URLs. |
-
-The base image is pinned by SHA256 digest. To rebuild and restart it:
-
-```bash
-docker compose -f docker-compose.full.yml up -d --build firecrawl-puppeteer
-```
-
-**Per-domain bypass:** `domains.json` reserves an `adblock_skip` slot for future operator overrides. Wiring isn't implemented — it would require Firecrawl to forward a custom header through to the browser service, which isn't part of its API. Tracked as scope-creep item I.
-
-#### Tier 2+3 — Adblock proxy
-
-Set `ADBLOCK_PROXY_URL` (e.g. `http://adblock-proxy:8118`) to route Crawl4AI and raw Node fetch requests through an HTTP forward proxy that filters ad and tracker requests. HTTPS CONNECT tunnels are passed through unmodified — no MITM, so filtering applies to plain-HTTP ad domains only. Where the tier-1 hook above is in play it handles HTTPS filtering for that tier; where it is not — including every `v2` deployment — nothing filters tier 1 at all.
-
-As of v3.19.0, the proxy validates the **resolved** address — not just the requested hostname string — on both its CONNECT and plain-HTTP paths before connecting, closing a DNS-rebinding gap (audit finding SSRF-10).
-
-See [`docker/adblock-proxy/`](docker/adblock-proxy/) for the service definition, configuration options, and deployment instructions (included in `docker-compose.full.yml`).
-
-### Data-driven tier routing
-
-Before invoking the fetch cascade, searxng-mcp reads the domain's `tier_stats_30d` (see [domain capability database](#domain-capability-database)) and skips any tier with success rate below 30% over at least 10 attempts. Cold-start domains (<10 attempts) keep the default cascade. Each skip emits a `searxng.fetch.tier.skipped` NATS event and increments `searxng_fetch_total{outcome=skipped}`, both carrying the reason. Three reasons exist: `low_success_rate` (the stats rule above), `operator_override` (a `tier_skip` entry in `domains.json`), and `not_configured` (the tier's service is switched off, or has no URL). `not_configured` takes precedence over both others — an override cannot un-skip a tier there is nothing to call. Because a skipped tier is never recorded as an attempt, an unconfigured tier no longer books misses into `tier_stats_30d` meaning “not deployed” rather than “tried and failed”.
-
-**Operator override.** Add a `tier_skip` map to `domains.json` to force-skip tiers regardless of stats:
-
-```json
-{
-  "tier_skip": {
-    "example-bot-blocked.com": ["tier1"],
-    "another-site.example": ["tier1", "tier2"]
-  }
-}
-```
-
-`tier_skip` keys can be bare domains (`example.com` matches the domain and all subdomains) or domain + path prefix (`example.com/api/`). The file is hot-reloaded — no restart needed. Manual overrides emit `reason: operator_override`.
-
-### Content-type fast path
-
-A URL serving structured, non-HTML content — `application/json`, any `*+json`, XML, YAML, TOML, CSV, or `text/plain` — is detected via a `HEAD` probe and routed straight to the raw-HTTP tier instead of the full Firecrawl/Crawl4AI cascade. JSON is returned pretty-printed inside a fenced code block. Previously, asking a headless browser to render a JSON API response or CDN asset returned empty markdown, so API and CDN endpoints (`registry.npmjs.org`, `api.osv.dev`, `cdn.jsdelivr.net`, …) simply failed.
-
-Guarantees:
-- The probe is **fail-open**. An unreachable host, a server that refuses `HEAD`, or an unreadable/unparseable `Content-Type` header all fall through to the normal cascade unchanged.
-- `application/xhtml+xml` is deliberately excluded — that is markup for a browser, not structured data.
-- HTML that a server mislabels as `text/plain` is still parsed as HTML, not dumped as a raw text block.
-
-### Domain capability database
-
-Every fetch records what searxng-mcp learns about the target domain to Valkey under `domain:<hostname>` (90-day TTL, schema_version 6). Captured per record:
-
-- `tier_stats_30d.{tier1,tier2,tier3,tier4,solver,github}.{attempts, ok, fail, last_fail_reason, window_start_ms}` — fetch success rate per tier over a rolling 30-day window. The cutoff is applied at **read time**, shared by tier-routing decisions and `domain_stats` reporting, so the two cannot disagree — a domain fetched once and then left idle reports a genuinely empty window rather than stale numbers surviving until the next write. The `tier4` (Wayback Machine) slot is recorded only when `WAYBACK_ENABLED=true`; the `solver` slot (Byparr challenge-solving tier, see [Challenge detection and solver tier](#challenge-detection-and-solver-tier)) only when `SOLVER_ENABLED=true`. The `github` slot records the [GitHub fast path](#github-urls) (`raw.githubusercontent.com` / `api.github.com` / `github.com` README fetches), which bypasses the tier cascade but is still tracked here. A `schema_version` bump rebuilds existing records fresh — accumulated windows for currently-idle domains are discarded (precedented across the 1→2, 2→3, 3→4, 4→5, 5→6 bumps).
-- `capabilities.metadata_fetch.{attempts, ok, fail, last_fail_reason}` — success/failure of the metadata side-channel fetch (`fetchRawHtmlForMetadata`, used for JSON-LD/og:title sampling). Tracked separately from `tier_stats_30d` since it answers "is this domain reachable at all", not "did full-content delivery succeed".
-- `capabilities.seen_in_search.{count, last_seen_ms}` — how often the domain appears in `search` results. Written fire-and-forget by `searxSearch()` on every return path (including cache hits) with no fetch performed, so a domain can be tracked before it is ever fetched.
-- `capabilities.robots_txt.{present, fetched, allows_us}` — robots.txt presence and whether it permits us
-- `capabilities.llms_full_txt.{present, size_bytes, last_checked}` — whether the domain serves `/llms-full.txt`
-- `capabilities.json_ld_article.{sampled, present, last_sampled_at}` — whether the page carries Article-schema JSON-LD at all (Schema.org `Article`/`NewsArticle`/`BlogPosting`/`TechArticle` and subtypes like `ScholarlyArticle`/`OpinionNewsArticle`/`LiveBlogPosting`, matched by bare name or fully-qualified `https://schema.org/...` `@type`), independent of whether that schema had extractable body text — many sites publish headline/metadata JSON-LD with no `articleBody`, which is a distinct concern from [post-extraction](#fetch-quality) actually using it.
-- `capabilities.og_title.{sampled, present, last_sampled_at}` — same for `<meta property="og:title">`
-- `preferred_strategy` — currently set to `llms_full_txt` when a present probe lands; future phases will use this to skip the tier cascade
-
-Inspect a record with the bundled CLI, or query it from an agent via the `domain_stats` tool (single-domain or aggregate; see [Tools](#tools)):
-
-```bash
-pnpm dump-domain docs.anthropic.com
-```
-
-`dump-domain` distinguishes a window that has expired from a tier that has no data at all, rather than showing both the same way.
-
-Concurrent updates for the same hostname (the tier-attempt, robots-probe, and post-extract-sample recorders that fire in parallel during one fetch) are serialized through a server-side Lua compare-and-set, paired with an in-process per-key queue that removes contention between a single process's own writers so the CAS only has to arbitrate genuinely concurrent writes across processes. Versions before v3.17.0 used a `WATCH`/`MULTI`/`EXEC` read-modify-write against a shared connection, which does not actually serialize concurrent writers — data collected before v3.17.0 was substantially incomplete as a result. Upgrading discards existing tier statistics via the schema bump; expect `domain_stats` to read near-empty immediately after upgrading and refill over the following days.
-
-#### Domain-db persistence
-
-The domain-db lives only in Valkey under a 90-day TTL and 30-day rolling windows, so a cache flush or TTL expiry erases capability learning that is expensive to re-acquire. Two CLIs make it durable:
-
-```bash
-pnpm domain-db-maintenance   # SCAN all domain:* records → write a dated JSON snapshot (+ prune) and emit OTel gauges
-pnpm restore-domain-db       # re-seed the domain-db from the newest snapshot after a flush
-```
-
-- **`domain-db-maintenance`** is a standalone job — run it on a schedule via cron or a container cron sidecar, **not** as an in-process timer. (The original reason was that searxng-mcp ran as several concurrent per-agent stdio children that would each fire the timer. That is no longer true: since vikunja#149/#321 it is one shared container. The conclusion still holds for a different reason — an in-process timer ties a bounded full-keyspace `SCAN` to the lifetime of the request-serving process, whereas a standalone job can be scheduled, retried and observed on its own.) One bounded `SCAN` feeds both outputs: a durable dated snapshot and, when `OTEL_EXPORTER_OTLP_ENDPOINT` is set, gauges (`searxng_domains_tracked`, `searxng_domains_failing`, `searxng_domain_tier_success_ratio{tier}`) force-flushed before exit.
-- **`restore-domain-db`** re-seeds only keys that are missing or whose live record is strictly staler than the snapshot (compares `last_fetch`) — it never clobbers a fresher-or-equal live record, so it is safe to run against a live, partially-populated Valkey (e.g. in a service boot sequence for automatic flush recovery).
-
-| Env var | Default | Purpose |
-|---------|---------|---------|
-| `DOMAIN_DB_SNAPSHOT_DIR` | `./domain-db-snapshots` | Where dated snapshots are written/read. Set to a durable path (appdata or NFS mount) in deployment. |
-| `DOMAIN_DB_SNAPSHOT_RETENTION` | `14` | How many snapshots to keep; older ones are pruned each maintenance run. |
-
-### llms.txt fast path
-
-For whitelisted documentation domains in `domains.json` (`llms_txt` array), `fetchPage` tries `<origin>/llms-full.txt` first and extracts the section matching the requested URL before invoking any tier. This avoids running puppeteer against well-instrumented docs sites and returns a clean markdown section directly. Probe outcomes and the full body are cached in Valkey (`llms:<origin>:full`, 24 h / 7 d for present/absent). Default whitelist: `docs.anthropic.com`, `docs.openai.com`, `docs.stripe.com`, `docs.crawl4ai.com`, `docs.firecrawl.dev`, `docs.cursor.com`. Extend by editing `domains.json` — the file is hot-reloaded.
-
-A document is accepted only if it is between 1 KB and 64 MB; anything outside that is treated as absent and falls through to the normal tier cascade. The upper bound is a capability boundary as much as a memory one — for reference, `docs.anthropic.com/llms-full.txt` was 40.3 MB as of 2026-09-03, so lowering it much further would drop that domain off the fast path.
-
-### Kiwix fast path
-
-When `KIWIX_URL` is set, fetch requests for known offline-capable hosts are intercepted
-before the Firecrawl/Crawl4AI cascade and served from the local [Kiwix](https://kiwix.org/)
-ZIM archive. This eliminates the 100% tier-1 failure rate for sites like Wikipedia (which
-blocks headless scrapers) and returns clean readable content with zero external network traffic.
-
-Supported hosts and ZIM books (kiwix-serve must run with `--nodatealiases` / `-z`):
-
-| Host | ZIM book |
-|------|----------|
-| `en.wikipedia.org`, `wikipedia.org` | `wikipedia_en_all_mini` |
-| `stackoverflow.com` | `stackoverflow.com_en_all` |
-| `wiki.archlinux.org` | `archlinux_en_all_maxi` |
-
-The Kiwix path runs after the llms-txt fast path and before the robots gate. If the Kiwix
-request fails or returns empty, the full tier cascade runs as normal. When `KIWIX_URL` is
-unset the feature adds zero overhead — `isKiwixHost()` returns false immediately.
-
-Set `KIWIX_URL` to your kiwix-serve base URL (e.g. `http://localhost:8292`).
-
-### YouTube & Reddit fast paths
-
-`fetch_url` recognises YouTube video URLs (`youtube.com`, `youtu.be`) and Reddit thread URLs and can serve them directly instead of scraping the rendered page:
-
-- **YouTube** — extracts the video's caption track from the watch page and returns the transcript. Enabled by `YOUTUBE_TRANSCRIPT_ENABLED` (default on).
-- **Reddit** — fetches the public `.json` view and returns the post plus top comments in the standard `{title, url, text}` shape; falls through on HTTP 429. Enabled by `REDDIT_FASTPATH_ENABLED` (default on).
-
-Both rely on **unofficial, undocumented endpoints** (YouTube's timedtext API, Reddit's `.json`) — best-effort with no SLA; either may break on an upstream change, hence the kill switches. On any miss the request falls through to the normal tier cascade (which can still get a YouTube page's title/description).
-
-**robots.txt:** both endpoints are disallowed by the sites' `robots.txt` (Reddit disallows everything; YouTube disallows `/api/`, where the transcript lives). By default these fast paths respect that and stay dormant, falling through to the cascade. On your own instance you can opt into direct fetching with `YOUTUBE_IGNORE_ROBOTS=true` / `REDDIT_IGNORE_ROBOTS=true`.
-
-### Site crawling
-
-`crawl_site` crawls an entire site and returns a manifest of URL/title/snippet for each page found. It uses a four-phase strategy cascade:
-
-1. **Firecrawl crawl** — sends a crawl job to Firecrawl (`/crawl`), polls until complete, and returns the full page list. Targets `/v1/crawl` or `/v2/crawl` per `FIRECRAWL_API_VERSION`. Controlled by `FIRECRAWL_CRAWL_POLL_INTERVAL_MS` and `FIRECRAWL_CRAWL_MAX_WAIT_MS`.
-2. **Firecrawl map** (`v2` only) — asks `/v2/map` for the site's URLs, then fetches them. Purpose-built for exactly what phase 3 hand-rolls, and it copes with sites whose sitemap is absent, stale or split across nested indexes. Skipped entirely under `v1`, where the endpoint does not exist.
-3. **Sitemap parsing** — fetches `/sitemap.xml` (and linked sitemaps) and extracts URLs with titles/snippets. Uses `fast-xml-parser` for sitemap XML parsing.
-4. **BFS crawl** (opt-in) — if sitemap parsing also fails, performs a breadth-first crawl starting from the given URL up to `CRAWL_BFS_MAX_DEPTH` link hops. Only runs when `CRAWL_BFS_ENABLED=true` or the `bfs` tool parameter is `true`.
-
-Each phase falls through to the next, but **no longer silently**: a non-2xx from the crawl
-start, the crawl poll or the map endpoint is logged and recorded against the `crawl` slot in
-the per-domain stats, so `domain_stats` answers "does the Firecrawl phase ever succeed here?"
-without needing a live probe.
-
-Full page content fetched during the crawl is cached in Valkey (TTL: `CRAWL_MANIFEST_TTL_SECONDS`, default 6 hours). Subsequent `fetch_url` calls for any URL in the manifest return immediately from cache — zero fetch overhead for follow-up reads.
-
-The manifest cache can be cleared with `clear_cache(target="crawl")`.
-
-### Wayback Machine fallback
-
-When `WAYBACK_ENABLED=true`, a fourth tier queries the Wayback Machine CDX API for an archived snapshot when all three main tiers fail. Returned content is prefixed with a provenance header (`[Archived snapshot – <timestamp> – <original_url>]`) so callers know the content may not reflect the current page state.
-
-### Challenge detection and solver tier
-
-A Cloudflare-style challenge interstitial is frequently served with **HTTP 200** — routine for
-Managed Challenge and Turnstile — which used to pass straight through the tier cascade as a
-successful fetch: Readability-extracted, cached, and written to the domain capability database
-as evidence the tier works on that domain, feeding tier-skip decisions on nothing but a wrong
-signal. As of v3.19.0, tiers 1–3 detect this case (matched on Cloudflare edge headers at
-403/503, and on interstitial markers in a 200-status body) and report it as a distinct miss
-(`reason: challenge_detected`) instead of a hit. A detected challenge is never cached and never
-written to domain-db.
-
-When `SOLVER_ENABLED=true` and `SOLVER_URL` points at a running solver — Byparr, or any service
-implementing FlareSolverr's `POST /v1` contract — a challenge detected on a given request
-triggers one solve attempt, dispatched after the tier 3 cascade fails and before the Wayback
-fallback. The solve is **strictly per-request**: the tier never fires on a URL that was not
-challenged in that same request, so it adds no overhead to the ordinary path. The solver's
-response is replayed through the normal bounded-fetch and extraction path — re-validated for
-SSRF (`assertPublicUrl` + `assertResolvedPublic` against the solver's resulting URL, since it
-may differ from the one requested) and re-checked for a challenge — rather than trusted
-directly, so a "solved" page that is still an interstitial registers as a miss, not a cache
-write. Solver-returned cookies are scoped to the solved host and never forwarded elsewhere.
-
-**This is not a guaranteed bypass.** Byparr's own documentation is explicit that a solve is not
-guaranteed and often needs residential-IP traffic. A miss here is the expected common case and
-degrades cleanly into the Wayback tier — not an error, and not something to alert on.
-
-### Fetch quality
-
-After any tier returns content with raw HTML, a post-extraction pass improves title and body quality:
-
-- **JSON-LD Article extraction** — Schema.org `Article` / `NewsArticle` / `BlogPosting` / `TechArticle` blocks supply cleaner `headline` and `articleBody` than tier-1 chrome scraping (size-capped at 1 MB per script tag).
-- **Title cascade** — falls back through `og:title` → `twitter:title` → `<title>` (with publisher-suffix stripping) → first `<h1>` → URL.
-- **Tier-2 Readability comparison** — when Crawl4AI returns markdown, JSDOM+Readability also runs over its raw HTML and is preferred when its text is longer (or unconditionally when Crawl4AI returns less than 500 chars).
-
-### Relevance filtering (`min_score`)
-
-The three search tools accept `min_score` (0–1), a floor applied after reranking. Omit it and nothing changes.
-
-It filters on the **raw cross-encoder `relevance_score`**, not on the value used for ordering. Ranking sorts by `relevance_score + RERANK_RECENCY_WEIGHT * recencyScore(publishedDate)`, which with the default weight of `0.15` ranges over **0–1.15, not 0–1**. Filtering a parameter called "minimum relevance" on that number would quietly make it mean "relevant enough *or* recent enough". Filtering happens before the top-N slice, so the floor never costs you a result that cleared it.
-
-Two things make this knob behave differently from how a 0–1 range suggests. Both were measured against the local FlashRank service on the query *"how to configure nginx reverse proxy"*:
-
-| Document | `relevance_score` |
+| | |
 |---|---|
-| nginx reverse-proxy guide (`proxy_pass`) | **0.998** |
-| Apache `mod_proxy` reverse proxying | **0.967** |
-| nginx install page (topical, wrong subject) | **0.0028** |
-| banana bread recipe | **0.0000151** |
-
-- **The distribution is strongly bimodal.** Relevant results cluster near 1.0, irrelevant ones near 0, with very little in between — so any threshold in roughly 0.01–0.9 behaves near-identically. Useful values are around **0.01–0.1**; `0.5` is not a meaningful midpoint.
-- **A high score means topically related, not correct.** The Apache document scored 0.967 on an nginx query. `min_score` is a topicality floor and cannot be trusted as a correctness filter.
-
-Thresholds are model-dependent and not comparable across rerankers. When the reranker is unavailable there are no scores to filter on, so `min_score` becomes a **no-op with a throttled warning** — returning unfiltered results silently would let you believe a floor had been applied, and returning nothing would turn a reranker outage into "no results found".
-
-### Resilience
-
-- **Multi-instance SearXNG failover.** `SEARXNG_URL` accepts a list of interchangeable replicas (`,` or `;` separated), tried in order. A single value behaves exactly as before — one request, one host, no health lookup, no extra cache traffic. Three things about the multi-instance path are worth knowing:
-  - The timeout budget is **total, not per instance**. `SEARXNG_TOTAL_TIMEOUT_MS` bounds the whole call and is decremented as candidates fail, so adding a replica cannot make a total outage take longer to report.
-  - Health state lives in the **cache, not in process memory**, so one process's discovery of a dead instance informs the next call. It is a hint, not a circuit breaker: a failed instance is moved to the back of the order for `SEARXNG_UNHEALTHY_TTL_SECONDS`, never removed, and if every instance is marked down the full list is tried anyway. A cache outage degrades to "try every instance in configured order" — never to an error.
-  - **Failover is loud.** Each fall-through emits a `search.failover` NATS event and a throttled stderr line. A silent failover is indistinguishable from a healthy primary, which is how a half-dead deployment goes unnoticed for weeks.
-
-  Fan-out (querying replicas in parallel and merging) is deliberately **not** implemented: it needs meta reconciliation with no obvious right answer — if two instances return different `answers`/`infoboxes`, which wins? `searxSearch` already merges across expanded query variants, so the marginal recall gain is small.
-
-- **Cache never hangs a search.** The Valkey client is bounded by `CACHE_COMMAND_TIMEOUT_MS`/`CACHE_CONNECT_TIMEOUT_MS`/`CACHE_MAX_RETRIES_PER_REQUEST` (see [Configuration](#configuration)). A stalled or CPU-spiked cache backend now rejects the command instead of hanging forever — the existing fail-soft handling degrades that rejection to a cache miss (serve live) rather than throwing. Cache connect failures, client errors, and per-command errors emit a throttled `[searxng-mcp]` stderr line (deduped per key so a sustained outage leaves a periodic breadcrumb, not a flood) — stderr is always on, and is the sink that never depends on configuration. On the forge deployment OTel and NATS are also wired (`OTEL_EXPORTER_OTLP_ENDPOINT` and `NATS_URL` are both set, and the startup capability line reports `otel,nats` in its on-list), so stderr is the floor rather than the whole story.
-- **Process crash handlers** — `uncaughtException` logs then exits 1, so the supervisor restarts cleanly (Docker's `restart: unless-stopped` on the forge deployment); `unhandledRejection` logs and continues rather than crashing the shared process silently.
-- **Graceful-degradation warnings** — the reranker fallback and the Ollama/LLM expand + summarize fallbacks emit one throttled stderr line each when they silently degrade quality (reranker unavailable, LLM backend unreachable).
-- **Version is single-sourced** from `package.json` at runtime (`src/version.ts`) — the `McpServer` version, OTel tracer/meter version, and outbound `USER_AGENT` all track it, so they can't drift independently.
-
-### Observability (opt-in)
-
-Tracing, metrics, and event publishing are entirely opt-in — with none of the env vars below set, the server has zero observability overhead and never loads the OpenTelemetry or NATS packages at runtime.
-
-**OpenTelemetry (traces + metrics)** — set `OTEL_EXPORTER_OTLP_ENDPOINT` to your collector's HTTP endpoint and the server emits:
-
-- Spans (per request): `tool.<name>` → `expand_query`? → `searxng_request` → `rerank` → `fetch` (×N) → `tier1_firecrawl` | `tier2_crawl4ai` | `tier3_rawfetch` | `solver_byparr` → `post_extract`; plus `summarize_llm` for `search_and_summarize`.
-- Counters: `searxng_search_total{profile, expand}`, `searxng_fetch_total{tier, outcome}`, `searxng_cache_total{namespace, outcome}`, `searxng_errors_total{stage, error_type}`.
-- Histograms: `searxng_search_duration_seconds{profile}`, `searxng_fetch_duration_seconds{tier, outcome}`.
-
-Standard OTEL env vars apply (`OTEL_SERVICE_NAME` defaults to `searxng-mcp`).
-
-**NATS events** — set `NATS_URL` (e.g. `nats://localhost:4222`) and the server publishes a structured event on every search, fetch, cache hit/miss, robots skip, and error. Authenticates via `NATS_CREDS` (a JWT creds file) or `NATS_USER`/`NATS_PASSWORD` (bcrypt username/password) — creds-file auth wins if both are set. Subjects:
-
-| Subject | When |
-|---------|------|
-| `searxng.search.requested` | Search tool invoked |
-| `searxng.search.completed` | Search returned (with sources, latency, rerank applied) |
-| `searxng.fetch.requested` | `fetchPage` called |
-| `searxng.fetch.tier.miss` | A tier returned empty or threw |
-| `searxng.fetch.tier.skipped` | robots.txt disallowed |
-| `searxng.fetch.completed` | Fetch resolved (with `tier_served`, `text_len`, latency) |
-| `searxng.cache.hit` / `.miss` | On every Valkey lookup |
-| `searxng.error` | Stage-tagged errors |
-
-Each envelope includes `request_id` and (when OTel is enabled) `trace_id` so subscribers can join the two streams. Subject prefix overridable via `NATS_SUBJECT_PREFIX`. Search queries flow through `search.*` events — downstream consumers are responsible for any PII scrubbing.
-
-### Politeness
-
-- **Honest User-Agent** — outbound requests identify as `searxng-mcp/<version> (+https://github.com/TadMSTR/searxng-mcp; personal research)`.
-- **robots.txt compliance** — `/robots.txt` is fetched once per origin and cached for 24 hours in Valkey under `robots:<origin>`. Disallowed paths are skipped before any tier runs and logged as `skipped_robots url=… reason=…`.
-
-## Transport
-
-**stdio** (default) — compatible with Claude Code MCP plugin and LibreChat `stdio` config.
-
-**HTTP** — set `SEARXNG_MCP_TRANSPORT=http` to run as a shared HTTP/SSE server suitable for multi-client deployments or Docker-based setups. Binds to `SEARXNG_MCP_HOST:SEARXNG_MCP_PORT` (default `127.0.0.1:3001`):
-
-```bash
-SEARXNG_MCP_TRANSPORT=http SEARXNG_MCP_PORT=3001 npx @tadmstr/searxng-mcp
-```
-
-Register with Claude Code against an HTTP server:
-
-```bash
-claude mcp add-json searxng --scope user '{
-  "type": "http",
-  "url": "http://localhost:3001/mcp"
-}'
-```
-
-Sessions are keyed by the `Mcp-Session-Id` header, so multiple clients can connect to the same shared process concurrently. Idle sessions are swept after `HTTP_SESSION_IDLE_TIMEOUT_MS` and hard-capped at `HTTP_MAX_SESSIONS` — see [Configuration](#configuration).
-
-### HTTP transport authentication
-
-The HTTP transport is **unauthenticated by default**, which is safe only because it binds `127.0.0.1` by default. If you change `SEARXNG_MCP_HOST` to anything else — including `0.0.0.0`, which is what running in a container requires — set `SEARXNG_MCP_AUTH_TOKEN` as well:
-
-```bash
-SEARXNG_MCP_AUTH_TOKEN=$(openssl rand -hex 32)
-```
-
-When it is set, every request except `GET /health` must carry the token as an [RFC 6750](https://datatracker.ietf.org/doc/html/rfc6750) bearer credential:
-
-```
-Authorization: Bearer <token>
-```
-
-Anything else — no header, a different scheme, a wrong token — gets `401` with `WWW-Authenticate: Bearer` and a JSON-RPC error body. The response is identical in all three cases and never echoes the presented credential. Tokens are compared as SHA-256 digests, so the comparison is constant-time and leaks no length information.
-
-Registering an authenticated server with Claude Code:
-
-```bash
-claude mcp add-json searxng --scope user '{
-  "type": "http",
-  "url": "http://localhost:3001/mcp",
-  "headers": {"Authorization": "Bearer <token>"}
-}'
-```
-
-Leaving the variable unset preserves the previous behaviour exactly, so stdio users and existing loopback-bound HTTP deployments need no change. There is no per-caller authorization model — a single token authenticates *access to the server*, not a particular client identity. On startup, a non-loopback bind with no token logs a warning.
-
-**`GET /health` is deliberately exempt** from the check. It is the container healthcheck and the monitoring liveness probe, it takes no input, and its response (`status`, `cache`, `sessions`) carries no secrets.
-
-**`GET /health`** — unauthenticated liveness probe, localhost-bound alongside the MCP endpoint. Pings Valkey through the bounded cache command timeout (so the check itself can never hang) and returns:
-
-```json
-{"status": "ok", "cache": "up", "sessions": 3}
-```
-
-or, when the cache backend is unreachable:
-
-```json
-{"status": "degraded", "cache": "degraded", "sessions": 3}
-```
-
-`sessions` is the live HTTP session count. Useful for sysadmin monitoring to detect a degraded cache from the MCP side without instrumenting the cache backend directly.
-
-## Prerequisites
-
-**Runtime:** Node.js 20+, and pnpm (or npm).
-
-### Required
-
-- A running [SearXNG](https://github.com/searxng/searxng) instance, with JSON output enabled (see below).
-
-That is the whole list. Everything under it is progressive enhancement.
-
-### Strongly recommended
-
-| Service | What it buys you |
-|---------|------------------|
-| [Valkey](https://valkey.io/), Dragonfly or any Redis-compatible cache | Repeat searches and fetches are served from cache instead of re-run. The single largest latency win. Fail-soft: a cache timeout serves live. |
-| A reranker with a Jina-compatible `/v1/rerank` endpoint | Reorders results by semantic relevance to the query. Without it results keep SearXNG's own ordering and a throttled degradation line is logged. |
-
-Neither has a kill switch — both have a default URL and are always attempted, because both fail
-soft. Absence costs quality and latency, never correctness.
-
-### Optional
-
-| Service | Capability it unlocks | Turn it on with |
-|---------|----------------------|-----------------|
-| [Firecrawl](https://github.com/mendableai/firecrawl) | Fetch tier 1 — Puppeteer-rendered pages, best extraction quality on JS-heavy sites | On by default; `FIRECRAWL_URL`, or `FIRECRAWL_ENABLED=false` to skip the tier |
-| [Crawl4AI](https://github.com/unclecode/crawl4ai) | Fetch tier 2 — browser automation fallback when tier 1 returns empty content | `CRAWL4AI_URL` |
-| [Ollama](https://ollama.com/) with `qwen3:4b` and/or `qwen3:14b`, or any OpenAI-compatible endpoint | Query expansion and LLM-synthesized summaries (`search_and_summarize`) | `OLLAMA_URL` or `LLM_BASE_URL` |
-| [kiwix-serve](https://github.com/kiwix/kiwix-tools) | Offline serving of Wikipedia, Stack Overflow and the Arch Wiki from local ZIM archives | `KIWIX_URL` |
-| Hister | Archived-page fallback from a private archive | `HISTER_URL` |
-| [Byparr](https://github.com/ThePhaseless/Byparr) or FlareSolverr | Solves Cloudflare-style interstitials on the domains that serve them | `SOLVER_URL` + `SOLVER_ENABLED=true` |
-| Wayback Machine | Tier-4 fallback to an archived snapshot when all three tiers fail | `WAYBACK_ENABLED=true` |
-| An OTLP collector / NATS | Traces and metrics; a JetStream event stream of every search and fetch | `OTEL_EXPORTER_OTLP_ENDPOINT` / `NATS_URL` |
-
-On startup the server logs one line naming exactly which of these are configured, so a
-lower-quality result set can be traced to a missing service rather than guessed at:
-
-```
-[searxng-mcp] capabilities on=tier3,cache,reranker off=tier1,tier2,llm,kiwix,hister,solver,wayback,otel,nats
-```
-
-It reports configuration, not reachability — nothing is probed, so the line never delays startup.
-
-The rest of this section is setup reference for whichever of the above you chose to deploy —
-skip any you did not.
-
-### SearXNG
-
-SearXNG must have JSON output format enabled. In `settings.yml`:
-
-```yaml
-search:
-  formats:
-    - html
-    - json
-```
-
-### Reranker (recommended)
-
-The reranker must expose a Jina-compatible `/v1/rerank` endpoint. A lightweight FlashRank wrapper works well — see the [`docker/reranker/`](https://github.com/TadMSTR/homelab-agent/tree/main/docker/reranker) reference in [homelab-agent](https://github.com/TadMSTR/homelab-agent).
-
-### Firecrawl (optional — fetch tier 1)
-
-Any Firecrawl-compatible instance works. The local [firecrawl-simple](https://github.com/mendableai/firecrawl/tree/main/apps/api) deployment is sufficient. Set `FIRECRAWL_API_KEY` if your instance requires authentication (defaults to `placeholder-local` for local deployments that skip auth).
-
-#### Firecrawl API version
-
-`FIRECRAWL_API_VERSION` selects which API the client speaks — `v1` (default) or `v2`. The two
-are not interchangeable and no backend serves both:
-
-| Backend | Version | Notes |
-|---|---|---|
-| [firecrawl-simple](https://github.com/devflowinc/firecrawl-simple) | `v1` | Serves `/v1/scrape` and `/v1/crawl` only. No `/map`. |
-| [Upstream Firecrawl 2.x](https://github.com/firecrawl/firecrawl) | `v2` | Serves `/v2/scrape`, `/v2/crawl` and `/v2/map`. |
-
-An unrecognised value fails at startup rather than falling back. That is deliberate: a wrong
-version prefix produces a 404 that `crawl_site` would swallow into its sitemap fallback, and a
-wholly dead code path returning healthy-looking manifests is exactly how the `/v2`-against-`v1`
-mismatch survived unnoticed for the life of the feature.
-
-**Capability boundary under `v2` self-hosting.** Upstream Firecrawl implements page `actions`,
-screenshots and the stealth proxy in **Fire-engine**, which is closed-source and cloud-only.
-Every engine a self-hosted deployment can reach (`fetch`, `playwright`, `pdf`, `document`)
-reports `actions: false`, and a scrape carrying an `actions` array is rejected outright with
-HTTP 400 `SCRAPE_ACTIONS_NOT_SUPPORTED` — the whole request fails, it does not degrade.
-
-The practical consequence is one **semantic downgrade**:
-
-| Tuning parameter | Under `v1` | Under `v2` |
-|---|---|---|
-| `target_selector` | `includeTags` | `includeTags` — unchanged |
-| `wait_for_selector` | a real wait action on the selector | `waitFor`, a **fixed delay** of `FIRECRAWL_WAIT_FOR_MS` |
-
-Under `v2`, `wait_for_selector` waits on *time*, not on the selector. The page may still be
-unsettled when the delay elapses, and the delay is paid in full even when the selector was
-already present. If that matters for a given site, tier 2 (Crawl4AI) does support real
-selector waits and the cascade will reach it when tier 1 returns nothing useful.
-
-The LLM-backed scrape formats (`json`, `summary`, `query`, `highlights`) are also unavailable
-on a self-hosted deployment without an LLM endpoint configured on the backend; searxng-mcp
-does not request them.
-
-### Crawl4AI (optional — fetch tier 2)
-
-[Crawl4AI](https://github.com/unclecode/crawl4ai) is an optional second-tier fetch fallback used when Firecrawl returns empty content (bot-blocked pages, JS-heavy sites). Set `CRAWL4AI_URL` to enable it. If unset, the cascade skips to raw HTTP fetch.
-
-```bash
-docker run -d -p 11235:11235 unclecode/crawl4ai:0.8.6
-```
-
-If your instance requires API token authentication, set `CRAWL4AI_API_TOKEN`.
-
-On the `search_and_summarize` path, Crawl4AI requests use `fit_markdown` for noise-filtered content extraction. Other callers (`search_and_fetch`, `fetch_url`) use `raw_markdown`.
-
-### Kiwix (optional)
-
-[kiwix-serve](https://github.com/kiwix/kiwix-tools) serves ZIM archives over HTTP. Download
-the required ZIM files and run kiwix-serve with `--nodatealiases` (`-z`) so book names are
-stable:
-
-```bash
-kiwix-serve --port 8292 --nodatealiases /path/to/zims/
-```
-
-Required ZIM files for each supported host:
-- Wikipedia: `wikipedia_en_all_mini` (or `maxi`)
-- Stack Overflow: `stackoverflow.com_en_all`
-- Arch Wiki: `archlinux_en_all_maxi`
-
-ZIM files can be downloaded from [library.kiwix.org](https://library.kiwix.org/).
-
-### Hister (optional)
-
-[Hister](https://github.com/nicholasgasior/hister) is a browsing-history index populated by a Firefox extension. When `HISTER_URL` is set, `fetchPage` checks the history index before invoking the tier cascade — useful for login-walled and JS-heavy pages where scrapers fail.
-
-Set `HISTER_URL` to your Hister instance base URL and `HISTER_TOKEN` if bearer token auth is required.
-
-### Valkey / Redis
-
-Any Redis-compatible instance. Valkey is recommended. Search results are cached for 1 hour; fetched pages for 24 hours. If unavailable, the server operates without caching.
-
-### Ollama
-
-Required for `expand` and `search_and_summarize`. Pull the required models:
-
-```bash
-ollama pull qwen3:4b   # query expansion
-ollama pull qwen3:14b  # summarization
-```
-
-Set `think: false` behavior is handled automatically — no extra Ollama configuration needed.
-
-## Configuration
-
-All service URLs are configurable via environment variables.
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `SEARXNG_URL` | `http://localhost:8081` | SearXNG instance URL. Accepts a **list** of interchangeable replicas separated by `,` or `;` (e.g. `http://searxng-a:8080,http://searxng-b:8080`) — tried in order, with failover. A single value behaves exactly as before: one request, one host, no health lookup. Entries that are not valid http(s) URLs are dropped with a warning; if none survive the default is used rather than the server refusing to start. Basic-auth credentials may be embedded (`http://user:pass@host:8080`) — they are lifted out of the URL at startup and sent as an `Authorization: Basic` header, and never appear in logs, events, cache keys or error messages. |
-| `SEARXNG_TOTAL_TIMEOUT_MS` | `10000` | Total timeout budget for one search **across all instances**, not per instance. Iterating N replicas at the per-attempt timeout each would make a total outage take longer to report the more replicas you add. |
-| `SEARXNG_ATTEMPT_TIMEOUT_MS` | `10000` | Per-instance ceiling, further capped by whatever remains of `SEARXNG_TOTAL_TIMEOUT_MS`. |
-| `SEARXNG_UNHEALTHY_TTL_SECONDS` | `30` | How long a failed instance is deprioritised for. A hint that reorders candidates, not a circuit breaker — an unhealthy instance is moved to the back, never removed, and if every instance is marked down the full list is still tried. Stored in the cache so the hint is shared across processes; a cache outage degrades to "try every instance in configured order". |
-| `FIRECRAWL_URL` | `http://localhost:3002` | Firecrawl instance URL |
-| `FIRECRAWL_API_VERSION` | `v1` | Which Firecrawl API to speak — `v1` or `v2`. Any other value **fails at startup** rather than silently constructing a URL that 404s. See [Firecrawl API version](#firecrawl-api-version). |
-| `FIRECRAWL_WAIT_FOR_MS` | `2000` | Under `v2` only: how long a scrape waits for the page to settle when `wait_for_selector` is requested. v2 has no selector-based wait — see the capability boundary below. |
-| `FIRECRAWL_ENABLED` | `true` | Set to `false` when no Firecrawl is deployed — tier 1 is then skipped with `reason: not_configured` instead of attempting a connection on every fetch |
-| `RERANKER_URL` | `http://localhost:8787` | Reranker instance URL |
-| `FIRECRAWL_API_KEY` | `placeholder-local` | Firecrawl API key (if required) |
-| `GITHUB_TOKEN` | *(unset)* | GitHub personal access token — increases rate limit from 60 to 5,000 req/hour |
-| `OLLAMA_URL` | *(unset)* | Ollama API base URL — required for `expand` and `search_and_summarize` |
-| `OLLAMA_API_KEY` | *(unset)* | Bearer token for authenticated Ollama proxies — adds `Authorization: Bearer <key>` header when set |
-| `OLLAMA_EXPAND_MODEL` | `qwen3:4b` | Model used by query expansion (`expand` parameter). Override without rebuilding. |
-| `OLLAMA_SUMMARIZE_MODEL` | `qwen3:14b` | Model used by `search_and_summarize`. Override without rebuilding. |
-| `LLM_BASE_URL` | *(unset)* | OpenAI-compatible chat endpoint (e.g. vLLM, llama.cpp, LM Studio) for `expand` + `search_and_summarize`. Must include the API path — e.g. `http://host:8000/v1` — the server appends `/chat/completions`. When set, takes precedence over `OLLAMA_URL`, so an already-loaded model can be reused instead of running a separate Ollama model. |
-| `LLM_MODEL` | *(unset)* | Model id for the OpenAI-compatible backend; overrides `OLLAMA_EXPAND_MODEL` / `OLLAMA_SUMMARIZE_MODEL` when set. |
-| `LLM_API_KEY` | *(unset)* | Bearer token for the OpenAI-compatible backend — adds `Authorization: Bearer <key>` when set. |
-| `LLM_DISABLE_THINKING` | `true` | Sends `chat_template_kwargs.enable_thinking: false` so reasoning models (e.g. Qwen3) return direct output. Set to `false` for servers that reject that field. |
-| `CACHE_URL` | `redis://localhost:6381` | Redis-compatible URL — enables result caching. Also accepts `VALKEY_URL` or `REDIS_URL` as aliases. Works with Redis, Valkey, and Dragonfly. Server degrades gracefully if unavailable. |
-| `CACHE_COMMAND_TIMEOUT_MS` | `2500` | Valkey command timeout — a stalled/CPU-spiked cache backend rejects instead of hanging (`cacheGet()` is the first `await` in every search). Invalid/non-positive values fall back to the default rather than becoming a NaN that would disable the timeout. |
-| `CACHE_CONNECT_TIMEOUT_MS` | `3000` | Valkey connection timeout. Same fallback behavior as `CACHE_COMMAND_TIMEOUT_MS`. |
-| `CACHE_MAX_RETRIES_PER_REQUEST` | `2` | Max retries per Valkey command before it rejects. Same fallback behavior as `CACHE_COMMAND_TIMEOUT_MS`. |
-| `CACHE_TTL_SECONDS` | `3600` | Search result cache TTL in seconds |
-| `FETCH_CACHE_TTL_SECONDS` | `86400` | Fetched page cache TTL in seconds |
-| `CRAWL_MANIFEST_TTL_SECONDS` | `21600` | Crawl manifest and page content cache TTL in seconds (6 hours) |
-| `CRAWL_MAX_PAGES_DEFAULT` | `20` | Default max pages returned by `crawl_site` when no `max_pages` is passed |
-| `CRAWL_BFS_ENABLED` | `false` | Set to `true` to enable BFS fallback in `crawl_site` globally. Can also be enabled per-call with the `bfs` parameter. |
-| `CRAWL_BFS_MAX_DEPTH` | `3` | Maximum link-hop depth for BFS crawl |
-| `FIRECRAWL_CRAWL_POLL_INTERVAL_MS` | `2000` | Polling interval when waiting for a Firecrawl crawl job to complete |
-| `FIRECRAWL_CRAWL_MAX_WAIT_MS` | `120000` | Maximum time to wait for a Firecrawl crawl job before falling back to sitemap |
-| `EXPAND_QUERIES` | `false` | Set to `true` to enable query expansion globally |
-| `CRAWL4AI_URL` | *(unset)* | Crawl4AI instance URL — enables second-tier fetch fallback when Firecrawl fails |
-| `CRAWL4AI_ENABLED` | `true` | Set to `false` to skip tier 2 regardless of `CRAWL4AI_URL`. Tier 2 is also skipped when `CRAWL4AI_URL` is unset |
-| `CRAWL4AI_API_TOKEN` | *(unset)* | Optional Bearer token for Crawl4AI instances with API token protection |
-| `WAYBACK_ENABLED` | `false` | Set to `true` to enable Wayback Machine tier-4 fallback — fetches archived snapshots when all three tiers fail |
-| `SOLVER_URL` | *(unset)* | Base URL of a Byparr (or other FlareSolverr `POST /v1`-compatible) challenge-solving service, e.g. `http://byparr:8191`. Unset leaves the tier inert regardless of `SOLVER_ENABLED`. |
-| `SOLVER_ENABLED` | `false` | Kill switch for the challenge-solving tier — mirrors `WAYBACK_ENABLED`. Requires `SOLVER_URL` to also be set; fires only when a challenge was actually detected on the current request, never on an unchallenged URL. |
-| `SOLVER_MAX_TIMEOUT_MS` | `60000` | Per-request ceiling passed to the solver as `maxTimeout`. |
-| `ADBLOCK_PROXY_URL` | *(unset)* | HTTP proxy URL for tier-2 (Crawl4AI) and tier-3 (raw Node fetch) adblocking — e.g. `http://adblock-proxy:8118`. See `docker/adblock-proxy/`. |
-| `KIWIX_URL` | *(unset)* | kiwix-serve base URL (e.g. `http://localhost:8292`) — enables Kiwix fast path for Wikipedia, Stack Overflow, and Arch Wiki. Feature is disabled and zero-overhead when unset. |
-| `HISTER_URL` | *(unset)* | Hister browsing-history index base URL — enables Hister fast path before the tier cascade for login-walled and JS-heavy pages. Feature disabled and zero-overhead when unset. |
-| `HISTER_TOKEN` | *(unset)* | Bearer token for Hister API authentication. Required when `HISTER_URL` is set and the instance has token auth enabled. |
-| `YOUTUBE_TRANSCRIPT_ENABLED` | `true` | Enables the YouTube transcript fast path in `fetch_url`. Set to `false` to disable (e.g. if the unofficial timedtext endpoint breaks upstream). |
-| `YOUTUBE_IGNORE_ROBOTS` | `false` | Opt into fetching YouTube transcripts despite YouTube's `robots.txt` disallowing `/api/`. Default respects robots (fast path stays dormant, falls through to the cascade). |
-| `REDDIT_FASTPATH_ENABLED` | `true` | Enables the Reddit `.json` fast path in `fetch_url`. Set to `false` to disable. |
-| `REDDIT_IGNORE_ROBOTS` | `false` | Opt into fetching Reddit `.json` despite Reddit's `robots.txt` (`Disallow: /`). Default respects robots (fast path stays dormant, falls through to the cascade). |
-| `SEARXNG_MCP_TRANSPORT` | `stdio` | Transport mode: `stdio` (default, single-client) or `http` (shared HTTP/SSE server). |
-| `SEARXNG_MCP_PORT` | `3001` | HTTP listen port (HTTP transport mode only). |
-| `SEARXNG_MCP_HOST` | `127.0.0.1` | HTTP listen address (HTTP transport mode only). |
-| `SEARXNG_MCP_AUTH_TOKEN` | *(unset)* | HTTP transport only. When set, every request except `GET /health` must send `Authorization: Bearer <token>` or get a `401`. Unset (the default) disables the check entirely. **Set this whenever `SEARXNG_MCP_HOST` is not loopback** — see [HTTP transport authentication](#http-transport-authentication). |
-| `HTTP_SESSION_IDLE_TIMEOUT_MS` | `600000` | HTTP transport only. A session idle longer than this is evicted by a background sweep (sessions with an in-flight request are exempt, so a long `crawl_site` call is never closed mid-request). Bounds session-map growth from clients killed mid-turn, which never fire `transport.onclose`. |
-| `HTTP_MAX_SESSIONS` | `256` | HTTP transport only. Hard-cap backstop — if the session map ever exceeds this, the least-recently-used idle session is evicted regardless of the idle timeout. |
-| `HTTP_MAX_BODY_BYTES` | `1048576` | HTTP transport only. Maximum request body read on the pre-session `initialize` path; a larger body gets `413` and the read stops at the limit rather than buffering to completion first. Requests carrying an `Mcp-Session-Id` are read by the MCP SDK's own transport and are not covered by this — see [Bounded reads](#bounded-reads). |
-| `NATS_USER` | *(unset)* | NATS username for bcrypt username/password auth, used alongside `NATS_PASSWORD`. Ignored if `NATS_CREDS` is also set (creds-file JWT auth wins). |
-| `NATS_PASSWORD` | *(unset)* | NATS password — see `NATS_USER`. |
-
-## Install
-
-### npm (recommended)
-
-```bash
-npm install -g @tadmstr/searxng-mcp
-```
-
-Or run directly with `npx`:
-
-```bash
-npx @tadmstr/searxng-mcp
-```
-
-### From source
-
-```bash
-git clone https://github.com/TadMSTR/searxng-mcp.git
-cd searxng-mcp
-pnpm install
-pnpm build
-```
-
-Output: `build/src/index.js`
-
-## MCP Client Configuration
-
-### Claude Code (CLI)
-
-The recommended approach uses `claude mcp add-json` to register the server with full env var support:
-
-```bash
-claude mcp add-json searxng --scope user '{
-  "command": "npx",
-  "args": ["-y", "@tadmstr/searxng-mcp"],
-  "env": {
-    "SEARXNG_URL": "http://localhost:8081",
-    "FIRECRAWL_URL": "http://localhost:3002",
-    "RERANKER_URL": "http://localhost:8787",
-    "OLLAMA_URL": "http://localhost:11434",
-    "CACHE_URL": "redis://localhost:6379",
-    "CACHE_TTL_SECONDS": "3600",
-    "FETCH_CACHE_TTL_SECONDS": "86400",
-    "EXPAND_QUERIES": "false",
-    "CRAWL4AI_URL": "http://localhost:11235"
-  }
-}'
-```
-
-This writes to `~/.claude.json`. Do not add searxng to `~/.claude/settings.json` — that file is not used for MCP env var injection in Claude Code.
-
-### Claude Desktop (`claude_desktop_config.json`)
-
-```json
-{
-  "mcpServers": {
-    "searxng": {
-      "command": "npx",
-      "args": ["-y", "@tadmstr/searxng-mcp"],
-      "env": {
-        "SEARXNG_URL": "http://localhost:8081",
-        "FIRECRAWL_URL": "http://localhost:3002",
-        "RERANKER_URL": "http://localhost:8787",
-        "OLLAMA_URL": "http://localhost:11434",
-        "CACHE_URL": "redis://localhost:6379",
-        "CRAWL4AI_URL": "http://localhost:11235"
-      }
-    }
-  }
-}
-```
-
-### LibreChat (`librechat.yaml`)
-
-```yaml
-mcpServers:
-  searxng:
-    type: stdio
-    command: node
-    args:
-      - /path/to/searxng-mcp/build/src/index.js
-    env:
-      SEARXNG_URL: http://localhost:8081
-      FIRECRAWL_URL: http://localhost:3002
-      RERANKER_URL: http://localhost:8787
-      OLLAMA_URL: http://localhost:11434
-      CACHE_URL: redis://localhost:6379
-      CRAWL4AI_URL: http://localhost:11235
-```
-
-## GitHub URLs
-
-GitHub URLs are handled natively without Firecrawl. `githubFetch` dispatches on hostname:
-
-- **Repo root** (`github.com/owner/repo`) — fetches the README via the GitHub API
-- **File blob** (`github.com/owner/repo/blob/branch/path/to/file`) — rewrites to and fetches raw content from `raw.githubusercontent.com`
-- **Raw file** (`raw.githubusercontent.com/...`) — fetched directly as-is
-- **API** (`api.github.com/...`) — response decoded (base64 `content` fields) or pretty-printed as JSON
-
-Direct `raw.githubusercontent.com` and `api.github.com` URLs previously matched only `github.com` and fell through to the HTML-scraping tier cascade, which cannot render a raw text file or bare JSON response — they failed 100% of the time. They now take the GitHub fast path.
-
-Unauthenticated requests are rate-limited to 60/hour. Set `GITHUB_TOKEN` to raise this to 5,000/hour.
-
-## Security
-
-### URL safety (SSRF)
-
-Every outbound fetch to a caller-influenced or discovered URL — the raw-HTTP tier, robots.txt / llms.txt / Wayback / sitemap probes, the BFS crawl link-fetch, and the GitHub fast path — is guarded two ways:
-
-1. **String check** (`assertPublicUrl`) — rejects non-HTTP(S) URLs and private/internal IP *literals*: RFC1918 (`10.x`, `192.168.x`, `172.16–31.x`), loopback (`127.x`, `::1`), link-local / cloud metadata (`169.254.x`), CGNAT (`100.64/10`), IPv6 ULA (`fc00::/7`) and link-local (`fe80::/10`), IPv4-mapped, and multicast/reserved ranges.
-2. **Connect-time DNS validation** — a shared undici dispatcher whose `connect.lookup` validates the *resolved* address (the exact one the socket connects to). This closes the DNS-rebinding / TOCTOU gap where a public hostname resolves to a private address, and it re-runs on **every redirect hop**, so a redirect chain cannot bounce into your internal network.
-
-Firecrawl (tier1) and Crawl4AI (tier2) resolve and fetch the target URL themselves, so the connect-time dispatcher above can't cover them. `fetchPage` and `crawlSite` call `assertResolvedPublic(url)` — a one-time hostname resolution rejecting any private/reserved result — immediately before dispatching to either service, closing the common DNS-rebinding case on that path (narrower TOCTOU window than the connect-time guard, since the service re-resolves).
-
-Configured internal services (Firecrawl, Crawl4AI, SearXNG, Ollama, Reranker) are reached by their own URLs and are intentionally not guarded.
-
-### Redirect protection
-
-The raw-HTTP and GitHub fast-path fetches additionally use `redirect: "manual"` and reject 3xx responses outright (the `Location` header is never echoed back to the caller). Redirect-following probes (robots.txt, llms.txt, sitemap) are covered by the connect-time DNS validation above, which re-checks each hop.
-
-### Transport exposure
-
-stdio has no network surface. The HTTP transport binds `127.0.0.1` by default and is unauthenticated in that configuration; moving it off loopback without setting `SEARXNG_MCP_AUTH_TOKEN` exposes every tool — including arbitrary-URL `fetch_url` and destructive `clear_cache` — to anything that can route to the port. See [HTTP transport authentication](#http-transport-authentication).
-
-### Bounded reads
-
-Every response body read from a third party, and the one request body this server reads itself, stops at a byte limit and cancels the rest of the stream rather than buffering the whole thing and checking its size afterwards. A post-hoc size check has already paid the memory cost it is trying to avoid.
-
-| Read | Limit | Notes |
-|---|---|---|
-| Fetch tiers (raw, Firecrawl, Crawl4AI, solver, Wayback, Reddit, YouTube, GitHub, sitemap/crawl) | `RAW_HTML_MAX_BYTES` (2 MB) | Shared `readBoundedText` helper. |
-| `llms-full.txt` probe | `MAX_SIZE_BYTES` (64 MB) | Read one byte past the ceiling so an oversized document is still *detected* as oversized and reported absent, rather than truncated to the limit and served as if complete. |
-| HTTP transport request body | `HTTP_MAX_BODY_BYTES` (1 MB) | `initialize` path only; `413` on exceeding. |
-
-The bound is on **bytes retained**, not bytes transferred. Cancellation is not instantaneous — socket buffers and in-flight data mean a peer can still push some way past the cap — so this hard-bounds memory and only reduces transfer (measured roughly 10x against a 40 MB stub).
-
-**One limitation, out of this server's control:** requests carrying an `Mcp-Session-Id` are handled by the MCP SDK's `StreamableHTTPServerTransport.handleRequest()`, which reads its own request body. That read is not bounded by anything here. It is reachable only by a caller that has already authenticated and established a session.
-
-Reads from first-party services configured by the operator — SearXNG and Ollama — are deliberately left unbounded. They are not attacker-influenced, and bounding them would add ceremony without changing a threat.
-
-### Dependency auditing
-
-CI runs `pnpm audit` on every push. The lockfile (`pnpm-lock.yaml`) is committed for reproducible, auditable builds.
-
-### Credential handling
-
-Basic-auth credentials embedded in `SEARXNG_URL` are extracted at startup and sent as an `Authorization` header; the URL used for the request, for cache keys, for log lines, for NATS events and for error messages is always the credential-free origin. This matters more than it looks: Node's `fetch` refuses a URL containing userinfo outright and puts the whole URL — password included — into the resulting `TypeError`'s message, so leaving credentials in the URL would both break every request and leak the password into any sink that forwards an error message.
-
-No credentials are stored or logged by the server. API keys (`FIRECRAWL_API_KEY`, `GITHUB_TOKEN`, `CRAWL4AI_API_TOKEN`) are read from environment variables and used only in outbound requests to their respective services.
-
-### Input validation
-
-Environment variables are validated at startup — `RERANK_RECENCY_WEIGHT` warns on NaN, negative, or >1.0 values. Numeric tool parameters use `z.coerce.number()` with range constraints.
+| [Configuration](docs/configuration.md) | Every environment variable, and setup for each optional backing service. |
+| [Tools](docs/tools.md) | Full per-tool parameter reference. |
+| [Deployment](docs/deployment.md) | Install, transports, HTTP auth, and MCP client recipes. |
+| [Architecture](docs/architecture.md) | Fetch cascade, tier semantics, domain capability database. |
+| [Security](docs/security.md) | SSRF, redirects, transport exposure, bounded reads, credentials. |
+
+Index: [`docs/index.md`](docs/index.md).
 
 ## Contributing
 

@@ -72,7 +72,11 @@ export interface FirecrawlScrapeResponse {
   success: boolean;
   data?: {
     markdown?: string;
+    // Two spellings of one field: v2 returns `html`, v1 returns `rawHtml`,
+    // matching whichever was asked for in `formats`. See
+    // FirecrawlCapabilities.htmlFormat.
     html?: string;
+    rawHtml?: string;
     metadata?: {
       title?: string;
       sourceURL?: string;

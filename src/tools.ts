@@ -669,6 +669,15 @@ const SingleDomainOutputSchema = z.object({
 });
 
 const AggregateOutputSchema = z.object({
+  // Declared, not just emitted: the SDK validates structuredContent against
+  // this schema before it leaves the server, so a field missing here is a field
+  // the caller never receives however faithfully the handler builds it.
+  schema_version: z.number(),
+  window: z.object({
+    oldest_sample_ms: z.number().nullable(),
+    elapsed_ms: z.number().nullable(),
+    ttl_ceiling_ms: z.number(),
+  }),
   domains_tracked: z.number(),
   seen_never_fetched: z.number(),
   tiers: AllTiersOutputSchema,

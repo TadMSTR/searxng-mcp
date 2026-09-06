@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mockFetch = vi.fn();
 vi.stubGlobal("fetch", mockFetch);
@@ -104,18 +104,87 @@ describe("rawFetch", () => {
     expect(result.text.length).toBeLessThanOrEqual(10);
   });
 
-  it("throws descriptive error on PDF content-type", async () => {
+  it("throws a descriptive error on a real PDF — header AND %PDF- signature", async () => {
+    // Note the real body stream. The previous version of this test passed
+    // `body: null` with a `text()` stub, so readBoundedText took its no-reader
+    // path and returned "" — the assertion passed on the Content-Type alone and
+    // never once exercised a PDF body.
     mockFetch.mockResolvedValueOnce({
       ok: true,
       status: 200,
       statusText: "OK",
       headers: new Headers({ "Content-Type": "application/pdf" }),
-      body: null,
-      text: () => Promise.resolve("%PDF-1.4"),
+      body: bodyStream("%PDF-1.4\n%\xE2\xE3\xCF\xD3\n1 0 obj"),
     });
     await expect(rawFetch(URL)).rejects.toThrow(
       "PDF content cannot be extracted by raw fetch",
     );
+  });
+
+  it("does not claim PDF for a body declared application/pdf that is not one", async () => {
+    // An error page or interstitial served with the wrong Content-Type. Keying
+    // on the header alone turned these into a hard "this is a PDF" failure when
+    // Readability could extract them perfectly well (vikunja#682).
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      statusText: "OK",
+      headers: new Headers({ "Content-Type": "application/pdf" }),
+      body: bodyStream(
+        "<html><body><article><h1>Document unavailable</h1>" +
+          "<p>The requested document has been moved to the archive.</p>" +
+          "</article></body></html>",
+      ),
+    });
+    const result = await rawFetch(URL);
+    expect(result.text).toContain("moved to the archive");
+  });
+});
+
+describe("rawFetch — PDF failure message names the real cause", () => {
+  // The old message read "use Crawl4AI", which was wrong twice over: Crawl4AI
+  // cannot parse PDFs either, and reaching tier 3 at all means tier 1 already
+  // declined. What the operator needs to know is which of those two situations
+  // they are in, and that depends on the configured backend version.
+  const pdfResponse = () => ({
+    ok: true,
+    status: 200,
+    statusText: "OK",
+    headers: new Headers({ "Content-Type": "application/pdf" }),
+    body: bodyStream("%PDF-1.4\ntrailer"),
+  });
+
+  afterEach(() => {
+    delete process.env.FIRECRAWL_API_VERSION;
+    vi.resetModules();
+  });
+
+  it("under v1, points at the backend version — no config change will help", async () => {
+    process.env.FIRECRAWL_API_VERSION = "v1";
+    vi.resetModules();
+    const { rawFetch: freshRawFetch } = await import("../../src/tiers/raw.js");
+    mockFetch.mockResolvedValueOnce(pdfResponse());
+    await expect(freshRawFetch(URL)).rejects.toThrow(
+      /FIRECRAWL_API_VERSION is v1, which has no PDF support/,
+    );
+  });
+
+  it("under v2, points at tier 1 — PDFs are supported, so this URL is the problem", async () => {
+    process.env.FIRECRAWL_API_VERSION = "v2";
+    vi.resetModules();
+    const { rawFetch: freshRawFetch } = await import("../../src/tiers/raw.js");
+    mockFetch.mockResolvedValueOnce(pdfResponse());
+    await expect(freshRawFetch(URL)).rejects.toThrow(
+      /tier 1 \(Firecrawl\) handles PDFs but returned nothing/,
+    );
+  });
+
+  it("never tells the operator to use Crawl4AI, which cannot parse PDFs", async () => {
+    process.env.FIRECRAWL_API_VERSION = "v2";
+    vi.resetModules();
+    const { rawFetch: freshRawFetch } = await import("../../src/tiers/raw.js");
+    mockFetch.mockResolvedValueOnce(pdfResponse());
+    await expect(freshRawFetch(URL)).rejects.not.toThrow(/Crawl4AI/);
   });
 });
 

@@ -18,7 +18,6 @@ import { postExtract } from "./extractors/post-extract.js";
 import {
   assertPublicUrl,
   type FetchTuning,
-  isPdfUrl,
   type TierResult,
 } from "./fetch-utils.js";
 import { histerFetch } from "./hister.js";
@@ -33,7 +32,6 @@ import {
   fetchRawHtmlForMetadata,
   githubFetch,
   isGithubUrl,
-  tier2 as pdfTier,
   rawFetch,
   solverFetch,
   waybackFetch,
@@ -98,11 +96,63 @@ function applyPostExtract(
  * flag it sets is a local in fetchPage, so it is request-scoped by
  * construction — no shared or ambient state.
  */
+/**
+ * Why one tier did not produce content.
+ *
+ * `runTier` collapses every failure to `null`, which is right for the cascade —
+ * it just moves on — but wrong for the caller that has to explain the outcome
+ * once every tier is exhausted. The whole of vikunja#682 hid behind exactly
+ * that collapse: a null from one tier was reported as one specific cause
+ * ("CRAWL4AI_URL not configured") on a deployment where that cause was false,
+ * which sent an investigator to check configuration that was already correct.
+ * Carrying the reason out alongside the null is what stops the next such
+ * message from being invented.
+ */
+interface TierOutcome {
+  tier: TierName;
+  reason: string;
+}
+
+/**
+ * Cap on a single tier's failure reason in the surfaced error.
+ *
+ * Most reasons are short and ours — "attempted, no content", a status code. But
+ * one is neither: `data.error` from Firecrawl is upstream-controlled text of
+ * unbounded length, and this is the first change that relays a tier's own error
+ * to the caller rather than swallowing it. An error message is not a transport
+ * for an arbitrary upstream payload.
+ *
+ * Only length is bounded, not content. Every reason this can carry is already
+ * topology-safe by construction: SsrfBlockedError deliberately keeps the
+ * resolved address off its message, raw.ts's redirect throw deliberately omits
+ * the Location header, and the tier errors carry status codes rather than URLs.
+ */
+// SECURITY[accepted]: relaying Firecrawl's upstream `data.error` verbatim, bounded
+// to 200 chars, is accepted rather than classified down to a canned reason. This
+// server is loopback-only and its callers are forge agents that already hold the
+// requested URL, so the text discloses nothing they do not have; every other
+// reason this path can carry is topology-safe by construction (see boundReason).
+// Dropping the upstream string would claw back the diagnostic value this whole
+// change exists to add — "All fetch tiers failed" telling an investigator nothing
+// is what cost weeks on vikunja#682. Audit: 2026-09-06/searxng-mcp-fix-pass-2026-09,
+// finding OE-02 (Low). Decision: Ted, 2026-09-06.
+// SECURITY[control]: length bound below; content needs no filter because
+// SsrfBlockedError omits the resolved address and raw.ts's redirect throw omits
+// Location, both deliberately.
+const MAX_TIER_REASON_CHARS = 200;
+
+function boundReason(reason: string): string {
+  return reason.length > MAX_TIER_REASON_CHARS
+    ? `${reason.slice(0, MAX_TIER_REASON_CHARS)}…`
+    : reason;
+}
+
 async function runTier<T extends TierResult | null>(
   tier: TierName,
   url: string,
   fn: () => Promise<T>,
   onChallenge?: (signal: ChallengeSignal) => void,
+  onOutcome?: (outcome: TierOutcome) => void,
 ): Promise<T> {
   const t0 = Date.now();
   try {
@@ -117,6 +167,7 @@ async function runTier<T extends TierResult | null>(
       recordHistogram("fetch", latency_ms / 1000, { tier, outcome: "miss" });
       events.fetchTierMiss({ url, tier, reason: "empty_result", latency_ms });
       recordTierAttempt(url, tier, "miss", "empty_result").catch(() => {});
+      onOutcome?.({ tier, reason: "attempted, no content" });
     }
     return out;
   } catch (err) {
@@ -139,6 +190,7 @@ async function runTier<T extends TierResult | null>(
         () => {},
       );
       onChallenge?.(err.signal);
+      onOutcome?.({ tier, reason: CHALLENGE_MISS_REASON });
       return null as T;
     }
     const reason = err instanceof Error ? err.message : "error";
@@ -146,6 +198,7 @@ async function runTier<T extends TierResult | null>(
     recordHistogram("fetch", latency_ms / 1000, { tier, outcome: "error" });
     events.fetchTierMiss({ url, tier, reason, latency_ms });
     recordTierAttempt(url, tier, "error", reason).catch(() => {});
+    onOutcome?.({ tier, reason: boundReason(reason) });
     return null as T;
   }
 }
@@ -420,31 +473,27 @@ export async function fetchPage(
       // resolution (surfaces to the caller as a fetch error).
       await assertResolvedPublic(url);
 
-      // PDF fast path — Firecrawl can't extract PDF text; route directly to tier2.
-      if (isPdfUrl(url)) {
-        const pdfResult = await runTier("tier2_crawl4ai", url, () =>
-          pdfTier.fetch(url, storeChars, preferFit),
-        );
-        if (!pdfResult) {
-          throw new Error(
-            "PDF extraction requires Crawl4AI (CRAWL4AI_URL not configured)",
-          );
-        }
-        const persisted = {
-          title: pdfResult.title,
-          url: pdfResult.url,
-          text: pdfResult.text,
-        };
-        await cacheSet(key, JSON.stringify(persisted), FETCH_CACHE_TTL_SECONDS);
-        events.fetchCompleted({
-          url,
-          tier_served: "tier2_crawl4ai",
-          title: pdfResult.title,
-          text_len: pdfResult.text.length,
-          latency_ms: Date.now() - t_total,
-        });
-        return { ...persisted, text: persisted.text.slice(0, maxChars) };
-      }
+      // SECURITY[accepted]: PDF URLs now take this path to tier 1 rather than
+      // being diverted earlier, so they share tier 1's pre-existing SSRF-10
+      // exposure — Firecrawl and Crawl4AI resolve and connect in their own
+      // processes, so the pre-check above narrows but cannot fully close the
+      // DNS-rebinding TOCTOU window for them. No new code-level gap: the gap is
+      // unchanged, only the set of URLs traversing it grew. Audit:
+      // 2026-09-06/searxng-mcp-fix-pass-2026-09, finding SSRF-10 (Low) —
+      // auditor's own disposition was "no action required from this build".
+      // SECURITY[control]: assertResolvedPublic runs once here, before any tier
+      // dispatch, for every URL including PDFs.
+
+      // No PDF fast path. There used to be one here, routing every `.pdf` URL
+      // straight to tier 2 on the strength of "Firecrawl can't extract PDF
+      // text". That was true of trieve/firecrawl v0.0.55 and is false of v2,
+      // which extracts PDFs natively (see FirecrawlCapabilities.pdf). Worse,
+      // the tier it diverted to cannot do the job at all: Crawl4AI renders the
+      // PDF in a browser, finds no text nodes, and misfires its anti-bot
+      // heuristic, and the resulting null was reported as "CRAWL4AI_URL not
+      // configured" on containers where it plainly was. PDFs now take the
+      // ordinary cascade, so tier 1 serves them and a v1 backend degrades
+      // through to the message in tiers/raw.ts (vikunja#682).
 
       // Content-type fast path — a JSON/XML/YAML/CSV/plain-text endpoint has
       // nothing for a headless browser to render. Firecrawl returns empty
@@ -498,6 +547,16 @@ export async function fetchPage(
       // Run tier cascade and side-channel raw-HTML metadata fetch in parallel.
       const metadataHtmlPromise = fetchRawHtmlForMetadata(url);
 
+      // Why each tier produced nothing, in cascade order. Seeded with the
+      // tiers that never ran, so "skipped because unconfigured" and "ran and
+      // came back empty" stay distinguishable in the final error rather than
+      // collapsing into one unexplained failure (vikunja#682).
+      const outcomes: TierOutcome[] = skipDecisions.map((d) => ({
+        tier: TIER_NAME[d.tier],
+        reason: `skipped (${d.reason})`,
+      }));
+      const noteOutcome = (o: TierOutcome) => outcomes.push(o);
+
       let fetched: TierResult | null = null;
       for (const tier of activeTiers) {
         fetched = await runTier(
@@ -505,6 +564,7 @@ export async function fetchPage(
           url,
           () => tier.fetch(url, storeChars, preferFit, tuning),
           onChallenge,
+          noteOutcome,
         );
         if (fetched) {
           tierServed = tier.name;
@@ -533,8 +593,12 @@ export async function fetchPage(
       // wayback exactly as a tier miss does.
       if (!fetched && challengeDetected) {
         console.error(`[searxng-mcp] fetch solver_byparr attempt url=${url}`);
-        fetched = await runTier("solver_byparr", url, () =>
-          solverFetch(url, storeChars, tuning),
+        fetched = await runTier(
+          "solver_byparr",
+          url,
+          () => solverFetch(url, storeChars, tuning),
+          undefined,
+          noteOutcome,
         );
         if (fetched) {
           tierServed = "solver_byparr";
@@ -546,8 +610,12 @@ export async function fetchPage(
 
       if (!fetched && WAYBACK_ENABLED) {
         console.error(`[searxng-mcp] fetch tier4_wayback attempt url=${url}`);
-        fetched = await runTier("tier4_wayback", url, () =>
-          waybackFetch(url, storeChars),
+        fetched = await runTier(
+          "tier4_wayback",
+          url,
+          () => waybackFetch(url, storeChars),
+          undefined,
+          noteOutcome,
         );
         if (fetched) {
           tierServed = "tier4_wayback";
@@ -558,13 +626,21 @@ export async function fetchPage(
       }
 
       if (!fetched) {
+        // Name every tier and why. "All fetch tiers failed" on its own is the
+        // shape of error that hid #682 for weeks: it is equally consistent with
+        // nothing being configured, with a backend being down, and with the
+        // page genuinely having no content, so it sends the reader nowhere.
+        const detail = outcomes.map((o) => `${o.tier}: ${o.reason}`).join("; ");
+        const message = detail
+          ? `All fetch tiers failed — ${detail}`
+          : "All fetch tiers failed";
         events.error({
           stage: "fetch",
           url,
           error_type: "all_tiers_failed",
-          message: "All fetch tiers failed",
+          message,
         });
-        throw new Error("All fetch tiers failed");
+        throw new Error(message);
       }
 
       const tierFetched: TierResult = fetched;
