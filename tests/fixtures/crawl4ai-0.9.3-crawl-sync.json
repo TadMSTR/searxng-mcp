@@ -1,0 +1,29 @@
+{
+  "_captured": {
+    "captured": "2026-09-06",
+    "crawl4ai_version": "0.9.3",
+    "source": "POST /crawl {\"urls\":[\"https://example.com\"]} on a scratch unclecode/crawl4ai:0.9.3, bearer set",
+    "note": "Trimmed to the fields this tier reads; nesting is unmodified. Full html/cleaned_html elided for size."
+  },
+  "success": true,
+  "results": [
+    {
+      "url": "https://example.com",
+      "success": true,
+      "markdown": {
+        "raw_markdown": "# Example Domain\nThis domain is for use in documentation examples without needing permission. Avoid use in operations.\n[Learn more](https://iana.org/domains/example)\n",
+        "markdown_with_citations": "# Example Domain\nThis domain is for use in documentation examples without needing permission. Avoid use in operations.\nLearn more\u27e81\u27e9\n",
+        "references_markdown": "\n\n## References\n\n\u27e81\u27e9 https://iana.org/domains/example: Learn more\n",
+        "fit_markdown": "",
+        "fit_html": ""
+      },
+      "metadata": {
+        "title": "Example Domain",
+        "description": null,
+        "keywords": null,
+        "author": null
+      },
+      "html": "<!DOCTYPE html><html lang=\"en\"><head><title>Example Domain</title><link rel=\"icon\" href=\"data:,\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><style>body{background:#eee;width:6"
+    }
+  ]
+}

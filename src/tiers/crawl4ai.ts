@@ -18,8 +18,82 @@ import {
  * and each was indistinguishable from "the page had no content". The route and
  * shape assertions in tests/tiers/crawl4ai-job-api.test.ts run against a
  * fixture captured from this version's live /openapi.json.
+ *
+ * Moved 0.8.6 → 0.9.3 against a scratch 0.9.3 container, not against the
+ * changelog. What that probe established, and what this tier now relies on:
+ *
+ *   - `/crawl/job/{task_id}` still exists; `/task/{task_id}` still does not.
+ *     Both fixtures are kept and both are asserted, so "works on 0.9.3" cannot
+ *     quietly become "no longer works on 0.8.6" — the deployed server is still
+ *     0.8.6 when this ships.
+ *   - The synchronous response is the *same* shape, `{results: [{markdown:
+ *     {raw_markdown, fit_markdown, …}, metadata}]}`. 0.9.x was the untested
+ *     third possibility; it turned out not to be one.
+ *   - `proxy_config` is refused with HTTP 400 "field 'proxy_config' is not
+ *     permitted on BrowserConfig from an untrusted request". `crawler_config`
+ *     with css_selector and wait_for is accepted, so tuning still works.
+ *   - 4xx keeps `{detail}`; only 5xx becomes `{error, correlation_id}`.
  */
-export const CRAWL4AI_TARGET_VERSION = "0.8.6";
+export const CRAWL4AI_TARGET_VERSION = "0.9.3";
+
+/**
+ * An error this tier raised about the backend, as opposed to one thrown at it.
+ *
+ * The distinction exists so the outer transport handler can tell "the network
+ * failed" from "we already described what went wrong" — without it a 401 came
+ * out as `Crawl4AI: Crawl4AI error: 401 …`, wrapped by the handler meant for
+ * raw fetch rejections.
+ */
+class Crawl4aiError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "Crawl4aiError";
+  }
+}
+
+let warnedAboutMissingToken = false;
+
+/**
+ * Explain a tokenless auth failure, once, at the moment one actually happens.
+ *
+ * The plan asked for this to fire pre-emptively whenever the target version is
+ * 0.9.x and no token is set. Built that way first, and it was wrong: this
+ * client ships *before* the server upgrade, so for the whole window between
+ * the two it would warn on every crawl against a healthy 0.8.6 that needs no
+ * token and works perfectly. Verified against the deployed 0.8.6 — a false
+ * alarm on a working system, which is how a warning gets trained away exactly
+ * before the release where it matters.
+ *
+ * Firing on an observed failure instead is both quieter and stronger: it does
+ * not depend on the target constant being accurate about the live server. It
+ * covers the two shapes a tokenless 0.9.x actually presents, which are not the
+ * same failure:
+ *
+ *   - HTTP 401, when the server did bind its published port.
+ *   - A connection reset, when it did not. With no token, 0.9.x binds the
+ *     *container's* loopback; `docker ps` reports healthy, the container's own
+ *     /health returns 200, and the published port resets. Reproduced on a
+ *     scratch 0.9.3: healthy at 45s uptime, curl exit 56 from the host.
+ *
+ * /health is unauthenticated even when a token IS set, so no healthcheck at
+ * any layer distinguishes either case. This line is the only signal.
+ */
+function warnTokenlessAuthFailure(observed: string): void {
+  if (warnedAboutMissingToken || CRAWL4AI_API_TOKEN) return;
+  warnedAboutMissingToken = true;
+  console.error(
+    `[searxng-mcp] crawl4ai refused the request (${observed}) and CRAWL4AI_API_TOKEN is not set. ` +
+      `crawl4ai ${CRAWL4AI_TARGET_VERSION} requires auth: with no token it binds the container's ` +
+      "loopback, so the published port answers with a connection reset while the container still " +
+      "reports healthy, and /health stays unauthenticated so no healthcheck will show it. " +
+      "Set the same token on both crawl4ai and searxng-mcp.",
+  );
+}
+
+/** Test seam: the warning fires once per process by design. */
+export function resetCrawl4aiTokenWarning(): void {
+  warnedAboutMissingToken = false;
+}
 
 /**
  * Upper bound on how much of crawl4ai's error prose is relayed into a tier
@@ -49,12 +123,24 @@ const NET_ERROR = /net::ERR_[A-Z_]+/;
  */
 export function crawl4aiErrorReason(label: string, body: string): string {
   let detail = "";
+  let correlationId: string | undefined;
   try {
     const parsed = JSON.parse(body) as Record<string, unknown>;
-    // 0.8.6 answers `{detail}`. 0.9.x's generic 5xx shape is handled in the
-    // Phase 2 change; both are read here so neither version is silent.
+    // Both server generations, verified against each: 0.8.6 and 0.9.x 4xx use
+    // `{detail}`, and 0.9.x 5xx becomes `{error, correlation_id}` with the
+    // message deliberately generic. `detail` is not always a string — a 422
+    // validation failure makes it an array of objects, which read as a string
+    // would silently drop the entire reason.
     if (typeof parsed.detail === "string") detail = parsed.detail;
+    else if (parsed.detail !== undefined)
+      detail = JSON.stringify(parsed.detail);
     else if (typeof parsed.error === "string") detail = parsed.error;
+
+    // The generic 5xx text says nothing on its own — the correlation id is the
+    // only way to find the real error in the server's logs, so it is the one
+    // part that must not be dropped.
+    if (typeof parsed.correlation_id === "string")
+      correlationId = parsed.correlation_id;
   } catch {
     detail = body;
   }
@@ -63,8 +149,13 @@ export function crawl4aiErrorReason(label: string, body: string): string {
   const netErr = flat.match(NET_ERROR)?.[0];
   const head = flat.slice(0, MAX_UPSTREAM_DETAIL_CHARS);
   const prose = flat.length > MAX_UPSTREAM_DETAIL_CHARS ? `${head}…` : head;
+  const corr = correlationId
+    ? `[correlation_id=${correlationId.slice(0, 64)}]`
+    : undefined;
 
-  return [label, netErr, prose].filter(Boolean).join(" ");
+  // corr goes before the prose for the same reason netErr does: it has to
+  // survive a downstream truncation, and it is the actionable half.
+  return [label, netErr, corr, prose].filter(Boolean).join(" ");
 }
 
 /**
@@ -150,7 +241,8 @@ export async function pollCrawl4aiTask(
     await new Promise((r) => setTimeout(r, 2000));
     // The only signal reaching here is crawl4aiFetch's own 45s controller, so
     // an abort is this client giving up rather than a caller cancelling.
-    if (signal.aborted) throw new Error("Crawl4AI timeout while polling job");
+    if (signal.aborted)
+      throw new Crawl4aiError("Crawl4AI timeout while polling job");
 
     try {
       const resp = await fetch(`${CRAWL4AI_URL}/crawl/job/${taskId}`, {
@@ -166,7 +258,7 @@ export async function pollCrawl4aiTask(
               `route or task expiry changed? this tier targets crawl4ai ${CRAWL4AI_TARGET_VERSION}`,
           );
         }
-        throw new Error(
+        throw new Crawl4aiError(
           crawl4aiErrorReason(
             `Crawl4AI error: ${resp.status}`,
             await readBoundedText(resp),
@@ -195,7 +287,7 @@ export async function pollCrawl4aiTask(
           typeof data.error === "string"
             ? data.error
             : JSON.stringify(data.result ?? {});
-        throw new Error(
+        throw new Crawl4aiError(
           crawl4aiErrorReason(
             "Crawl4AI job failed:",
             JSON.stringify({ detail }),
@@ -203,8 +295,9 @@ export async function pollCrawl4aiTask(
         );
       }
     } catch (err) {
+      if (err instanceof Crawl4aiError) throw err;
       if (err instanceof Error && err.name === "AbortError") {
-        throw new Error("Crawl4AI timeout while polling job");
+        throw new Crawl4aiError("Crawl4AI timeout while polling job");
       }
       throw err;
     }
@@ -213,7 +306,7 @@ export async function pollCrawl4aiTask(
   // Falling out of the loop means the job never reached a terminal state
   // inside the poll budget. That is a backend that is too slow or stuck, not
   // a page with no content.
-  throw new Error("Crawl4AI job poll deadline exceeded (40s)");
+  throw new Crawl4aiError("Crawl4AI job poll deadline exceeded (40s)");
 }
 
 export async function crawl4aiFetch(
@@ -224,6 +317,10 @@ export async function crawl4aiFetch(
 ): Promise<TierResult | null> {
   if (!CRAWL4AI_URL) return null;
 
+  // Well inside 0.9.x's 300s per-crawl wall clock, so the server's cap is
+  // never what ends a request here — this client always gives up first. The
+  // poll deadline below is 40s, so a crawl slower than that is abandoned
+  // client-side; that is unchanged from 0.8.6 and is deliberate.
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 45_000);
 
@@ -284,7 +381,10 @@ export async function crawl4aiFetch(
     // thrown on this and runTier already records a thrown reason as an
     // `error` outcome; tier 2 was the outlier.
     if (!resp.ok) {
-      throw new Error(
+      if (resp.status === 401 || resp.status === 403) {
+        warnTokenlessAuthFailure(`HTTP ${resp.status}`);
+      }
+      throw new Crawl4aiError(
         crawl4aiErrorReason(
           `Crawl4AI error: ${resp.status}`,
           await readBoundedText(resp),
@@ -316,7 +416,7 @@ export async function crawl4aiFetch(
       // Path-traversal guard on a value that goes into a URL path. Unchanged
       // in what it refuses; it now says so instead of passing for a miss.
       if (!/^[a-zA-Z0-9_-]{1,64}$/.test(data.task_id)) {
-        throw new Error("Crawl4AI returned a malformed task_id");
+        throw new Crawl4aiError("Crawl4AI returned a malformed task_id");
       }
       return await pollCrawl4aiTask(
         data.task_id,
@@ -336,10 +436,19 @@ export async function crawl4aiFetch(
     // CRAWL4AI_API_TOKEN binds the container's loopback and answers published
     // ports with a connection reset *while reporting healthy*, so a silent
     // null here would be the only symptom of a dead tier.
+    // Already described by this tier — re-wrapping produced the duplicated
+    // "Crawl4AI: Crawl4AI error: 401 …" that the live 0.9.3 probe surfaced.
+    if (err instanceof Crawl4aiError) throw err;
     if (err instanceof Error && err.name === "AbortError") {
-      throw new Error("Crawl4AI timeout after 45s");
+      throw new Crawl4aiError("Crawl4AI timeout after 45s");
     }
-    throw new Error(describeTransportFailure(err));
+    const described = describeTransportFailure(err);
+    // A connection reset with no token configured is the other face of the
+    // same misconfiguration as a 401 — the server bound container-loopback.
+    if (/ECONNRESET|ECONNREFUSED/.test(described)) {
+      warnTokenlessAuthFailure(described);
+    }
+    throw new Crawl4aiError(described);
   } finally {
     clearTimeout(timeout);
   }

@@ -55,10 +55,17 @@ beforeEach(() => {
 });
 
 describe("crawl4ai job route, against the deployed OpenAPI document", () => {
-  it("targets the crawl4ai version the fixture was captured from", () => {
-    // If someone refreshes the fixture from a newer instance without revisiting
-    // this tier, this is what says so.
-    expect(CRAWL4AI_TARGET_VERSION).toBe(openapi._captured.crawl4ai_version);
+  it("still supports the 0.8.6 server this fixture was captured from", () => {
+    // The version-equality assertion moved to crawl4ai-0-9-compat.test.ts when
+    // the target became 0.9.3. It cannot live here any more, but this file's
+    // fixture is not stale: 0.8.6 is what is *deployed*, and this client ships
+    // before the server upgrade. So the surviving obligation is backward
+    // compatibility — the route this tier polls must exist on 0.8.6 too.
+    expect(openapi._captured.crawl4ai_version).toBe("0.8.6");
+    expect(CRAWL4AI_TARGET_VERSION).not.toBe(
+      openapi._captured.crawl4ai_version,
+    );
+    expect(Object.keys(openapi.paths)).toContain("/crawl/job/{task_id}");
   });
 
   it("exposes the job status route this tier polls", () => {

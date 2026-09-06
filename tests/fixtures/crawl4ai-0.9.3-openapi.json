@@ -1,0 +1,178 @@
+{
+  "_captured": {
+    "captured": "2026-09-06",
+    "crawl4ai_version": "0.9.3",
+    "source": "GET /openapi.json on a scratch unclecode/crawl4ai:0.9.3 started with CRAWL4AI_API_TOKEN set"
+  },
+  "info": {
+    "title": "Crawl4AI API",
+    "version": "1.0.0"
+  },
+  "paths": {
+    "/": {
+      "get": {
+        "operationId": "root__get"
+      }
+    },
+    "/artifacts/{artifact_id}": {
+      "get": {
+        "operationId": "get_artifact_artifacts__artifact_id__get"
+      }
+    },
+    "/ask": {
+      "get": {
+        "operationId": "get_context_ask_get"
+      }
+    },
+    "/config/dump": {
+      "post": {
+        "operationId": "config_dump_config_dump_post"
+      }
+    },
+    "/crawl": {
+      "post": {
+        "operationId": "crawl_crawl_post"
+      }
+    },
+    "/crawl/job": {
+      "post": {
+        "operationId": "crawl_job_enqueue_crawl_job_post"
+      }
+    },
+    "/crawl/job/{task_id}": {
+      "get": {
+        "operationId": "crawl_job_status_crawl_job__task_id__get"
+      }
+    },
+    "/crawl/stream": {
+      "post": {
+        "operationId": "crawl_stream_crawl_stream_post"
+      }
+    },
+    "/execute_js": {
+      "post": {
+        "operationId": "execute_js_execute_js_post"
+      }
+    },
+    "/health": {
+      "get": {
+        "operationId": "health_health_get"
+      }
+    },
+    "/hooks/info": {
+      "get": {
+        "operationId": "get_hooks_info_hooks_info_get"
+      }
+    },
+    "/html": {
+      "post": {
+        "operationId": "generate_html_html_post"
+      }
+    },
+    "/llm/job": {
+      "post": {
+        "operationId": "llm_job_enqueue_llm_job_post"
+      }
+    },
+    "/llm/job/{task_id}": {
+      "get": {
+        "operationId": "llm_job_status_llm_job__task_id__get"
+      }
+    },
+    "/llm/{url}": {
+      "get": {
+        "operationId": "llm_endpoint_llm__url__get"
+      }
+    },
+    "/mcp/schema": {
+      "get": {
+        "operationId": "_schema_endpoint_mcp_schema_get"
+      }
+    },
+    "/md": {
+      "post": {
+        "operationId": "get_markdown_md_post"
+      }
+    },
+    "/metrics": {
+      "get": {
+        "operationId": "metrics_metrics_get"
+      }
+    },
+    "/monitor/actions/cleanup": {
+      "post": {
+        "operationId": "force_cleanup_monitor_actions_cleanup_post"
+      }
+    },
+    "/monitor/actions/kill_browser": {
+      "post": {
+        "operationId": "kill_browser_monitor_actions_kill_browser_post"
+      }
+    },
+    "/monitor/actions/restart_browser": {
+      "post": {
+        "operationId": "restart_browser_monitor_actions_restart_browser_post"
+      }
+    },
+    "/monitor/browsers": {
+      "get": {
+        "operationId": "get_browsers_monitor_browsers_get"
+      }
+    },
+    "/monitor/endpoints/stats": {
+      "get": {
+        "operationId": "get_endpoint_stats_monitor_endpoints_stats_get"
+      }
+    },
+    "/monitor/health": {
+      "get": {
+        "operationId": "get_health_monitor_health_get"
+      }
+    },
+    "/monitor/logs/errors": {
+      "get": {
+        "operationId": "get_errors_log_monitor_logs_errors_get"
+      }
+    },
+    "/monitor/logs/janitor": {
+      "get": {
+        "operationId": "get_janitor_log_monitor_logs_janitor_get"
+      }
+    },
+    "/monitor/requests": {
+      "get": {
+        "operationId": "get_requests_monitor_requests_get"
+      }
+    },
+    "/monitor/stats/reset": {
+      "post": {
+        "operationId": "reset_stats_monitor_stats_reset_post"
+      }
+    },
+    "/monitor/timeline": {
+      "get": {
+        "operationId": "get_timeline_monitor_timeline_get"
+      }
+    },
+    "/pdf": {
+      "post": {
+        "operationId": "generate_pdf_pdf_post"
+      }
+    },
+    "/schema": {
+      "get": {
+        "operationId": "get_schema_schema_get"
+      }
+    },
+    "/screenshot": {
+      "post": {
+        "operationId": "generate_screenshot_screenshot_post"
+      }
+    },
+    "/token": {
+      "post": {
+        "operationId": "get_token_token_post"
+      }
+    }
+  }
+}
