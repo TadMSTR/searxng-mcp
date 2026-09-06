@@ -26,6 +26,7 @@ import {
   type TierResult,
 } from "../fetch-utils.js";
 import { assertResolvedPublic } from "../ssrf-guard.js";
+import { warnDependencyFailure } from "../transport-failure.js";
 import { type RawFetchHeaders, rawFetch } from "./raw.js";
 
 interface SolverCookie {
@@ -140,10 +141,21 @@ export async function solverFetch(
       // its deadline still gets to answer, but never hang unbounded.
       signal: AbortSignal.timeout(SOLVER_MAX_TIMEOUT_MS + 10_000),
     });
-  } catch {
+  } catch (err) {
+    // A solver that is down, misaddressed or past its deadline produced the
+    // same `null` as a solver that ran and could not solve the challenge. The
+    // first is an outage of the whole tier; the second is the common case it
+    // exists to handle. Returning null is still right — the cascade must carry
+    // on — but the two have to be tellable apart in a log (vikunja#687).
+    warnDependencyFailure(err, "solver");
     return null;
   }
-  if (!res.ok) return null;
+  if (!res.ok) {
+    console.error(
+      `[searxng-mcp] solver returned HTTP ${res.status} — the tier is not solving, which is not the same as failing to solve`,
+    );
+    return null;
+  }
 
   let solution: SolverSolution;
   try {
@@ -155,7 +167,12 @@ export async function solverFetch(
     const data = JSON.parse(body) as { solution?: SolverSolution };
     if (!data.solution || typeof data.solution !== "object") return null;
     solution = data.solution;
-  } catch {
+  } catch (err) {
+    // An unreadable or unparseable body is the solver answering in a shape we
+    // do not speak — a backend fault, not a failed solve.
+    console.error(
+      `[searxng-mcp] solver response unusable: ${err instanceof Error ? err.message : String(err)}`,
+    );
     return null;
   }
 
@@ -190,6 +207,9 @@ export async function solverFetch(
   try {
     solvedHost = new URL(solvedUrl).hostname;
   } catch {
+    // Reviewed (vikunja#687 class sweep): the solver handed back a URL that
+    // will not parse. Refusing it is the safe answer and the SSRF guard above
+    // already logged the interesting version of this case.
     return null;
   }
 
@@ -213,6 +233,11 @@ export async function solverFetch(
     return await rawFetch(solvedUrl, maxChars, tuning, headers);
   } catch (err) {
     if (err instanceof ChallengeDetectedError) throw err;
+    // The solve succeeded and the REPLAY failed. Null is still right — the
+    // cascade continues — but a transport failure here was indistinguishable
+    // from the solver having produced nothing useful, which sends an
+    // investigator to the solver rather than to the network.
+    warnDependencyFailure(err, "solver replay fetch");
     return null;
   }
 }

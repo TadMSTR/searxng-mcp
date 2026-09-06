@@ -415,7 +415,24 @@ export async function crawl4aiFetch(
       );
     }
 
-    return null;
+    // An empty `results` array IS an answer: the backend ran the crawl and
+    // found nothing. That is a real empty result and must stay `null`, or this
+    // tier starts erroring on pages that are genuinely blank.
+    //
+    // Note the branch above tests `.length > 0`, so it does NOT cover this —
+    // an early version of this guard threw here and converted every genuine
+    // empty crawl into a tier error. The test named "still treats an empty
+    // results array as a genuine empty answer" is what caught it.
+    if (Array.isArray(data.results)) return null;
+
+    // Neither `results` in any form nor a `task_id`: the backend is speaking a
+    // protocol we do not recognise — a version skew, or something else
+    // answering in its place (a proxy error page, an auth portal). Not an
+    // empty page. `null` here would be booked by runTier as `empty_result`,
+    // the exact conflation #690 existed to remove.
+    throw new Crawl4aiError(
+      "Crawl4AI returned 200 with neither results nor a task_id — unrecognised response shape",
+    );
   } catch (err) {
     // Transport failures reach here: connection refused, connection reset, DNS
     // failure, TLS rejection — and our own 45s abort. None of them mean the

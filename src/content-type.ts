@@ -152,6 +152,11 @@ export async function probeStructuredContent(
     if (!res.ok) return null;
     return classifyContentType(res.headers.get("content-type"));
   } catch {
+    // Reviewed (vikunja#687 class sweep): a best-effort HEAD probe whose null
+    // means "no structured-content fast path", routing to the normal cascade.
+    // A transport failure here will resurface at the real fetch a moment
+    // later, with the tier's own reporting — so this one does not need to
+    // speak, and making it throw would let a probe fail a fetchable URL.
     return null;
   }
 }

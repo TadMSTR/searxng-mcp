@@ -98,7 +98,8 @@ export async function shutdownObservability(): Promise<void> {
   try {
     await sdk.shutdown();
   } catch {
-    // best-effort
+    // Reviewed (vikunja#687 class sweep): shutdown path, same reasoning as
+    // shutdownEvents — no caller remains to receive the error.
   }
 }
 

@@ -61,7 +61,9 @@ export async function shutdownEvents(): Promise<void> {
   try {
     await nc.drain();
   } catch {
-    // best-effort
+    // Reviewed (vikunja#687 class sweep): shutdown path. Throwing here would
+    // fail the process teardown over an event bus we are already abandoning,
+    // and there is no caller left to inform.
   }
   nc = null;
 }

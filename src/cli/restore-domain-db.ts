@@ -62,6 +62,14 @@ export async function main(): Promise<number> {
     console.error("[restore-domain-db] Valkey unavailable — nothing restored");
     return 1;
   }
+  if (r.failed) {
+    console.error(
+      `[restore-domain-db] ABANDONED after ${r.restored} of ${r.total}: ${r.failed}. ` +
+        `The remaining ${r.total - r.restored - r.skipped} records were not attempted — ` +
+        `this is NOT a completed restore.`,
+    );
+    return 1;
+  }
   console.log(
     `[restore-domain-db] snapshot ${r.snapshotCreated}: restored ${r.restored}, skipped ${r.skipped} of ${r.total}`,
   );

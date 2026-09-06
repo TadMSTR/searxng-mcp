@@ -3,6 +3,7 @@ import { FETCH_CACHE_TTL_SECONDS } from "./config.js";
 import { recordLlmsFullProbe } from "./domain-db.js";
 import { getLlmsTxtAllowlist } from "./domains.js";
 import { readBoundedText, safeFetch, USER_AGENT } from "./fetch-utils.js";
+import { warnDependencyFailure } from "./transport-failure.js";
 
 const PROBE_PRESENT_TTL_SECONDS = 24 * 60 * 60;
 const PROBE_ABSENT_TTL_SECONDS = 7 * 24 * 60 * 60;
@@ -119,7 +120,14 @@ async function fetchLlmsFullTxt(origin: string): Promise<CachedLlmsFull> {
       return { status: "absent", fetched: new Date().toISOString() };
     }
     return { status: "present", body, fetched: new Date().toISOString() };
-  } catch {
+  } catch (err) {
+    // "absent" is a claim about the SITE — that it publishes no llms-full.txt —
+    // and it is cached and recorded against the domain. A transport failure
+    // supports no such claim. The status stays `absent` so the cascade behaves
+    // identically (the alternative is failing a fetch over an optional
+    // enrichment), but the failure is now visible rather than laundered into a
+    // fact about someone else's site.
+    warnDependencyFailure(err, "llms-full.txt");
     return { status: "absent", fetched: new Date().toISOString() };
   }
 }
@@ -248,7 +256,9 @@ function extractByUrlLine(
         text: segment.replace(/^---+\r?\n*/, "").trim(),
       };
     } catch {
-      // skip malformed URLs
+      // Reviewed (vikunja#687 class sweep): local parse over content already
+      // fetched; a malformed URL inside the document is a fact about the
+      // document.
     }
   }
   return null;
@@ -316,6 +326,8 @@ export async function tryLlmsTxtFetch(
   try {
     origin = new URL(url).origin;
   } catch {
+    // Reviewed (vikunja#687 class sweep): unparseable input URL, decided
+    // locally. No dependency was consulted.
     return null;
   }
   const cached = await getLlmsFullTxt(origin);

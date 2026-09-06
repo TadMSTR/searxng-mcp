@@ -25,6 +25,10 @@ import {
   SCHEMA_VERSION,
   TIER_SLOT_KEYS,
 } from "./domain-db.js";
+import {
+  describeTransportFailure,
+  isTransportFailure,
+} from "./transport-failure.js";
 
 const SNAPSHOT_PREFIX = "domain-db-";
 const SNAPSHOT_SUFFIX = ".json";
@@ -54,6 +58,16 @@ export interface RestoreResult {
   total: number;
   restored: number;
   skipped: number;
+  /**
+   * Set when the restore was ABANDONED because the datastore became
+   * unreachable, rather than completing with some records skipped.
+   *
+   * Without this the two were the same report. A Valkey that died after record
+   * four counted the remaining 1,287 as "skipped" and the CLI printed
+   * "restored 4, skipped 1287 of 1291" and exited 0 — a failed restore
+   * presented as a finished one whose snapshot was mostly stale.
+   */
+  failed?: string;
 }
 
 /**
@@ -129,7 +143,17 @@ export async function listSnapshots(dir: string): Promise<string[]> {
   let entries: string[];
   try {
     entries = await readdir(dir);
-  } catch {
+  } catch (err) {
+    // "Missing dir → empty" is the documented and intended case. But this also
+    // swallowed EACCES and EIO, and an unreadable snapshot directory returning
+    // `[]` means loadLatestSnapshot reports no restore point and pruneSnapshots
+    // silently prunes nothing — both indistinguishable from a fresh install.
+    const code = (err as { code?: string })?.code;
+    if (code !== "ENOENT") {
+      console.error(
+        `[searxng-mcp] snapshot directory ${dir} could not be listed: ${err instanceof Error ? err.message : String(err)} — reporting no snapshots, which is NOT the same as there being none`,
+      );
+    }
     return [];
   }
   return entries.filter((f) => SNAPSHOT_FILE_RE.test(f)).sort();
@@ -168,6 +192,10 @@ export async function loadLatestSnapshot(
     if (!Array.isArray(parsed.records)) return null;
     return parsed;
   } catch {
+    // Reviewed (vikunja#687 class sweep): a snapshot file that will not parse
+    // is a corrupt snapshot, and null is the documented "none/invalid" answer
+    // the restore path already handles. listSnapshots above now reports an
+    // unreadable DIRECTORY separately, which was the real gap.
     return null;
   }
 }
@@ -178,6 +206,10 @@ export async function loadLatestSnapshot(
  * overwrites a fresher-or-equal live record. Structurally invalid or
  * stale-schema records are skipped (LOW-1 guard). Best-effort per key — a
  * single failure is counted as skipped, not fatal.
+ *
+ * A TRANSPORT failure is different and aborts: if the connection has gone
+ * there is nothing left to be best-effort about, and counting every remaining
+ * record as "skipped" reports a dead datastore as a completed restore.
  */
 export async function applyRestore(
   client: RestoreClient,
@@ -213,7 +245,18 @@ export async function applyRestore(
         DOMAIN_RECORD_TTL_SECONDS,
       );
       restored += 1;
-    } catch {
+    } catch (err) {
+      // One bad record is a skip. A dead connection is not — and every record
+      // after it would be "skipped" too, which is how a total failure came to
+      // look like a mostly-stale snapshot.
+      if (isTransportFailure(err)) {
+        return {
+          total: records.length,
+          restored,
+          skipped,
+          failed: describeTransportFailure(err, "domain database"),
+        };
+      }
       skipped += 1;
     }
   }

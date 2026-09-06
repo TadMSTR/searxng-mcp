@@ -238,3 +238,46 @@ describe("pollCrawl4aiTask", () => {
     vi.useRealTimers();
   });
 });
+
+/**
+ * The fallthrough at the end of crawl4aiFetch's try block.
+ *
+ * v3.25.0 fixed the tier's transport handling for vikunja#690/#687, but this
+ * path survived: a 200 carrying neither `results` nor a `task_id` returned
+ * `null`, and runTier books null as `empty_result` — the exact conflation that
+ * ticket existed to remove, one branch below the code that removed it.
+ *
+ * A backend answering 200 in a shape we do not recognise is a version skew or
+ * something else replying in its place (a proxy error page, an auth portal).
+ * It is not an empty page.
+ */
+describe("crawl4aiFetch on an unrecognised 200", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("throws rather than reporting the page as empty", async () => {
+    mockFetch.mockResolvedValueOnce(
+      new Response(JSON.stringify({ status: "ok", detail: "nothing here" }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }),
+    );
+    await expect(crawl4aiFetch(URL)).rejects.toThrow(
+      /unrecognised response shape/i,
+    );
+  });
+
+  it("still treats an empty results array as a genuine empty answer", async () => {
+    // The negative control. `results: []` IS the backend telling us it found
+    // nothing, and must keep returning null — otherwise this fix converts a
+    // real empty result into a tier error.
+    mockFetch.mockResolvedValueOnce(
+      new Response(JSON.stringify({ results: [] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }),
+    );
+    await expect(crawl4aiFetch(URL)).resolves.toBeNull();
+  });
+});
