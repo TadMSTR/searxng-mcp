@@ -6,6 +6,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [3.26.0] - 2026-09-06
 
+### Security
+
+- **Container sub-project dependencies are pinned and audited (audit LOW, 2026-09-06).**
+  `docker/adblock-proxy` and `docker/playwright-adblock` are not in the pnpm workspace, so
+  `pnpm audit --prod` never saw them — while both are built into **published** images, one an
+  unauthenticated forward proxy. A CVE in `@ghostery/adblocker` would have shipped silently.
+
+  Both now commit a lockfile and build with `npm ci` instead of `npm install <caret-range>`.
+  That closes the audit gap and a reproducibility one the audit did not raise: the caret range
+  re-resolved on every build, so two builds of the same commit could produce different
+  dependency trees — which quietly weakens the build-provenance attestation those images
+  publish. Both are pinned at `@ghostery/adblocker` 2.18.2.
+
+  CI gains a third audit step, separate from `--prod` and `--dev` for the same reason those
+  two are separate: "something we publish in a container is vulnerable" is a different
+  question from "something in the npm package is", and merging them makes the first
+  invisible. Verified the step can fail — injecting a package.json/lockfile drift makes
+  `npm ci` exit 1 with `Missing: left-pad@1.3.0`.
+
 ### Fixed
 
 - **A failure is no longer reported as a benign state (vikunja#695, #688, #687's survivors).**
