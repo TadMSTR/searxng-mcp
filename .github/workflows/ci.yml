@@ -151,3 +151,25 @@ jobs:
       # which fails if it has drifted from package.json.
       - name: Audit dependencies
         run: pnpm audit --prod
+
+      # The dev tree, gated separately and deliberately so (vikunja#634).
+      #
+      # `--prod` above covers what ships. Nothing covered the build and test
+      # tooling, and that gap was not theoretical: vite carried
+      # GHSA-fx2h-pf6j-xcff (high, server.fs.deny bypass) and
+      # GHSA-v6wh-96g9-6wx3 under vitest while CI stayed green for ten
+      # releases. A dev-only advisory does not reach a user, but it does reach
+      # every maintainer's workstation and this runner.
+      #
+      # A SEPARATE step, not `--prod` widened to the whole tree. Folding them
+      # together changes what a single red gate means: "something we ship is
+      # vulnerable" and "something we build with is vulnerable" warrant
+      # different responses and different urgency, and a merged step would make
+      # the first indistinguishable from the second.
+      #
+      # Same threshold reasoning as the step above — pnpm's default, no
+      # --audit-level. If a dev advisory lands with no fix in range, this step
+      # will block merges; take a narrow, dated, ticket-referenced `--ignore
+      # <CVE>` rather than raising the threshold or deleting the step.
+      - name: Audit dev dependencies
+        run: pnpm audit --dev
