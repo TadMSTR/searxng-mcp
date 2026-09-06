@@ -113,14 +113,17 @@ describe("pollCrawl4aiTask — route", () => {
     const spy = vi.spyOn(console, "error").mockImplementation(() => {});
     mockFetch.mockResolvedValue(new Response("not found", { status: 404 }));
 
-    const result = await pollCrawl4aiTask(
-      "crawl_gone",
-      "https://example.com",
-      8000,
-      new AbortController().signal,
-    );
+    // It now reports twice: the console line that names a route rename, and a
+    // thrown reason that reaches domain_stats instead of an `empty_result`.
+    await expect(
+      pollCrawl4aiTask(
+        "crawl_gone",
+        "https://example.com",
+        8000,
+        new AbortController().signal,
+      ),
+    ).rejects.toThrow(/Crawl4AI error: 404/);
 
-    expect(result).toBeNull();
     expect(spy).toHaveBeenCalledWith(expect.stringContaining("404"));
     spy.mockRestore();
   });
@@ -218,20 +221,21 @@ describe("pollCrawl4aiTask — completed job payload", () => {
     expect(result?.text).toBe("only nested");
   });
 
-  it("returns null on a failed job", async () => {
+  it("throws on a failed job rather than booking it as a miss", async () => {
     mockFetch.mockResolvedValue(
       new Response(JSON.stringify({ status: "failed", task_id: "crawl_f" }), {
         status: 200,
       }),
     );
 
-    const result = await pollCrawl4aiTask(
-      "crawl_f",
-      "https://example.com",
-      8000,
-      new AbortController().signal,
-    );
-
-    expect(result).toBeNull();
+    // A job the backend itself marked failed is not "the page had no content".
+    await expect(
+      pollCrawl4aiTask(
+        "crawl_f",
+        "https://example.com",
+        8000,
+        new AbortController().signal,
+      ),
+    ).rejects.toThrow(/Crawl4AI job failed/);
   });
 });
