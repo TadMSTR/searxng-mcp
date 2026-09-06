@@ -120,20 +120,23 @@ services:
     #           capabilities: [gpu]
 
   # ── Reranker (ML cross-encoder reranking) ────────────────────────────────────
-  # Options:
+  # This repo's own reranker: CPU-only, no API key, model baked into the image
+  # so there is no cold start. Source and contract in docker/reranker/.
+  #
+  # Alternatives, if you would rather run something else on port 8787:
   #   - Jina Reranker: docker pull jinaai/jina-reranker-v2-base-multilingual
   #   - Infinity with a cross-encoder model: https://github.com/michaelfeil/infinity
-  #   - Any OpenAI-compatible reranker API at port 8787
+  #   - Any service exposing a Jina-compatible /v1/rerank
   reranker:
-    image: michaelf34/infinity:latest # SECURITY[accepted]: latest tag — example file; pin for production
+    image: ghcr.io/tadmstr/searxng-mcp-reranker:latest # SECURITY[accepted]: latest tag — example file; pin for production
+    # To build from source instead of pulling:
+    # build: ./docker/reranker
     restart: unless-stopped
     ports:
-      - "127.0.0.1:8787:7997"
-    command:
-      - v2
-      - --model-id
-      - cross-encoder/ms-marco-MiniLM-L-6-v2
-    # GPU support: add deploy.resources.reservations.devices as above
+      # Loopback-only: the reranker has no authentication.
+      - "127.0.0.1:8787:8787"
+    environment:
+      - RERANKER_MODEL=ms-marco-MiniLM-L-12-v2
 
   # ── Kiwix (offline Wikipedia / Stack Overflow / Arch Wiki) ──────────────────
   # Requires ZIM files in ./kiwix-data/ — see https://download.kiwix.org/

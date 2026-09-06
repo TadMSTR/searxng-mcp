@@ -1,0 +1,39 @@
+# Standalone reranker. Run it from this directory with `docker compose up`.
+#
+# This file is deliberately self-contained: no external network, no reference
+# to any other repository. vikunja#692 existed because the documented adoption
+# path led to a compose file whose `build: .` had no Dockerfile beside it, so
+# "clone and up" is the acceptance criterion, not an incidental convenience.
+#
+# To integrate with a full searxng-mcp stack instead, see the reranker service
+# in ../../docker-compose.full.yml, which pulls the published image rather
+# than building.
+services:
+  reranker:
+    build: .
+    # Or skip the build entirely:
+    # image: ghcr.io/tadmstr/searxng-mcp-reranker:latest
+    container_name: reranker
+    environment:
+      - RERANKER_MODEL=ms-marco-MiniLM-L-12-v2
+    ports:
+      # Loopback-only. The service has no authentication of any kind — see the
+      # README. Publishing it on 0.0.0.0 exposes an unauthenticated CPU-bound
+      # endpoint that any caller can drive.
+      - "127.0.0.1:8787:8787"
+    restart: unless-stopped
+    healthcheck:
+      # The model is baked into the image, so this reports ready in seconds
+      # rather than after a 30-60s download. model_loaded is the field that
+      # distinguishes "serving" from "up but reranking nothing".
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request,json,sys; sys.exit(0 if json.load(urllib.request.urlopen('http://127.0.0.1:8787/health'))['model_loaded'] else 1)",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s

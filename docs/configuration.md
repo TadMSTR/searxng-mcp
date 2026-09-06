@@ -121,7 +121,14 @@ search:
 
 ## Reranker (recommended)
 
-The reranker must expose a Jina-compatible `/v1/rerank` endpoint. A lightweight FlashRank wrapper works well — see the [`docker/reranker/`](https://github.com/TadMSTR/homelab-agent/tree/main/docker/reranker) reference in [homelab-agent](https://github.com/TadMSTR/homelab-agent).
+The reranker must expose a Jina-compatible `/v1/rerank` endpoint. One ships in this repo — a CPU-only FlashRank wrapper needing no API key and no GPU:
+
+```bash
+cd docker/reranker && docker compose up      # or, without building:
+docker run -d -p 127.0.0.1:8787:8787 ghcr.io/tadmstr/searxng-mcp-reranker:latest
+```
+
+`RERANKER_URL` already defaults to `http://localhost:8787`, so nothing else needs configuring. [`docker/reranker/README.md`](../docker/reranker/README.md) covers the request/response contract, the model, and why it is baked into the image. Any other service speaking the same endpoint works too.
 
 ## Firecrawl (optional — fetch tier 1)
 

@@ -32,8 +32,8 @@ services:
 #   FIRECRAWL_URL         http://localhost:3002    # Tier-1 JS-render fetch
 #   FIRECRAWL_API_KEY     placeholder-local        # Firecrawl API key
 #   CRAWL4AI_URL          http://localhost:11235   # Tier-2 fetch fallback
-#   CRAWL4AI_API_TOKEN                             # Crawl4AI bearer token (if protected)
-#   RERANKER_URL          http://localhost:8787    # ML reranking (cross-encoder)
+#   CRAWL4AI_API_TOKEN                             # Crawl4AI bearer token — REQUIRED on crawl4ai 0.9.x
+#   RERANKER_URL          http://localhost:8787    # ML reranking — ships in docker/reranker/
 #   OLLAMA_URL            http://localhost:11434   # Query expansion + summarization
 #   OLLAMA_API_KEY                                 # Bearer token for authenticated Ollama proxies
 #   OLLAMA_EXPAND_MODEL   qwen3:4b                 # Model for query expansion
