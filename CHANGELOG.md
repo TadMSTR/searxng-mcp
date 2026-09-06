@@ -6,6 +6,83 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [3.25.0] - 2026-09-06
+
+**Fetch tier 2 was failing 100% of crawls and is restored.** Not a regression introduced here —
+it had been dead for as long as `ADBLOCK_PROXY_URL` was set, and was invisible because the tier
+recorded every backend failure as an ordinary empty result. The rest of the release makes the
+client safe for a Crawl4AI 0.9.3 server upgrade and vendors the reranker, which until now was
+documented but unobtainable.
+
+### Fixed
+- **Tier 2 crawled nothing, and said nothing** (vikunja#690). Every request carried
+  `proxy_config: {server: ADBLOCK_PROXY_URL}`. That proxy address is resolved by *Crawl4AI*, in
+  Crawl4AI's container — not by this process — and `adblock-proxy` sits on a network Crawl4AI is
+  not on. `getent hosts adblock-proxy` from inside Crawl4AI does not resolve, so every crawl
+  returned `net::ERR_PROXY_CONNECTION_FAILED`. Confirmed against the live backend with a
+  control: the identical request without the field succeeds. The field is gone. Tier 3's use of
+  `ADBLOCK_PROXY_URL` is unchanged and does work, because tier 3 resolves the proxy in-process —
+  the two look alike and are not the same thing, which is why the reasoning now sits in a
+  comment at the call site.
+- **Tier 2 reported backend failures as "attempted, no content"** (narrows vikunja#687). It
+  returned `null` for non-2xx responses, failed jobs, poll timeouts and transport errors alike,
+  and `runTier` books `null` as `empty_result`. A total outage was therefore indistinguishable
+  from pages that happened to be empty — which is how `ERR_PROXY_CONNECTION_FAILED` sat in the
+  response body for weeks without anyone seeing it. Tier 1 always threw here; tier 2 now does
+  too, and returns `null` only for a genuinely empty result. Two details decide whether the
+  reason is usable: the `net::ERR_*` token is lifted out of Crawl4AI's traceback and led with,
+  so it survives the 200-char bound applied downstream, and transport failures report
+  `cause.code` (`ECONNRESET`, `ENOTFOUND`, …) rather than Node's bare `"fetch failed"`.
+  #687 is **narrowed, not closed** — this fixes the concrete instance; whether the general
+  swallow-the-error defect survives elsewhere needs its own evidence.
+
+### Changed
+- **Crawl4AI target version 0.8.6 → 0.9.3** (vikunja#691), established by probing a scratch
+  0.9.3 rather than by reading the changelog. The synchronous response shape is unchanged —
+  0.9.x was billed as an untested third possibility and is not one. `crawler_config` still
+  passes the trust boundary that rejects `proxy_config`, so selector tuning survives. Both
+  OpenAPI fixtures are kept and both asserted: this client ships *before* the server upgrade, so
+  "works on 0.9.3" must not quietly become "no longer works on 0.8.6".
+- **A tokenless 0.9.x server is now called out when it refuses a request.** On 0.9.x with no
+  `CRAWL4AI_API_TOKEN`, Crawl4AI binds the *container's* loopback: `docker ps` reports healthy,
+  the container's own `/health` returns 200, and the published port answers with a connection
+  reset. `/health` is unauthenticated even when a token is set, so no healthcheck anywhere
+  distinguishes it. searxng-mcp now explains this the first time a crawl is refused, covering
+  both shapes the failure takes — HTTP 401, and a connection reset with no status at all. It
+  fires on an observed failure rather than pre-emptively, so it stays silent against the 0.8.6
+  that is still deployed.
+- **0.9.x's generic 5xx `correlation_id` is surfaced** in the tier failure reason, ahead of the
+  prose so truncation cannot remove it. Without it a 0.9.x server error carries no way to find
+  the real cause in the server's own logs. A 422's array-shaped `detail` is no longer dropped.
+
+### Security
+- **The reranker container is hardened and its requests are bounded.** `cap_drop: ALL`,
+  `no-new-privileges`, a read-only root filesystem, an explicit non-root user, and mem/cpu
+  limits; plus caps on document count (1000), document and query length (20000 chars) and
+  request body size (4 MB), all env-tunable. The service has no authentication by design and
+  reranking is CPU-bound on caller-supplied text, so an uncapped request was a denial-of-service
+  surface for anything that could reach the port. Defaults were measured against the live
+  SearXNG that feeds it — ~30 documents of ~430 chars, ~6.7 KB per rerank — leaving 30–600×
+  headroom, so normal traffic cannot reach them. Oversized documents are truncated rather than
+  rejected, since anything past the cap is already beyond FlashRank's 512-token window.
+- **Crawl4AI's relayed error text is recorded as its own accepted risk** rather than inheriting
+  the v3.24.0 acceptance, which was scoped to Firecrawl's `data.error`. Same trust model,
+  separate row, per SC-23.
+
+### Added
+- **The reranker ships in this repo** (vikunja#692), at `docker/reranker/`, and is published as
+  `ghcr.io/tadmstr/searxng-mcp-reranker`. `docs/configuration.md` previously pointed adopters at
+  another repository's `docker/reranker/`, which tracks one file — a compose file saying
+  `build: .` with no Dockerfile beside it. Following the documented path produced a build
+  failure, on the single feature separating this project from every other SearXNG MCP server.
+  Acceptance was a fresh clone and `docker compose up`, with no reference to any other repo.
+- **The reranker model is baked into the image.** A first-run download leaves the reranker
+  absent for 30–60s on every fresh boot, and searxng-mcp silently falls back to SearXNG's
+  ordering behind one throttled log line. ~100MB of image buys a container ready in ~2s that
+  needs no network to start — verified under `docker run --network none`, which is a test the
+  pre-bake cannot pass if the model is missing. Its CI smoke test asserts that documents come
+  back *reordered* with `relevance_score`, not merely that the container started.
+
 ## [3.24.0] - 2026-09-06
 
 Consolidated fix pass closing ten tickets (build `searxng-mcp-fix-pass-2026-09`). **PDF

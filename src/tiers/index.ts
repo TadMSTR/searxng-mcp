@@ -14,11 +14,16 @@ import type { Tier } from "./types.js";
 
 // Tier 1 and tier 2 reach the origin through an external fetcher, so they hand
 // back a rendered document with no origin status or headers — only the body
-// rules in detectChallenge can apply. The check has to sit here at the tier
-// boundary rather than inside firecrawlScrape/crawl4aiFetch: crawl4aiFetch
-// swallows every throw and returns null, which would erase the signal. Both
+// rules in detectChallenge can apply. The check sits here at the tier boundary
+// rather than inside firecrawlScrape/crawl4aiFetch so one rule covers both
+// tiers and raises ChallengeDetectedError by the same path for each. Both
 // representations are passed because the markers live in the markup and the
 // markdown/text projection strips them.
+//
+// This used to carry a second reason: that crawl4aiFetch swallowed every throw
+// and returned null, so the signal had to be raised outside it. That is no
+// longer true. As of vikunja#690 tier 2 throws its backend failures the way
+// tier 1 always has, and returns null only for a genuinely empty result.
 
 /** Tier 1 — Firecrawl (Puppeteer-rendered, best quality). */
 export const tier1: Tier = {

@@ -9,6 +9,7 @@ past that point lives here.
 | [Tools](tools.md) | Full per-tool parameter reference for all seven MCP tools, plus GitHub URL handling. |
 | [Deployment](deployment.md) | Install from npm or source, stdio and HTTP transports, HTTP authentication, and MCP client recipes for Claude Code, Claude Desktop and LibreChat. |
 | [Architecture](architecture.md) | The fetch cascade and tier semantics, adblocking, data-driven tier routing, the domain capability database, every fast path, resilience, and observability. |
+| [Reranker](../docker/reranker/README.md) | The bundled CPU-only reranking service: the `/v1/rerank` contract, the model, why it is baked into the image, and how to run or pull it. |
 | [Security](security.md) | SSRF handling, redirect protection, transport exposure, bounded reads, dependency auditing, credential handling and input validation. Vulnerability reporting is in [`SECURITY.md`](../SECURITY.md). |
 
 ## Where to start

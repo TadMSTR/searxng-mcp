@@ -121,7 +121,14 @@ search:
 
 ## Reranker (recommended)
 
-The reranker must expose a Jina-compatible `/v1/rerank` endpoint. A lightweight FlashRank wrapper works well — see the [`docker/reranker/`](https://github.com/TadMSTR/homelab-agent/tree/main/docker/reranker) reference in [homelab-agent](https://github.com/TadMSTR/homelab-agent).
+The reranker must expose a Jina-compatible `/v1/rerank` endpoint. One ships in this repo — a CPU-only FlashRank wrapper needing no API key and no GPU:
+
+```bash
+cd docker/reranker && docker compose up      # or, without building:
+docker run -d -p 127.0.0.1:8787:8787 ghcr.io/tadmstr/searxng-mcp-reranker:latest
+```
+
+`RERANKER_URL` already defaults to `http://localhost:8787`, so nothing else needs configuring. [`docker/reranker/README.md`](../docker/reranker/README.md) covers the request/response contract, the model, and why it is baked into the image. Any other service speaking the same endpoint works too.
 
 ## Firecrawl (optional — fetch tier 1)
 
@@ -169,10 +176,21 @@ does not request them.
 [Crawl4AI](https://github.com/unclecode/crawl4ai) is an optional second-tier fetch fallback used when Firecrawl returns empty content (bot-blocked pages, JS-heavy sites). Set `CRAWL4AI_URL` to enable it. If unset, the cascade skips to raw HTTP fetch.
 
 ```bash
-docker run -d -p 11235:11235 unclecode/crawl4ai:0.8.6
+docker run -d -p 11235:11235 \
+  -e CRAWL4AI_API_TOKEN="$(openssl rand -hex 32)" \
+  unclecode/crawl4ai:0.9.3
 ```
 
-If your instance requires API token authentication, set `CRAWL4AI_API_TOKEN`.
+Set `CRAWL4AI_API_TOKEN` to the same value on searxng-mcp.
+
+**On 0.9.x the token is not optional, and omitting it fails invisibly.** With no token, the server binds the *container's* loopback: `docker ps` reports the container healthy, its own `/health` returns 200, and the published port answers with a connection reset. `/health` is unauthenticated even when a token *is* set, so no healthcheck at any layer distinguishes a working server from a dead one — only `/crawl` returns 401. searxng-mcp says so explicitly the first time a crawl is refused.
+
+Two other things changed in 0.9.0 that matter if you are upgrading from 0.8.x:
+
+- `proxy_config` and `proxy` are rejected at the network trust boundary with HTTP 400. searxng-mcp no longer sends either (see [Architecture](architecture.md#tier-3--adblock-proxy)).
+- 5xx responses are generic — `{"error": "...", "correlation_id": "..."}`. searxng-mcp surfaces the correlation id in the tier failure reason so it can be matched against the server's own logs.
+
+0.9.1 and 0.9.2 have no changelog entries upstream; 0.9.3 is the version this client is written and tested against.
 
 On the `search_and_summarize` path, Crawl4AI requests use `fit_markdown` for noise-filtered content extraction. Other callers (`search_and_fetch`, `fetch_url`) use `raw_markdown`.
 

@@ -50,6 +50,8 @@ docker pull ghcr.io/tadmstr/searxng-mcp:latest
 
 Tags, uid, and provenance verification: [Deployment](docs/deployment.md#container-image).
 
+The reranker ships in this repo — `cd docker/reranker && docker compose up`, or pull `ghcr.io/tadmstr/searxng-mcp-reranker`. It is CPU-only, needs no API key, and has the model baked in so there is no cold start. See [`docker/reranker/README.md`](docker/reranker/README.md).
+
 For a full local topology including Firecrawl, Crawl4AI, Ollama, Kiwix, the adblock proxy, and NATS, see [`docker-compose.full.yml`](docker-compose.full.yml).
 
 ## Tools
@@ -74,7 +76,7 @@ differentiators here are in what happens *after* the search:
 | | searxng-mcp | Typical SearXNG MCP server |
 |---|---|---|
 | SearXNG search | yes | yes |
-| ML reranking of results | local cross-encoder, reorders by relevance | SearXNG's own ordering |
+| ML reranking of results | local cross-encoder, reorders by relevance — ships in [`docker/reranker/`](docker/reranker/) | SearXNG's own ordering |
 | Full-page content retrieval | three-tier cascade — Firecrawl, Crawl4AI, in-process raw fetch + Readability | none, or a single raw fetch |
 | Per-domain routing | domain capability database learns which tier works per domain and skips the ones that do not | none |
 | Summarisation | Ollama, with citations back to source URLs | none |
@@ -105,7 +107,7 @@ flowchart TD
     robots["robots.txt pre-check — tiers 1–3\ndisallowed → RobotsDisallowedError (cached 24h)"]
     tier_skip(["Per-domain tier skip\nsuccess rate &lt;30% over ≥10 tries\nor tier_skip operator override"])
     t1["Tier 1 — Firecrawl\n$FIRECRAWL_URL\nserves PDFs under FIRECRAWL_API_VERSION=v2"]
-    t2["Tier 2 — Crawl4AI\n$CRAWL4AI_URL · optional\nadblock proxy if $ADBLOCK_PROXY_URL"]
+    t2["Tier 2 — Crawl4AI\n$CRAWL4AI_URL · optional\ndirect — no adblock proxy"]
     t3["Tier 3 — Raw HTTP + Readability\nfallback: raw HTML slice\nadblock proxy if $ADBLOCK_PROXY_URL"]
     challenge(["Challenge detected\non this URL, this request?"])
     solver["Solver — Byparr\n$SOLVER_URL · opt-in, SOLVER_ENABLED=true\nSSRF-guarded replay"]

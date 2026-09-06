@@ -1,0 +1,66 @@
+# Standalone reranker. Run it from this directory with `docker compose up`.
+#
+# This file is deliberately self-contained: no external network, no reference
+# to any other repository. vikunja#692 existed because the documented adoption
+# path led to a compose file whose `build: .` had no Dockerfile beside it, so
+# "clone and up" is the acceptance criterion, not an incidental convenience.
+#
+# To integrate with a full searxng-mcp stack instead, see the reranker service
+# in ../../docker-compose.full.yml, which pulls the published image rather
+# than building.
+services:
+  reranker:
+    build: .
+    # Or skip the build entirely:
+    # image: ghcr.io/tadmstr/searxng-mcp-reranker:latest
+    container_name: reranker
+    environment:
+      - RERANKER_MODEL=ms-marco-MiniLM-L-12-v2
+    ports:
+      # Loopback-only. The service has no authentication of any kind — see the
+      # README. Publishing it on 0.0.0.0 exposes an unauthenticated CPU-bound
+      # endpoint that any caller can drive.
+      - "127.0.0.1:8787:8787"
+    restart: unless-stopped
+    # SECURITY[deferred]: this is the only compose file in the repo carrying the
+    # hardening below — docker-compose.full.yml, docker-compose.example.yml and
+    # docker/adblock-proxy/ have none, so the repo now models good practice in
+    # one place and not the others. Retrofitting the rest is vikunja#693 (id
+    # 776). Note `read_only` is NOT a blanket addition there: several of those
+    # services genuinely write to disk. Audit:
+    # 2026-09-06/searxng-mcp-crawl4ai-reranker-2026-09, INFO 2.
+    #
+    # The image already runs as uid 10001; naming it here means a `docker run`
+    # that overrides the entrypoint cannot quietly regain root.
+    user: "10001"
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    # The model is baked in and read at startup, so nothing needs to write to
+    # the filesystem. /tmp is still given a tmpfs because FlashRank's own
+    # default cache_dir is /tmp and a library that falls back to it should hit
+    # a writable path rather than a confusing permission error.
+    read_only: true
+    tmpfs:
+      - /tmp
+    # Bounds on an endpoint with no authentication. Reranking is CPU-bound and
+    # the request body is caller-controlled, so an unbounded container is a
+    # denial-of-service surface for anything that can reach the port.
+    mem_limit: 2g
+    cpus: 2.0
+    healthcheck:
+      # The model is baked into the image, so this reports ready in seconds
+      # rather than after a 30-60s download. model_loaded is the field that
+      # distinguishes "serving" from "up but reranking nothing".
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request,json,sys; sys.exit(0 if json.load(urllib.request.urlopen('http://127.0.0.1:8787/health'))['model_loaded'] else 1)",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
