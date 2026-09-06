@@ -90,10 +90,20 @@ jobs:
         if: always()
         run: docker logs sxng-publish || true
 
+      # The token arrives through `env`, not `${{ }}` interpolation into the
+      # script body. Interpolation splices the secret into the shell text the
+      # runner executes, which puts it in reach of anything that reads the
+      # rendered command; via env it stays a variable. `--password-stdin` for
+      # the same reason on the argv side — a `--password <token>` would put it
+      # in the process table.
       - name: Log in to GHCR
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GHCR_USER: ${{ github.actor }}
         run: |
-          echo "${{ secrets.GITHUB_TOKEN }}" \
-            | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          set -euo pipefail
+          printf '%s' "$GHCR_TOKEN" \
+            | docker login ghcr.io -u "$GHCR_USER" --password-stdin
 
       # Both `v3.24.0` and `3.24.0` are published, deliberately. The git tag
       # carries the `v`; the conventional Docker tag does not; and
