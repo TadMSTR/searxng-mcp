@@ -173,3 +173,27 @@ jobs:
       # <CVE>` rather than raising the threshold or deleting the step.
       - name: Audit dev dependencies
         run: pnpm audit --dev
+
+      # The two docker/ sub-projects are NOT in the pnpm workspace, so neither
+      # step above sees them — and both are built into PUBLISHED images, one of
+      # them an unauthenticated forward proxy. A CVE in @ghostery/adblocker
+      # would have shipped silently (audit LOW, 2026-09-06).
+      #
+      # A THIRD step rather than folding these into the two above, for the same
+      # reason --prod and --dev are separate: "something we publish in a
+      # container is vulnerable" is a different question from "something in the
+      # npm package is", and merging them makes the first invisible.
+      #
+      # `npm ci --package-lock-only` then `npm audit` reads the committed
+      # lockfile without installing. If a lockfile has drifted from its
+      # package.json, `npm ci` fails here — which is the point: the previous
+      # Dockerfiles used `npm install <caret-range>` and re-resolved on every
+      # build, so nothing pinned what actually shipped.
+      - name: Audit container sub-project dependencies
+        run: |
+          set -euo pipefail
+          for d in docker/adblock-proxy docker/playwright-adblock; do
+            echo "::group::$d"
+            ( cd "$d" && npm ci --package-lock-only --no-audit --no-fund && npm audit --omit=dev )
+            echo "::endgroup::"
+          done

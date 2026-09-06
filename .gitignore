@@ -7,4 +7,11 @@ core.*
 *.env
 run.sh
 package-lock.json
+# ...except the two docker/ sub-projects, which are NOT pnpm workspaces. They
+# are npm projects built into published images, and their lockfiles are what
+# make those builds reproducible and auditable (audit LOW, 2026-09-06). Without
+# these negations the root rule silently swallows them and the Dockerfiles'
+# `npm ci` references a file that is not in the repo.
+!docker/adblock-proxy/package-lock.json
+!docker/playwright-adblock/package-lock.json
 domain-db-snapshots/

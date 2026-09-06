@@ -12,6 +12,8 @@ env:
   # Not bare `reranker`: this lands in a shared namespace alongside every other
   # package, and a rename after publication is worse than a long name.
   RERANKER_IMAGE: ghcr.io/tadmstr/searxng-mcp-reranker
+  PROXY_IMAGE: ghcr.io/tadmstr/searxng-mcp-adblock-proxy
+  PLAYWRIGHT_ADBLOCK_IMAGE: ghcr.io/tadmstr/searxng-mcp-playwright-adblock
 
 jobs:
   publish:
@@ -317,12 +319,223 @@ jobs:
           echo "digest=$DIGEST" >> "$GITHUB_OUTPUT"
           echo "pushed digest $DIGEST"
 
-      # vikunja#689 (provenance not attached as an OCI referrer) applies here
-      # exactly as it does to the main image. Not re-derived, and registry-
-      # native verification is not a gate until #689 is resolved.
+      # vikunja#689 was a misdiagnosis and is resolved: provenance IS attached.
+      # GHCR does not serve the OCI referrers API, it uses the spec's fallback
+      # tag (sha256-<digest>). See docs/deployment.md and the note on the main
+      # image's attest step. Do not remove push-to-registry over a 404.
       - name: Attest build provenance
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-name: ${{ env.RERANKER_IMAGE }}
+          subject-digest: ${{ steps.push.outputs.digest }}
+          push-to-registry: true
+
+  # ── adblock-proxy ───────────────────────────────────────────────────────────
+  # The last stack component without a published image (vikunja#697). Until now
+  # the reference deployment built it from an absolute path into a developer's
+  # working tree, which is not an adoption path.
+  publish-adblock-proxy:
+    name: Build, smoke test, publish adblock-proxy
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Build adblock-proxy image
+        run: docker build -t "$PROXY_IMAGE:candidate" ./docker/adblock-proxy
+
+      # Asserts the CONTRACT, not the boot. A proxy that starts and forwards
+      # everything unfiltered passes any liveness check while doing none of the
+      # job it exists for — and nothing downstream would notice, because an
+      # unblocked ad is indistinguishable from an ad that was never requested.
+      # Asserts the CONTRACT, not the boot. A proxy that starts and forwards
+      # everything unfiltered passes any liveness check while doing none of the
+      # job it exists for — and nothing downstream notices, because an
+      # unblocked ad is indistinguishable from an ad that was never requested.
+      #
+      # Every assertion below was run against a real build before being written
+      # here, and the first draft was WRONG in a way worth recording: it used a
+      # local nginx origin and http://doubleclick.net/ad.js. Both are refused by
+      # ssrf.js — the container origin resolves to a private address, and this
+      # host's resolver blackholes ad domains to `::` — so BOTH returned zero
+      # bytes and the "is it blocking ads?" assertion passed for every URL,
+      # blocked or not. It proved nothing.
+      #
+      # Hence: a public origin for the forwarding case, a URL EasyList actually
+      # matches for the blocking case, and an assertion on WHICH mechanism the
+      # log reports, because "empty response" alone cannot tell an adblock hit
+      # from an SSRF refusal.
+      - name: Smoke test the adblock-proxy image
+        run: |
+          set -euo pipefail
+
+          docker network create smoke-net >/dev/null
+          docker run -d --name smoke-proxy --network smoke-net \
+            -e LOG_BLOCKED=true "$PROXY_IMAGE:candidate" >/dev/null
+
+          for i in $(seq 1 60); do
+            if docker logs smoke-proxy 2>&1 | grep -q 'listening on'; then break; fi
+            if [ "$i" = 60 ]; then echo "proxy never became ready"; docker logs smoke-proxy; exit 1; fi
+            sleep 1
+          done
+          docker logs smoke-proxy
+
+          via() {
+            docker run --rm --network smoke-net curlimages/curl:latest \
+              -s -o /dev/null -w '%{http_code} %{size_download}' -m 25 \
+              --proxy http://smoke-proxy:8118 "$@"
+          }
+
+          # 1. A normal plain-HTTP URL proxies through, WITH a body. The body
+          #    size is the point: every failure mode below also yields 0 bytes,
+          #    so without a known non-zero case the other assertions are vacuous.
+          read -r code size <<<"$(via http://example.com/)"
+          echo "forwarding: HTTP $code, $size bytes"
+          [ "$code" = "200" ] || { echo "FAIL: proxy did not forward"; exit 1; }
+          [ "$size" -gt 0 ] || { echo "FAIL: forwarded response was empty"; exit 1; }
+
+          # 2. A URL EasyList actually matches gets the documented empty 200.
+          #    NOT doubleclick.net/ad.js — EasyList does not match that bare
+          #    path, and it is DNS-blackholed here anyway.
+          read -r code size <<<"$(via http://www.googletagmanager.com/gtm.js)"
+          echo "adblock: HTTP $code, $size bytes"
+          [ "$code" = "200" ] || { echo "FAIL: blocked URL should be an empty 200, got $code"; exit 1; }
+          [ "$size" = "0" ] || { echo "FAIL: blocked URL returned a body"; exit 1; }
+          docker logs smoke-proxy 2>&1 | grep -q 'blocked http://www.googletagmanager.com/gtm.js' \
+            || { echo "FAIL: no adblock log line — something else produced that empty 200"; exit 1; }
+
+          # 3. HTTPS CONNECT tunnels.
+          read -r code size <<<"$(via https://example.com/)"
+          echo "CONNECT: HTTP $code, $size bytes"
+          [ "$code" = "200" ] || { echo "FAIL: CONNECT tunnel did not work"; exit 1; }
+
+          # 4. ssrf.js refuses an internal target. Asserted on the ARTEFACT,
+          #    because this image is about to be published into topologies its
+          #    author did not choose, and a mitigation that lives only in one
+          #    compose file does not ship with the image (vikunja#697).
+          read -r code size <<<"$(via http://127.0.0.1:22/ || echo '000 0')"
+          echo "internal target: HTTP $code"
+          [ "$code" = "403" ] || { echo "FAIL: internal address not refused with 403, got $code"; exit 1; }
+          docker logs smoke-proxy 2>&1 | grep -q 'refused non-public target 127.0.0.1' \
+            || { echo "FAIL: no SSRF refusal log line"; exit 1; }
+
+          echo "adblock-proxy contract OK — forwards, adblocks, tunnels, and refuses internal targets"
+          docker rm -f smoke-proxy >/dev/null
+          docker network rm smoke-net >/dev/null
+
+      - name: Log in to GHCR
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GHCR_USER: ${{ github.actor }}
+        run: |
+          set -euo pipefail
+          printf '%s' "$GHCR_TOKEN" \
+            | docker login ghcr.io -u "$GHCR_USER" --password-stdin
+
+      - name: Tag and push adblock-proxy
+        id: push
+        env:
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          V="${REF_NAME#v}"
+          MINOR="$(echo "$V" | cut -d. -f1,2)"
+
+          TAGS=("$REF_NAME" "$V")
+          case "$V" in
+            *-*) echo "prerelease $V — publishing exact tags only, not :$MINOR or :latest" ;;
+            *)   TAGS+=("$MINOR" "latest") ;;
+          esac
+
+          for t in "${TAGS[@]}"; do
+            echo "pushing $PROXY_IMAGE:$t"
+            docker tag "$PROXY_IMAGE:candidate" "$PROXY_IMAGE:$t"
+            docker push "$PROXY_IMAGE:$t"
+          done
+
+          DIGEST=$(docker inspect --format='{{index .RepoDigests 0}}' "$PROXY_IMAGE:$V" | cut -d@ -f2)
+          echo "digest=$DIGEST" >> "$GITHUB_OUTPUT"
+          echo "pushed digest $DIGEST"
+
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ${{ env.PROXY_IMAGE }}
+          subject-digest: ${{ steps.push.outputs.digest }}
+          push-to-registry: true
+
+  # ── playwright-adblock ──────────────────────────────────────────────────────
+  # Tier-1 adblocking for Firecrawl v2's renderer (vikunja#696). Same shape as
+  # the jobs above; the smoke test is the one that differs, because this image
+  # sits in front of a security control.
+  publish-playwright-adblock:
+    name: Build, smoke test, publish playwright-adblock
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      # THE ASSERTION THAT MATTERS IS NOT "ARE ADS BLOCKED".
+      #
+      # This image installs a request interceptor in front of Firecrawl's
+      # in-browser SSRF guard. A handler calling route.continue() instead of
+      # route.fallback() deletes that guard while still blocking ads, still
+      # rendering pages, and still returning 200 — so the script builds a
+      # deliberately broken variant and asserts the signal DISAPPEARS. Without
+      # that control, a test that always passes looks identical to one that
+      # works.
+      #
+      # It builds the image itself, so there is no separate build step here.
+      - name: Build and verify playwright-adblock (SSRF guard survives)
+        run: ./docker/playwright-adblock/verify-ssrf-guard.sh "$PLAYWRIGHT_ADBLOCK_IMAGE:candidate"
+
+      - name: Log in to GHCR
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GHCR_USER: ${{ github.actor }}
+        run: |
+          set -euo pipefail
+          printf '%s' "$GHCR_TOKEN" \
+            | docker login ghcr.io -u "$GHCR_USER" --password-stdin
+
+      - name: Tag and push playwright-adblock
+        id: push
+        env:
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          V="${REF_NAME#v}"
+          MINOR="$(echo "$V" | cut -d. -f1,2)"
+
+          TAGS=("$REF_NAME" "$V")
+          case "$V" in
+            *-*) echo "prerelease $V — publishing exact tags only, not :$MINOR or :latest" ;;
+            *)   TAGS+=("$MINOR" "latest") ;;
+          esac
+
+          for t in "${TAGS[@]}"; do
+            echo "pushing $PLAYWRIGHT_ADBLOCK_IMAGE:$t"
+            docker tag "$PLAYWRIGHT_ADBLOCK_IMAGE:candidate" "$PLAYWRIGHT_ADBLOCK_IMAGE:$t"
+            docker push "$PLAYWRIGHT_ADBLOCK_IMAGE:$t"
+          done
+
+          DIGEST=$(docker inspect --format='{{index .RepoDigests 0}}' "$PLAYWRIGHT_ADBLOCK_IMAGE:$V" | cut -d@ -f2)
+          echo "digest=$DIGEST" >> "$GITHUB_OUTPUT"
+          echo "pushed digest $DIGEST"
+
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ${{ env.PLAYWRIGHT_ADBLOCK_IMAGE }}
           subject-digest: ${{ steps.push.outputs.digest }}
           push-to-registry: true

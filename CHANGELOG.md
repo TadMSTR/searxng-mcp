@@ -4,7 +4,26 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [Unreleased]
+## [3.26.0] - 2026-09-06
+
+### Security
+
+- **Container sub-project dependencies are pinned and audited (audit LOW, 2026-09-06).**
+  `docker/adblock-proxy` and `docker/playwright-adblock` are not in the pnpm workspace, so
+  `pnpm audit --prod` never saw them — while both are built into **published** images, one an
+  unauthenticated forward proxy. A CVE in `@ghostery/adblocker` would have shipped silently.
+
+  Both now commit a lockfile and build with `npm ci` instead of `npm install <caret-range>`.
+  That closes the audit gap and a reproducibility one the audit did not raise: the caret range
+  re-resolved on every build, so two builds of the same commit could produce different
+  dependency trees — which quietly weakens the build-provenance attestation those images
+  publish. Both are pinned at `@ghostery/adblocker` 2.18.2.
+
+  CI gains a third audit step, separate from `--prod` and `--dev` for the same reason those
+  two are separate: "something we publish in a container is vulnerable" is a different
+  question from "something in the npm package is", and merging them makes the first
+  invisible. Verified the step can fail — injecting a package.json/lockfile drift makes
+  `npm ci` exit 1 with `Missing: left-pad@1.3.0`.
 
 ### Fixed
 
@@ -118,15 +137,86 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   - **`ollama` gets no `read_only`** — verified failing both with and without a tmpfs.
   - `nats` needs `read_only` *and* a writable `/tmp`; `read_only` alone exits 1.
 
-  `kiwix`, `firecrawl-api` and `firecrawl-puppeteer` carry `cap_drop` and the limits but no
+  `kiwix`, `firecrawl-api` and the renderer carry `cap_drop` and the limits but no
   `read_only`: they could not be started here (no `.zim` corpus, no API keys, Chromium
   sandbox), so it is recorded as unverified rather than assumed safe.
+
+  Containers also no longer run as root. `cache`, `firecrawl-redis`, `nats` and `ollama` are
+  pinned to uid 1000 and `reranker` to 10001; the rest already run as a non-root user
+  declared by their own image, which is recorded in a comment rather than overridden with a
+  guessed uid. Pinning the user turned out to make the hardening *smaller*, not larger: with
+  `user:` set, the `setpriv` privilege-drop in the Dragonfly and redis entrypoints is never
+  attempted, so the `SETUID`/`SETGID` capabilities they needed without it are no longer
+  granted at all. Verified both ways, and all five re-verified serving afterwards —
+  `cache` and `firecrawl-redis` answering `PONG` as uid 1000, `reranker` reporting
+  `model_loaded: true` as uid 10001.
 
   Also fixed while running it: the reference `cache` command line could not start on a large
   host at all. Dragonfly sizes io threads to the core count and refuses to boot if
   `maxmemory` is below 256MiB per thread — on a 32-core machine `--maxmemory=2gb` exits with
   "There are 32 threads, so 8.00GiB are required", with no hardening involved.
   `--proactor_threads=4` is now pinned in both files.
+
+- **Tier-1 adblocking now applies to the renderer this project actually uses (vikunja#696).**
+  `docker/playwright-adblock/` layers EasyList + EasyPrivacy onto
+  `ghcr.io/firecrawl/playwright-service`, Firecrawl v2's renderer.
+  `docker/puppeteer-adblock/` targets the **v1** renderer, and searxng-mcp defaults to
+  `FIRECRAWL_API_VERSION=v2` — so on every v2 deployment, tier-1 adblocking was simply
+  absent. This is an **upgrade of upstream's existing `AD_SERVING_DOMAINS` token list, not a
+  new feature**; that list still applies underneath, because the hook defers to it.
+
+  **The dangerous part, and why the acceptance test is not "are ads blocked".** The hook
+  installs a request interceptor in front of Firecrawl's in-browser SSRF guard. Playwright
+  runs handlers in reverse registration order and `route.continue()` dispatches without
+  invoking the rest, so a handler that calls `continue()` silently deletes
+  `assertSafeTargetUrl`. Every path out of this handler ends in `abort()` or `fallback()`.
+
+  This is not theoretical: `@ghostery/adblocker-playwright`'s own `enableBlockingInPage()`
+  registers `page.route('**/*')` — page routes outrank context routes — and calls
+  `route.continue()`. Using the library the obvious way *is* the vulnerability. The hook
+  therefore reuses its matching via `fromPlaywrightDetails()` + `match()` while keeping
+  control of the disposition.
+
+  `verify-ssrf-guard.sh` asserts upstream's handler still executes, then builds a
+  deliberately broken variant and asserts the signal disappears. Measured:
+
+  | build | `/scrape` | upstream handler ran? |
+  |---|---|---|
+  | shipped (`fallback`) | HTTP 200 | yes |
+  | regression (`continue`) | HTTP 200 | **no — guard gone** |
+
+  Both return 200, both render, both block ads. That is the whole point.
+
+  Filter lists are **baked into the image**. Fetching them at startup crashed the service
+  outright in testing — undici threw `AssertionError: assert(!this.paused)` from inside its
+  own parser, asynchronously and past any `.catch()`. Same reasoning as vendoring
+  FlashRank's model in v3.25.0.
+
+  `docker-compose.full.yml` repoints its renderer at the new build (note port 3003, not
+  3000). `docker/puppeteer-adblock/` is kept for v1 adopters and marked v1-only.
+
+- **`adblock-proxy` and `playwright-adblock` are published images (vikunja#697, #696).**
+  `adblock-proxy` was the last stack component with no published image; the reference
+  deployment built it from an absolute path into a developer's working tree, which is not an
+  adoption path. `docker-compose.full.yml` now pulls it, matching what the reranker already
+  did, and `docker/adblock-proxy/docker-compose.yml` is added for standalone use — with a
+  pinned `name:` and no `container_name:`, because Phase 1's lesson applies to every new
+  compose file here.
+
+  Both smoke tests assert the **contract**, not the boot. The adblock-proxy test was drafted
+  wrong first and is worth recording: it used a local nginx origin and
+  `http://doubleclick.net/ad.js`. Both are refused by `ssrf.js` — the container origin
+  resolves to a private address, and this host's resolver blackholes ad domains to `::` — so
+  **both returned zero bytes and the "is it blocking ads?" assertion passed for every URL,
+  blocked or not.** It proved nothing. The shipped version uses a public origin for the
+  forwarding case, a URL EasyList actually matches for the blocking case, and asserts on
+  *which mechanism the log reports*, because an empty response alone cannot distinguish an
+  adblock hit from an SSRF refusal.
+
+  `docker/adblock-proxy/README.md` states the intended placement plainly: it is an open
+  forward proxy with no authentication, and `ssrf.js` is a backstop rather than a substitute
+  for keeping the port private. That control is now asserted against the built image — a
+  mitigation living in one compose file does not travel with the artefact.
 
 - **vikunja#687 needed closing, not building.** Its premise died in v3.25.0: `648b60e`
   replaced the bare `catch { return null }` at `crawl4ai.ts:197` that the ticket describes.
