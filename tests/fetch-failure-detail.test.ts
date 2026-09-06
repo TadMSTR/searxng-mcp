@@ -164,6 +164,38 @@ describe("fetchPage — terminal failure names every tier", () => {
     expect(String(err)).not.toMatch(/tier2_crawl4ai: attempted/);
   });
 
+  it("bounds an unbounded upstream error rather than relaying it whole", async () => {
+    // Firecrawl's `data.error` is upstream-controlled text of arbitrary length,
+    // and this is the first change that relays a tier's own error to the caller
+    // instead of swallowing it. An error message is not a transport for an
+    // arbitrary upstream payload.
+    tiers.tier1Fetch.mockRejectedValue(new Error("X".repeat(5000)));
+
+    const err = await fetchPage(URL_).catch((e: Error) => e);
+    const message = String(err);
+
+    expect(message).toContain("…");
+    expect(message.length).toBeLessThan(1000);
+    // The other tiers must still be named — truncating one reason must not
+    // swallow the rest of the diagnostic.
+    expect(message).toContain("tier2_crawl4ai: skipped (not_configured)");
+    expect(message).toContain("tier3_rawfetch");
+  });
+
+  it("leaves a normal-length reason intact", async () => {
+    // Negative control for the cap: without this, a bound that truncated
+    // everything would satisfy the test above.
+    tiers.tier1Fetch.mockRejectedValue(
+      new Error("Firecrawl error: 502 Bad Gateway"),
+    );
+
+    const err = await fetchPage(URL_).catch((e: Error) => e);
+    expect(String(err)).toContain(
+      "tier1_firecrawl: Firecrawl error: 502 Bad Gateway",
+    );
+    expect(String(err)).not.toContain("…");
+  });
+
   it("still leads with the original message, so existing matchers hold", async () => {
     await expect(fetchPage(URL_)).rejects.toThrow(/^All fetch tiers failed/);
   });

@@ -113,6 +113,28 @@ interface TierOutcome {
   reason: string;
 }
 
+/**
+ * Cap on a single tier's failure reason in the surfaced error.
+ *
+ * Most reasons are short and ours — "attempted, no content", a status code. But
+ * one is neither: `data.error` from Firecrawl is upstream-controlled text of
+ * unbounded length, and this is the first change that relays a tier's own error
+ * to the caller rather than swallowing it. An error message is not a transport
+ * for an arbitrary upstream payload.
+ *
+ * Only length is bounded, not content. Every reason this can carry is already
+ * topology-safe by construction: SsrfBlockedError deliberately keeps the
+ * resolved address off its message, raw.ts's redirect throw deliberately omits
+ * the Location header, and the tier errors carry status codes rather than URLs.
+ */
+const MAX_TIER_REASON_CHARS = 200;
+
+function boundReason(reason: string): string {
+  return reason.length > MAX_TIER_REASON_CHARS
+    ? `${reason.slice(0, MAX_TIER_REASON_CHARS)}…`
+    : reason;
+}
+
 async function runTier<T extends TierResult | null>(
   tier: TierName,
   url: string,
@@ -164,7 +186,7 @@ async function runTier<T extends TierResult | null>(
     recordHistogram("fetch", latency_ms / 1000, { tier, outcome: "error" });
     events.fetchTierMiss({ url, tier, reason, latency_ms });
     recordTierAttempt(url, tier, "error", reason).catch(() => {});
-    onOutcome?.({ tier, reason });
+    onOutcome?.({ tier, reason: boundReason(reason) });
     return null as T;
   }
 }
