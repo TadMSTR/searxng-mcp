@@ -118,9 +118,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   - **`ollama` gets no `read_only`** — verified failing both with and without a tmpfs.
   - `nats` needs `read_only` *and* a writable `/tmp`; `read_only` alone exits 1.
 
-  `kiwix`, `firecrawl-api` and `firecrawl-puppeteer` carry `cap_drop` and the limits but no
+  `kiwix`, `firecrawl-api` and the renderer carry `cap_drop` and the limits but no
   `read_only`: they could not be started here (no `.zim` corpus, no API keys, Chromium
   sandbox), so it is recorded as unverified rather than assumed safe.
+
+  Containers also no longer run as root. `cache`, `firecrawl-redis`, `nats` and `ollama` are
+  pinned to uid 1000 and `reranker` to 10001; the rest already run as a non-root user
+  declared by their own image, which is recorded in a comment rather than overridden with a
+  guessed uid. Pinning the user turned out to make the hardening *smaller*, not larger: with
+  `user:` set, the `setpriv` privilege-drop in the Dragonfly and redis entrypoints is never
+  attempted, so the `SETUID`/`SETGID` capabilities they needed without it are no longer
+  granted at all. Verified both ways, and all five re-verified serving afterwards —
+  `cache` and `firecrawl-redis` answering `PONG` as uid 1000, `reranker` reporting
+  `model_loaded: true` as uid 10001.
 
   Also fixed while running it: the reference `cache` command line could not start on a large
   host at all. Dragonfly sizes io threads to the core count and refuses to boot if
