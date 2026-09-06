@@ -117,9 +117,40 @@ export interface Citation {
   key_facts: string[];
 }
 
+/**
+ * Why a synthesis was not produced. vikunja#703: an empty `summary` is reached
+ * by three materially different routes and the caller could not tell them
+ * apart -- nor, before v3.27.0, tell any of them from a successful synthesis.
+ *
+ * - `not-configured`  neither OLLAMA_URL nor LLM_BASE_URL is set. Not a
+ *                     failure: summarization was never switched on.
+ * - `timeout`         the request outlived OLLAMA_SUMMARIZE_TIMEOUT_MS.
+ * - `llm-error`       transport failure or a non-2xx from the backend.
+ * - `parse-error`     the backend answered, but not with usable JSON.
+ * - `empty-response`  valid JSON whose `summary` was absent, empty, or not a
+ *                     string. The model declined; nothing was broken.
+ */
+export type SummaryFailureKind =
+  | "not-configured"
+  | "timeout"
+  | "llm-error"
+  | "parse-error"
+  | "empty-response";
+
+export interface SummaryFailure {
+  kind: SummaryFailureKind;
+  detail: string;
+}
+
 export interface SummaryResult {
   summary: string;
   citations: Citation[];
+  /**
+   * Present if and only if `summary` is empty. Callers rendering a fallback
+   * MUST surface this -- a raw-pages payload that does not announce itself
+   * reads as a synthesis.
+   */
+  failure?: SummaryFailure;
 }
 
 export interface GitHubReadmeResponse {

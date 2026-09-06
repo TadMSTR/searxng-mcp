@@ -4,6 +4,62 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [3.27.0] - 2026-09-06
+
+### Fixed
+
+- **`search_and_summarize` no longer degrades to raw pages in silence (vikunja#703).**
+  When the LLM was unreachable, timed out, or returned nothing usable, the handler emitted
+  the fetched pages with no marker, no flag, and no note — byte-identical in shape to a
+  `search_and_fetch` result. The reason was logged to container stdout, which the caller
+  cannot read. An agent had no way to tell a synthesis from a failure, and the tool reported
+  success either way. Same family as #695, where the capabilities line reported `reranker=on`
+  through a 4.5h outage.
+
+  The fallback now leads with
+  `--- summarization unavailable (<kind>: <detail>) — the text below is raw fetched pages, NOT a synthesis ---`,
+  ahead of the results rather than buried under them. `summarizePages()` returns a
+  discriminated `failure` alongside the empty summary, because an empty summary was reached
+  by three materially different routes that the old sentinel flattened into one:
+  `not-configured` (no backend env var set — never a failure), `timeout`, `llm-error`,
+  `parse-error`, and `empty-response` (valid JSON, no summary in it — the model declined,
+  nothing broke). The MCP tool description now states the invariant explicitly: no marker
+  means a real synthesis.
+
+- **`think: false` is sent where Ollama actually reads it — reasoning traces have never
+  been suppressed on the Ollama branch (vikunja#703).** Both the `/api/chat` and
+  `/api/generate` bodies nested `think` inside `options`. In Ollama's API `think` is a
+  **top-level** request field; `options` is the model-parameter bag (temperature, num_ctx,
+  num_predict, …) and unrecognised keys there are silently ignored. So the flag had never
+  once taken effect, on either call.
+
+  Measured live against the deployed model, same payload: `options.think` returned a
+  `thinking` field in 20.0s; top-level `think` returned none in 0.3s.
+
+  This shipped because the only thinking-disabled assertion in the suite covered the
+  `LLM_BASE_URL` branch — the branch that worked — while the Ollama branch that forge
+  actually runs had none. The new regression tests assert the request body **exactly**, via
+  `toEqual` on the full object: a `toMatchObject`-style subset comparison passes on the buggy
+  body too, because it cannot see the stray `options` key that is the entire defect.
+
+### Added
+
+- **`OLLAMA_SUMMARIZE_TIMEOUT_MS` (default `120000`), replacing a hardcoded `45000`
+  (vikunja#703).** This was the only `*_TIMEOUT_MS` in the codebase that could not be
+  configured without a rebuild. The budget covers queue wait, model load **and** inference,
+  so any call that is the first in longer than the Ollama host's `OLLAMA_KEEP_ALIVE` pays a
+  full cold model load inside it — which is what aborted the original report at 45s.
+  Verified live: `OLLAMA_SUMMARIZE_TIMEOUT_MS=1500` against the real model aborts at 1.5s and
+  reports `kind: "timeout"`, so the knob is wired to the request rather than merely readable.
+
+- **Constrained decoding on the Ollama branch (vikunja#703).** The response contract the
+  system prompt has always described in prose is now also enforced by Ollama's `format`
+  parameter. The `LLM_BASE_URL` branch does not get it — vLLM/llama.cpp/LM Studio offer no
+  equivalent guarantee — so it keeps the regex-then-parse extraction, and the defensive
+  per-citation normalisation at the trust boundary stays on both paths regardless. A test
+  couples the schema to the prose in the system message, since they are now two statements of
+  one shape.
+
 ## [3.26.0] - 2026-09-06
 
 ### Security

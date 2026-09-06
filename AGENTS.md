@@ -8,7 +8,7 @@ Exposes seven MCP tools:
 
 - **`search`** — queries SearXNG, reranks results with a local ML model, returns top N structured results
 - **`search_and_fetch`** — same as `search` but also fetches full content of the top result(s) via the fetch cascade
-- **`search_and_summarize`** — search, fetch, then synthesize a summary with citations via Ollama (default `qwen3:14b`, override with `OLLAMA_SUMMARIZE_MODEL`)
+- **`search_and_summarize`** — search, fetch, then synthesize a summary with citations via Ollama (default `qwen3:14b`, override with `OLLAMA_SUMMARIZE_MODEL`). If the LLM is unavailable it degrades to raw fetched pages, and says so: the payload leads with a `--- summarization unavailable (<kind>: <detail>) ---` marker. Absence of that marker means you got a real synthesis.
 - **`fetch_url`** — fetch and extract readable markdown from any public URL; GitHub URLs use the GitHub API, YouTube/Reddit URLs have opt-in fast paths; optional `target_selector`/`wait_for_selector` and `max_tokens` budget
 - **`crawl_site`** — crawl a site and return a page manifest (Firecrawl → sitemap → optional BFS); content cached for follow-up `fetch_url`
 - **`clear_cache`** — purge the Valkey result cache (search, fetch, crawl, or all)

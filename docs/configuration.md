@@ -21,6 +21,7 @@ All service URLs are configurable via environment variables.
 | `OLLAMA_API_KEY` | *(unset)* | Bearer token for authenticated Ollama proxies — adds `Authorization: Bearer <key>` header when set |
 | `OLLAMA_EXPAND_MODEL` | `qwen3:4b` | Model used by query expansion (`expand` parameter). Override without rebuilding. |
 | `OLLAMA_SUMMARIZE_MODEL` | `qwen3:14b` | Model used by `search_and_summarize`. Override without rebuilding. |
+| `OLLAMA_SUMMARIZE_TIMEOUT_MS` | `120000` | Budget for the `search_and_summarize` LLM call. Covers queue wait, model load **and** inference — so a call that is the first in longer than the Ollama host's `OLLAMA_KEEP_ALIVE` pays a full cold model load inside it. Raise it if you run a large summarize model on a cold GPU. Invalid/non-positive values fall back to the default. |
 | `LLM_BASE_URL` | *(unset)* | OpenAI-compatible chat endpoint (e.g. vLLM, llama.cpp, LM Studio) for `expand` + `search_and_summarize`. Must include the API path — e.g. `http://host:8000/v1` — the server appends `/chat/completions`. When set, takes precedence over `OLLAMA_URL`, so an already-loaded model can be reused instead of running a separate Ollama model. |
 | `LLM_MODEL` | *(unset)* | Model id for the OpenAI-compatible backend; overrides `OLLAMA_EXPAND_MODEL` / `OLLAMA_SUMMARIZE_MODEL` when set. |
 | `LLM_API_KEY` | *(unset)* | Bearer token for the OpenAI-compatible backend — adds `Authorization: Bearer <key>` when set. |

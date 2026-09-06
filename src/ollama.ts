@@ -6,6 +6,7 @@ import {
   OLLAMA_API_KEY,
   OLLAMA_EXPAND_MODEL,
   OLLAMA_SUMMARIZE_MODEL,
+  OLLAMA_SUMMARIZE_TIMEOUT_MS,
   OLLAMA_URL,
 } from "./config.js";
 import { logThrottled } from "./log.js";
@@ -13,6 +14,7 @@ import type {
   Citation,
   OllamaChatResponse,
   OllamaGenerateResponse,
+  SummaryFailure,
   SummaryResult,
 } from "./types.js";
 
@@ -39,12 +41,29 @@ function warnIfCleartextLlmCredential(): void {
  *
  * Prefers an OpenAI-compatible endpoint (`LLM_BASE_URL`) so an already-loaded
  * vLLM / llama.cpp / LM Studio model can be reused; otherwise falls back to the
- * Ollama `/api/chat` endpoint. Both suppress reasoning traces.
+ * Ollama `/api/chat` endpoint.
+ *
+ * Both branches suppress reasoning traces, but by different mechanisms and on
+ * different terms. The OpenAI-compatible branch sends
+ * `chat_template_kwargs.enable_thinking`, and only when `LLM_DISABLE_THINKING`
+ * is set. The Ollama branch sends `think: false` unconditionally, as a
+ * TOP-LEVEL request field -- `options` is the model-parameter bag
+ * (temperature, num_ctx, num_predict, ...) and Ollama silently ignores
+ * unrecognised keys placed there. See vikunja#703: this was nested under
+ * `options` until v3.27.0, so it had never once taken effect.
  */
 async function llmChat(
   model: string,
   messages: ChatMessage[],
   timeoutMs: number,
+  /**
+   * JSON schema for Ollama's constrained decoding (`format`). Applied to the
+   * Ollama branch only -- the OpenAI-compatible branch has no equivalent
+   * guarantee across vLLM / llama.cpp / LM Studio, so it keeps the
+   * regex-then-parse extraction as its fallback. Callers wanting free text
+   * (expandQuery) simply omit it.
+   */
+  format?: unknown,
 ): Promise<string> {
   if (LLM_BASE_URL) {
     warnIfCleartextLlmCredential();
@@ -81,7 +100,8 @@ async function llmChat(
       model,
       messages,
       stream: false,
-      options: { think: false },
+      think: false,
+      ...(format !== undefined && { format }),
     }),
     signal: AbortSignal.timeout(timeoutMs),
   });
@@ -121,7 +141,7 @@ export async function expandQuery(query: string): Promise<string[]> {
           model: OLLAMA_EXPAND_MODEL,
           prompt,
           stream: false,
-          options: { think: false },
+          think: false,
         }),
         signal: AbortSignal.timeout(12000),
       });
@@ -143,11 +163,72 @@ export async function expandQuery(query: string): Promise<string[]> {
   }
 }
 
+/**
+ * Map a thrown error onto a SummaryFailure kind. Deliberately narrow: anything
+ * not positively identified as a timeout or a JSON parse failure is reported as
+ * `llm-error` rather than guessed at. A wrong reason in the marker is worse
+ * than a vague one -- it sends the reader after the wrong subsystem.
+ */
+function classifySummaryFailure(err: unknown): SummaryFailure {
+  const detail = err instanceof Error ? err.message : String(err);
+  // AbortSignal.timeout() rejects with a DOMException named TimeoutError.
+  // Some runtimes surface an abort as AbortError; treat both as the budget.
+  if (
+    err instanceof Error &&
+    (err.name === "TimeoutError" || err.name === "AbortError")
+  ) {
+    return { kind: "timeout", detail };
+  }
+  if (err instanceof SyntaxError) {
+    return { kind: "parse-error", detail };
+  }
+  return { kind: "llm-error", detail };
+}
+
+/**
+ * The response contract for summarizePages, as a JSON schema for Ollama's
+ * `format` (constrained decoding).
+ *
+ * This MUST stay in step with the prose schema in the system message below and
+ * with the Citation interface in types.ts -- three statements of one shape.
+ * Constrained decoding makes malformed JSON far less likely but not impossible
+ * (the LLM_BASE_URL branch does not get it at all), so the per-citation
+ * normalisation at the trust boundary stays regardless.
+ */
+const SUMMARY_JSON_SCHEMA = {
+  type: "object",
+  properties: {
+    summary: { type: "string" },
+    citations: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          url: { type: "string" },
+          title: { type: "string" },
+          key_facts: { type: "array", items: { type: "string" } },
+        },
+        required: ["url", "title", "key_facts"],
+      },
+    },
+  },
+  required: ["summary", "citations"],
+} as const;
+
 export async function summarizePages(
   query: string,
   pages: Array<{ title: string; url: string; text: string }>,
 ): Promise<SummaryResult> {
-  if (!OLLAMA_URL && !LLM_BASE_URL) return { summary: "", citations: [] };
+  if (!OLLAMA_URL && !LLM_BASE_URL) {
+    return {
+      summary: "",
+      citations: [],
+      failure: {
+        kind: "not-configured",
+        detail: "neither OLLAMA_URL nor LLM_BASE_URL is set",
+      },
+    };
+  }
   if (pages.length === 0) {
     return { summary: "No content to summarize.", citations: [] };
   }
@@ -179,7 +260,8 @@ export async function summarizePages(
     const content = await llmChat(
       LLM_MODEL || OLLAMA_SUMMARIZE_MODEL,
       messages,
-      45000,
+      OLLAMA_SUMMARIZE_TIMEOUT_MS,
+      SUMMARY_JSON_SCHEMA,
     );
     const raw = (content.match(/\{[\s\S]*\}/) ?? [content])[0];
     // The model controls this JSON, so treat it as untrusted and normalize
@@ -210,18 +292,65 @@ export async function summarizePages(
           };
         })
       : [];
-    return {
-      summary: typeof parsed.summary === "string" ? parsed.summary : "",
-      citations,
-    };
+    const summary =
+      typeof parsed.summary === "string" ? parsed.summary.trim() : "";
+    if (!summary) {
+      // Parsed cleanly, but there is no synthesis in it. Nothing failed; the
+      // model declined or answered off-schema. Still a fallback, still must
+      // announce itself.
+      logThrottled(
+        "degrade:ollama-summarize",
+        "summarization unavailable - the model returned no summary field; returning raw pages instead of a synthesis",
+      );
+      return {
+        summary: "",
+        citations,
+        failure: {
+          kind: "empty-response",
+          detail: "model returned no usable summary field",
+        },
+      };
+    }
+    return { summary, citations };
   } catch (err) {
     // Ollama unavailable, timeout, or parse error — signal fallback to raw pages.
     logThrottled(
       "degrade:ollama-summarize",
       `summarization unavailable — returning raw pages instead of a synthesis: ${err instanceof Error ? err.message : String(err)}`,
     );
-    return { summary: "", citations: [] };
+    return { summary: "", citations: [], failure: classifySummaryFailure(err) };
   }
+}
+
+/**
+ * The marker line that heads a raw-pages fallback. vikunja#703: without it the
+ * fallback payload is byte-identical in shape to a successful `search_and_fetch`
+ * and an agent cannot tell a synthesis from a failure. The server already logged
+ * the reason, but container stdout is not reachable by the caller.
+ */
+export function formatSummaryFallbackNotice(
+  failure: SummaryFailure | undefined,
+): string {
+  const reason = failure
+    ? `${failure.kind}: ${sanitizeFailureDetail(failure.detail)}`
+    : "reason unrecorded";
+  return `--- summarization unavailable (${reason}) — the text below is raw fetched pages, NOT a synthesis ---`;
+}
+
+/**
+ * Bound an error message before it reaches the MCP response (baseline OE-02).
+ *
+ * `detail` is an arbitrary `Error.message`, and the summarize path handles
+ * model output derived from fetched web pages — so it is attacker-influenceable
+ * in principle even though today's sources (fetch failures, HTTP status,
+ * V8 JSON position errors) are all benign. Collapsing newlines matters
+ * specifically because the marker is a single line: a detail containing one
+ * could forge a second marker, or fake structure, inside the notice it is
+ * embedded in. Escaping belongs at the sink, which is here.
+ */
+function sanitizeFailureDetail(detail: string): string {
+  const collapsed = detail.replace(/\s+/g, " ").trim();
+  return collapsed.length > 200 ? `${collapsed.slice(0, 200)}…` : collapsed;
 }
 
 export function formatSummaryResult(result: SummaryResult): string {

@@ -55,10 +55,24 @@ vi.mock("../src/fetch.js", () => ({
   }),
 }));
 
-vi.mock("../src/ollama.js", () => ({
-  summarizePages: vi.fn().mockResolvedValue({ summary: "", citations: [] }),
-  formatSummaryResult: vi.fn().mockReturnValue("## Summary\n\ntest"),
-}));
+vi.mock("../src/ollama.js", async () => {
+  // formatSummaryFallbackNotice is deliberately NOT stubbed. The marker's
+  // wording is the contract under test in the fallback cases below -- a stub
+  // would only assert against a string this file made up.
+  const actual =
+    await vi.importActual<typeof import("../src/ollama.js")>(
+      "../src/ollama.js",
+    );
+  return {
+    summarizePages: vi.fn().mockResolvedValue({
+      summary: "",
+      citations: [],
+      failure: { kind: "timeout", detail: "aborted due to timeout" },
+    }),
+    formatSummaryResult: vi.fn().mockReturnValue("## Summary\n\ntest"),
+    formatSummaryFallbackNotice: actual.formatSummaryFallbackNotice,
+  };
+});
 
 vi.mock("../src/events.js", () => ({
   events: {
@@ -82,6 +96,7 @@ vi.mock("../src/context.js", () => ({
 import { cacheClear, cacheGet, getValkey } from "../src/cache.js";
 import type { DomainRecord } from "../src/domain-db.js";
 import { fetchPage } from "../src/fetch.js";
+import { summarizePages } from "../src/ollama.js";
 import { searxSearch } from "../src/search.js";
 import {
   handleClearCache,
@@ -215,8 +230,46 @@ describe("handleSearchAndSummarize", () => {
       query: "test",
       fetch_count: 2,
     });
-    // summarizePages returns {summary: "", citations: []} — should fall back
+    // summarizePages returns an empty summary — should fall back
     expect(result.content[0].text).toContain("Full content");
+  });
+
+  // vikunja#703 — the original defect. The fallback payload was byte-identical
+  // in shape to search_and_fetch output, so a caller could not tell a synthesis
+  // from a failure. The reason reached container stdout and nowhere else.
+  it("announces the fallback, and names its cause, in the response body", async () => {
+    const result = await handleSearchAndSummarize({
+      query: "test",
+      fetch_count: 2,
+    });
+    const text = result.content[0].text;
+    expect(text).toContain("summarization unavailable");
+    expect(text).toContain("timeout: aborted due to timeout");
+    expect(text).toContain("NOT a synthesis");
+  });
+
+  it("leads with the marker, ahead of the results the caller would read first", async () => {
+    const result = await handleSearchAndSummarize({
+      query: "test",
+      fetch_count: 2,
+    });
+    const text = result.content[0].text;
+    // A marker buried under a page of raw content is one a caller scrolls past.
+    expect(text.indexOf("summarization unavailable")).toBeLessThan(
+      text.indexOf("Full content"),
+    );
+  });
+
+  it("emits no marker on the success path", async () => {
+    vi.mocked(summarizePages).mockResolvedValueOnce({
+      summary: "a real synthesis",
+      citations: [],
+    });
+    const result = await handleSearchAndSummarize({
+      query: "test",
+      fetch_count: 2,
+    });
+    expect(result.content[0].text).not.toContain("summarization unavailable");
   });
 
   it("returns No results found when search returns empty", async () => {

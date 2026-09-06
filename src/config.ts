@@ -266,6 +266,15 @@ export const OLLAMA_EXPAND_MODEL =
   process.env.OLLAMA_EXPAND_MODEL ?? "qwen3:4b";
 export const OLLAMA_SUMMARIZE_MODEL =
   process.env.OLLAMA_SUMMARIZE_MODEL ?? "qwen3:14b";
+// vikunja#703: this budget covers queue wait, model load AND inference, so a
+// call that is the first in longer than OLLAMA_KEEP_ALIVE pays a multi-GB cold
+// load inside it. The previous hardcoded 45000 could not absorb that and
+// aborted mid-flight, degrading silently to raw pages. 120s is headroom for a
+// cold load, not a routine cost -- the warm path is ~13s.
+export const OLLAMA_SUMMARIZE_TIMEOUT_MS = positiveIntEnv(
+  "OLLAMA_SUMMARIZE_TIMEOUT_MS",
+  120000,
+);
 // OpenAI-compatible chat backend for expand + summarize (vLLM, llama.cpp, LM
 // Studio, etc.). When LLM_BASE_URL is set it takes precedence over the Ollama
 // endpoint, so an already-loaded chat model can be reused instead of running a
