@@ -128,6 +128,44 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   "There are 32 threads, so 8.00GiB are required", with no hardening involved.
   `--proactor_threads=4` is now pinned in both files.
 
+- **Tier-1 adblocking now applies to the renderer this project actually uses (vikunja#696).**
+  `docker/playwright-adblock/` layers EasyList + EasyPrivacy onto
+  `ghcr.io/firecrawl/playwright-service`, Firecrawl v2's renderer.
+  `docker/puppeteer-adblock/` targets the **v1** renderer, and searxng-mcp defaults to
+  `FIRECRAWL_API_VERSION=v2` — so on every v2 deployment, tier-1 adblocking was simply
+  absent. This is an **upgrade of upstream's existing `AD_SERVING_DOMAINS` token list, not a
+  new feature**; that list still applies underneath, because the hook defers to it.
+
+  **The dangerous part, and why the acceptance test is not "are ads blocked".** The hook
+  installs a request interceptor in front of Firecrawl's in-browser SSRF guard. Playwright
+  runs handlers in reverse registration order and `route.continue()` dispatches without
+  invoking the rest, so a handler that calls `continue()` silently deletes
+  `assertSafeTargetUrl`. Every path out of this handler ends in `abort()` or `fallback()`.
+
+  This is not theoretical: `@ghostery/adblocker-playwright`'s own `enableBlockingInPage()`
+  registers `page.route('**/*')` — page routes outrank context routes — and calls
+  `route.continue()`. Using the library the obvious way *is* the vulnerability. The hook
+  therefore reuses its matching via `fromPlaywrightDetails()` + `match()` while keeping
+  control of the disposition.
+
+  `verify-ssrf-guard.sh` asserts upstream's handler still executes, then builds a
+  deliberately broken variant and asserts the signal disappears. Measured:
+
+  | build | `/scrape` | upstream handler ran? |
+  |---|---|---|
+  | shipped (`fallback`) | HTTP 200 | yes |
+  | regression (`continue`) | HTTP 200 | **no — guard gone** |
+
+  Both return 200, both render, both block ads. That is the whole point.
+
+  Filter lists are **baked into the image**. Fetching them at startup crashed the service
+  outright in testing — undici threw `AssertionError: assert(!this.paused)` from inside its
+  own parser, asynchronously and past any `.catch()`. Same reasoning as vendoring
+  FlashRank's model in v3.25.0.
+
+  `docker-compose.full.yml` repoints its renderer at the new build (note port 3003, not
+  3000). `docker/puppeteer-adblock/` is kept for v1 adopters and marked v1-only.
+
 - **vikunja#687 needed closing, not building.** Its premise died in v3.25.0: `648b60e`
   replaced the bare `catch { return null }` at `crawl4ai.ts:197` that the ticket describes.
   What survived was the *class*, in other files, which is what the above addresses.

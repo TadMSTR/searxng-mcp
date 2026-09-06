@@ -1,3 +1,14 @@
+> **⚠ This targets the v1 renderer only.**
+>
+> This image layers adblocking onto `trieve/puppeteer-service-ts`, the renderer
+> used by **firecrawl-simple / Firecrawl v1**. searxng-mcp defaults to
+> `FIRECRAWL_API_VERSION=v2`, whose renderer is
+> `ghcr.io/firecrawl/playwright-service` — see **`docker/playwright-adblock/`**
+> for that one.
+>
+> Kept for adopters still on the v1 path. If you are on v2, this directory does
+> nothing for you (vikunja#696).
+
 # puppeteer-adblock
 
 Docker image that layers `@ghostery/adblocker-puppeteer` (EasyList + EasyPrivacy)
