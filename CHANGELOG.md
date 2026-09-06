@@ -6,6 +6,85 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [3.24.0] - 2026-09-06
+
+Consolidated fix pass closing ten tickets (build `searxng-mcp-fix-pass-2026-09`). **PDF
+fetching worked for no one and now works** — the headline change is a deletion, not a feature.
+
+### Fixed
+- **PDFs were routed to the one tier that cannot read them** (vikunja#682). A fast path in
+  `fetch.ts` matched `.pdf` on the pathname and dispatched straight to tier 2, on a comment
+  asserting *"Firecrawl can't extract PDF text"*. That was true of trieve/firecrawl v0.0.55 and
+  false of the v2 backend deployed since. Crawl4AI, meanwhile, renders the PDF in a browser,
+  finds no text nodes and trips its own anti-bot heuristic — and the resulting `null` was
+  reported as `"CRAWL4AI_URL not configured"` on containers where it plainly was, sending
+  investigators to check config that was already correct. The fast path is gone; PDFs take the
+  ordinary cascade and tier 1 serves them.
+- **`isPdfUrl` removed with it.** Suffix matching was never the right predicate — it missed
+  every PDF served from an extensionless URL, and those hit the tier-3 rejection instead. PDF
+  handling is now keyed on `Content-Type` **plus** the `%PDF-` body signature, so a page
+  mislabelled `application/pdf` is extracted rather than hard-failing.
+- **The tier-3 rejection no longer says "use Crawl4AI"** — wrong twice over, since Crawl4AI
+  cannot parse PDFs either and reaching tier 3 means tier 1 already declined. It now names the
+  actual cause and differs by backend version.
+- **Every tier-1 scrape failed under `FIRECRAWL_API_VERSION=v1`** (vikunja#649). `formats` was
+  an unconditional `["markdown", "html"]`, but v1's enum is `markdown | rawHtml | screenshot`
+  and it rejects `html` with a 400 that fails the whole scrape. The read side had the mirror
+  defect. Both are now keyed on the version — latent under v2, live on any rollback.
+- **The crawl4ai job poll was broken two ways** (vikunja#684). The route `/task/{task_id}` does
+  not exist on 0.8.6 — it 404s, and the miss was indistinguishable from a page with no content.
+  The response shape had also changed: a completed job nests the crawl result one level deeper
+  than the old code read, so fixing only the route would have turned a 404 into a 200 that still
+  produced no text. Both fixed; the older flat shape is still accepted. A 404 now logs, naming
+  the targeted crawl4ai version.
+- **The outbound User-Agent lied on every request from three modules** (vikunja#641).
+  `llms-txt.ts` claimed 3.8.0; `reddit.ts` and `youtube.ts` both claimed 3.15.0. All now use the
+  shared constant built from `package.json`, and a test rejects any hardcoded
+  `searxng-mcp/<semver>` literal in `src/` — this was the second round of the same drift.
+
+### Changed
+- **A failed fetch now says why, per tier** (vikunja#682 part 4). `"All fetch tiers failed"` was
+  equally consistent with nothing being configured, a backend being down, and the page genuinely
+  having no content. The error now names each tier and what happened to it — distinguishing
+  `skipped (not_configured)` from `attempted, no content` from an upstream error. Upstream error
+  text is bounded to 200 characters.
+- **`domain_stats` reports the window it actually measured** (vikunja#686). The aggregate header
+  printed a constant `"30d window"` from a TTL ceiling, not a measurement period — against the
+  live database it would have claimed thirty days over a window 33 hours old. It now renders the
+  real elapsed window and the schema version, both also exposed in `structuredContent`.
+- **Thin samples no longer render as percentages.** Below five attempts a single outcome moves
+  the rate by at least 20 points, so `0% ok (0/2)` and `0% ok (0/50)` read alike while being
+  wholly different findings. Under the threshold this now shows `insufficient data (0/2)`;
+  `no data` stays distinct.
+- **README split** (vikunja#683). 905 lines / 70KB down to ~190, with the reference material
+  moved to `docs/` behind an index. Adds a "Why searxng-mcp?" comparison table. The npm package
+  now ships `docs/`, so its README's links resolve.
+
+### Added
+- **Container image published to `ghcr.io/tadmstr/searxng-mcp`** on every release tag
+  (vikunja#681). `linux/amd64`, gated on the same smoke assertions CI runs — `/health`
+  unauthenticated, `/mcp` 401/401/200, uid 1000 — executed against the exact image that is then
+  pushed, with build provenance attested to the registry. Both `vX.Y.Z` and `X.Y.Z` tags are
+  published; floating `X.Y` and `latest` move only for non-prereleases.
+- **A per-version Firecrawl capability table** in `src/firecrawl-api.ts`. Four behaviours now
+  differ between backends (`actions`, `map`, `pdf`, `htmlFormat`); the existing
+  `firecrawlSupportsX` helpers are thin readers over it.
+
+### Security
+- **Dev dependency tree is now gated** (vikunja#634). `pnpm audit --prod` covered what ships;
+  nothing covered the build and test tooling, and vite carried GHSA-fx2h-pf6j-xcff (high,
+  `server.fs.deny` bypass) and GHSA-v6wh-96g9-6wx3 for ten releases. vite 8.0.7 → 8.2.2, and
+  `pnpm audit --dev` runs as its own CI step — separate from `--prod`, so a red gate keeps
+  meaning one thing.
+- Upstream error text relayed in the new per-tier failure reason is length-bounded. Accepted at
+  audit as `OE-02`; see `host-forge/security/accepted-risks.md`.
+
+### Internal
+- Coverage floor raised 72/65/74/74 → 84/77/83/86 against a measured
+  85.51/78.54/84.86/87.83 (vikunja#680). The previous floor was set 2026-07-12 and went ten
+  releases without moving, so it had come to permit a twelve-point silent regression.
+- Tests 883 → 927.
+
 ## [3.23.0] - 2026-09-04
 
 Firecrawl v2 client behind a configuration axis (build

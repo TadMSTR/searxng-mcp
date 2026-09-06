@@ -127,6 +127,18 @@ interface TierOutcome {
  * resolved address off its message, raw.ts's redirect throw deliberately omits
  * the Location header, and the tier errors carry status codes rather than URLs.
  */
+// SECURITY[accepted]: relaying Firecrawl's upstream `data.error` verbatim, bounded
+// to 200 chars, is accepted rather than classified down to a canned reason. This
+// server is loopback-only and its callers are forge agents that already hold the
+// requested URL, so the text discloses nothing they do not have; every other
+// reason this path can carry is topology-safe by construction (see boundReason).
+// Dropping the upstream string would claw back the diagnostic value this whole
+// change exists to add — "All fetch tiers failed" telling an investigator nothing
+// is what cost weeks on vikunja#682. Audit: 2026-09-06/searxng-mcp-fix-pass-2026-09,
+// finding OE-02 (Low). Decision: Ted, 2026-09-06.
+// SECURITY[control]: length bound below; content needs no filter because
+// SsrfBlockedError omits the resolved address and raw.ts's redirect throw omits
+// Location, both deliberately.
 const MAX_TIER_REASON_CHARS = 200;
 
 function boundReason(reason: string): string {
@@ -460,6 +472,17 @@ export async function fetchPage(
       // catches literal private IPs. Throws SsrfBlockedError on a private
       // resolution (surfaces to the caller as a fetch error).
       await assertResolvedPublic(url);
+
+      // SECURITY[accepted]: PDF URLs now take this path to tier 1 rather than
+      // being diverted earlier, so they share tier 1's pre-existing SSRF-10
+      // exposure — Firecrawl and Crawl4AI resolve and connect in their own
+      // processes, so the pre-check above narrows but cannot fully close the
+      // DNS-rebinding TOCTOU window for them. No new code-level gap: the gap is
+      // unchanged, only the set of URLs traversing it grew. Audit:
+      // 2026-09-06/searxng-mcp-fix-pass-2026-09, finding SSRF-10 (Low) —
+      // auditor's own disposition was "no action required from this build".
+      // SECURITY[control]: assertResolvedPublic runs once here, before any tier
+      // dispatch, for every URL including PDFs.
 
       // No PDF fast path. There used to be one here, routing every `.pdf` URL
       // straight to tier 2 on the strength of "Firecrawl can't extract PDF
