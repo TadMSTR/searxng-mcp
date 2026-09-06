@@ -42,6 +42,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `toEqual` on the full object: a `toMatchObject`-style subset comparison passes on the buggy
   body too, because it cannot see the stray `options` key that is the entire defect.
 
+### Security
+
+- **`JSON.parse`'s error text can echo model output — accepted at Low, and the code comment
+  that said otherwise is corrected (audit LOW, 2026-09-06).** `sanitizeFailureDetail`'s
+  rationale claimed V8's JSON `SyntaxError` reports positions rather than echoing the unparsed
+  content. That is true of the `Expected ','` family and false of the `Unexpected token`
+  family, which quotes a ~10-30 char snippet verbatim — the claim was generalised from a
+  single tested shape. The bound (whitespace-collapse, 200-char cap) already covered it, so no
+  behaviour changes; the comment now states which family does what, and says the bound must
+  not be removed on the grounds that the sources look benign.
+
+  This is the third structurally identical OE-02 relay in this repo, after `src/fetch.ts`
+  (Firecrawl's `data.error`) and `src/tiers/crawl4ai.ts` (Crawl4AI's `detail`/`error`). All
+  three are now recorded as accepted at Low in
+  `host-forge-build-reports/searxng-mcp-summarize-repair-2026-09/accepted-risks.md` — the
+  first two had been recommended by their own audits but never written down.
+
 ### Added
 
 - **`OLLAMA_SUMMARIZE_TIMEOUT_MS` (default `120000`), replacing a hardcoded `45000`

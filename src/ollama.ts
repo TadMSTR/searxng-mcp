@@ -341,12 +341,24 @@ export function formatSummaryFallbackNotice(
  * Bound an error message before it reaches the MCP response (baseline OE-02).
  *
  * `detail` is an arbitrary `Error.message`, and the summarize path handles
- * model output derived from fetched web pages — so it is attacker-influenceable
- * in principle even though today's sources (fetch failures, HTTP status,
- * V8 JSON position errors) are all benign. Collapsing newlines matters
- * specifically because the marker is a single line: a detail containing one
- * could forge a second marker, or fake structure, inside the notice it is
- * embedded in. Escaping belongs at the sink, which is here.
+ * model output derived from fetched web pages — so it is attacker-influenceable,
+ * and NOT merely in principle.
+ *
+ * Specifically: V8's `JSON.parse` splits into two error families, and only one
+ * of them is positional. `Expected ',' or '}' ... at position 17` discloses
+ * nothing, but `Unexpected token 'A', ..."summary": ATTACKER-T"... is not valid
+ * JSON` quotes a ~10-30 char snippet of the unparsed model output verbatim. An
+ * earlier version of this comment claimed the whole class was position-only;
+ * that was generalised from one shape and is wrong (security audit,
+ * searxng-mcp-summarize-repair-2026-09, LOW). Disclosure is accepted at Low —
+ * see `accepted-risks.md` row 3 in that build's report directory — precisely
+ * BECAUSE this function bounds it, so do not remove the bound on the basis that
+ * the sources look benign.
+ *
+ * Collapsing whitespace matters specifically because the marker is a single
+ * line: a detail containing a newline could forge a second marker, or fake
+ * structure, inside the notice it is embedded in. Escaping belongs at the sink,
+ * which is here.
  */
 function sanitizeFailureDetail(detail: string): string {
   const collapsed = detail.replace(/\s+/g, " ").trim();
