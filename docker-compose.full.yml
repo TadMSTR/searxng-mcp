@@ -6,7 +6,7 @@
 #
 # Network isolation (NE-02):
 #   fetch-net    — adblock-proxy + crawl4ai only; proxy unreachable from unrelated services
-#   firecrawl-net — firecrawl-api + firecrawl-redis + firecrawl-puppeteer
+#   firecrawl-net — firecrawl-api + firecrawl-redis + firecrawl-playwright
 #   (default)    — cache, ollama, reranker, kiwix, nats; isolated from proxy
 #
 # Prerequisites:
@@ -79,13 +79,13 @@ services:
     cpus: 2.0
     environment:
       REDIS_URL: redis://firecrawl-redis:6379
-      PLAYWRIGHT_MICROSERVICE_URL: http://firecrawl-puppeteer:3000
+      PLAYWRIGHT_MICROSERVICE_URL: http://firecrawl-playwright:3003
       USE_DB_AUTHENTICATION: "false"
     ports:
       - "127.0.0.1:3002:3002"
     depends_on:
       - firecrawl-redis
-      - firecrawl-puppeteer
+      - firecrawl-playwright
     networks:
       - firecrawl-net
 
@@ -110,22 +110,34 @@ services:
     networks:
       - firecrawl-net
 
-  firecrawl-puppeteer:
-    # Custom build: trieve/puppeteer-service-ts + @ghostery/adblocker-puppeteer
-    # See docker/puppeteer-adblock/README.md for details.
+  firecrawl-playwright:
+    # Custom build: ghcr.io/firecrawl/playwright-service + EasyList/EasyPrivacy
+    # via @ghostery/adblocker-playwright. See docker/playwright-adblock/README.md
+    # — and read its SSRF note before changing the route handler.
+    #
+    # Replaces the former puppeteer-based service, which layered adblocking onto
+    # the v1 renderer (trieve/puppeteer-service-ts). This repo defaults to
+    # FIRECRAWL_API_VERSION=v2, whose renderer is the playwright service — so
+    # tier-1 adblocking did not apply to the configuration this project actually
+    # runs (vikunja#696). docker/puppeteer-adblock/ is kept for adopters still on
+    # v1 and is marked v1-only in its README.
+    #
+    # NOTE: the port is 3003, not 3000 — the two renderers differ.
     build:
-      context: ./docker/puppeteer-adblock
+      context: ./docker/playwright-adblock
     restart: unless-stopped
     cap_drop: [ALL]
     security_opt: [no-new-privileges:true]
-    # No `read_only`: not verified — this service is built from this repo and
-    # a Chromium sandbox writes outside /tmp. Left off rather than guessed.
+    # No `read_only`: not verified — Chromium writes outside /tmp. Left off
+    # rather than guessed.
     mem_limit: 2g
     cpus: 2.0
     environment:
-      ADBLOCK_FILTERS_URL: "https://easylist.to/easylist/easylist.txt,https://easylist.to/easylist/easyprivacy.txt"
-      ADBLOCK_REFRESH_HOURS: "168"
+      # ADBLOCK_FILTERS_URL is deliberately unset: the filter lists are baked
+      # into the image, and setting this opts back into fetching them at
+      # runtime — the switch defeated by its own default.
       # Set ADBLOCK_DISABLE=true to disable adblocking for debugging.
+      ADBLOCK_DISABLE: "${ADBLOCK_DISABLE:-false}"
     networks:
       - firecrawl-net
 
