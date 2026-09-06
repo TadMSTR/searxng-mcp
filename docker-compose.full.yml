@@ -18,6 +18,13 @@
 #       docker exec ollama ollama pull qwen3:14b
 #   - NATS: update NATS_CREDS path if using credential-based auth.
 
+# Pinned so the project name comes from this file rather than from whatever
+# the clone directory happens to be called. Compose project names are global to
+# the Docker host, and a directory-derived one silently shares a namespace with
+# any other stack of the same name — `down` in one removes the other's
+# containers. vikunja#694.
+name: searxng-mcp
+
 services:
   # ── Cache backend (Redis-compatible) ────────────────────────────────────────
   cache:

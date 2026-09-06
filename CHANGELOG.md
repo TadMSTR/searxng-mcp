@@ -6,6 +6,46 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [3.25.1] - 2026-09-06
+
+Patch for a trap shipped in v3.25.0. Released on its own, ahead of the rest of the
+observability work, because the defective file is published and destroys production
+containers on a host that already runs a stack of the same name.
+
+### Fixed
+- **`docker compose down` in `docker/reranker/` removed another stack's containers**
+  (vikunja#694). Compose derives the project name from the directory basename, and both this
+  directory and the conventional deployment directory are called `reranker`. Project names are
+  global to the Docker host, so `down` here matched the *other* stack's containers by label and
+  removed them — no warning, no prompt. That is how a production reranker was removed for ~4.5h
+  on 2026-09-06. The project name is now pinned with a top-level `name: searxng-mcp-reranker`,
+  which decouples it from the directory entirely.
+
+  Measured rather than reasoned: with the v3.25.0 file in a directory named `reranker`,
+  `docker compose down --dry-run` reports `Container reranker Stopping / Stopped / Removing /
+  Removed` against the live production container. With the fix, from the same directory, it
+  matches nothing. Clone-and-up now starts a second container
+  (`searxng-mcp-reranker-reranker-1`, healthy, `model_loaded: true`) beside a running
+  production reranker, and tearing the clone down leaves production serving.
+
+  **Note the ticket's stated mechanism was wrong, and the fix it prescribed would not have
+  worked.** `container_name` was blamed, but a fixed container name causes `up` to fail
+  *loudly* with a name conflict; it is the directory-derived *project* name that makes `down`
+  destructive and silent. Deleting `container_name` alone would have left this behaviour
+  untouched — and made `up` from a clone silently adopt the production container instead of
+  erroring.
+- **`container_name: reranker` removed** from the same file. It is the loud half of the same
+  collision: `up` fails with a conflict whose suggested remedy is `docker rm -f reranker`,
+  which is the other way the outage happened. A comment records why it is absent.
+- **`docker-compose.full.yml` and `docker-compose.example.yml` pinned to `name: searxng-mcp`**,
+  matching their conventional default, so neither can inherit a colliding project name from
+  whatever a clone directory is called.
+
+### Changed
+- The standalone reranker's host port is now `RERANKER_HOST_PORT`, defaulting to `8787`. The
+  default is unchanged so the copy-paste path still works; the variable exists so a host
+  already serving 8787 has a documented way out that is not "remove the other container".
+
 ## [3.25.0] - 2026-09-06
 
 **Fetch tier 2 was failing 100% of crawls and is restored.** Not a regression introduced here —

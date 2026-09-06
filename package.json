@@ -1,7 +1,7 @@
 {
   "name": "@tadmstr/searxng-mcp",
-  "version": "3.25.0",
-  "description": "MCP server for SearXNG \u2014 private web search for Claude Code",
+  "version": "3.25.1",
+  "description": "MCP server for SearXNG — private web search for Claude Code",
   "main": "build/src/index.js",
   "bin": {
     "searxng-mcp": "build/src/index.js"
@@ -65,7 +65,8 @@
     "ajv": "^8.20.0",
     "typescript": "^5.9.3",
     "vite": "^8.0.16",
-    "vitest": "^4.1.10"
+    "vitest": "^4.1.10",
+    "yaml": "^2.9.0"
   },
   "pnpm": {
     "overrides": {

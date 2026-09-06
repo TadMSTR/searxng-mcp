@@ -28,6 +28,25 @@ RERANKER_URL=http://localhost:8787     # this is already the default
 
 Nothing else is required. There is no API key, no GPU, and no external service.
 
+### If you already run something on 8787
+
+8787 is `RERANKER_URL`'s default, so this file keeps it — the copy-paste path
+should work unmodified. On a host already serving something there, the bind
+fails with `address already in use`. That is deliberate: two rerankers on one
+port is a mistake worth surfacing rather than routing around. Move this one and
+tell searxng-mcp where it went:
+
+```bash
+RERANKER_HOST_PORT=8788 docker compose up -d
+RERANKER_URL=http://localhost:8788
+```
+
+The compose project is pinned to `searxng-mcp-reranker`, so running this from a
+clone is isolated from any other stack on the host regardless of what the
+directory is called — including one of your own called `reranker`. Before
+v3.25.1 it was not, and `docker compose down` here would have removed that
+other stack's containers without asking (vikunja#694).
+
 ## The contract
 
 `POST /v1/rerank` — Jina-compatible, so anything that speaks Jina's reranking
