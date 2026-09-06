@@ -100,6 +100,34 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   an unserved endpoint reported as an empty answer: the same defect class as everything else
   in this release, which is why it was checked rather than acted on.
 
+- **Compose hardening retrofitted to the two top-level files (vikunja#693).** `cap_drop:
+  [ALL]`, `security_opt: [no-new-privileges:true]` and memory/CPU limits on all ten services;
+  `read_only: true` only where it was verified by running the service. Directive counts went
+  from 0 and 0 to 51 and 7.
+
+  Every setting was probed against a **green no-hardening baseline first**, which is what
+  made the results mean anything. Four things a diff read would have got wrong:
+
+  - **`cache` and `firecrawl-redis` need two capabilities back.** Both drop privileges with
+    `setpriv`, so a bare `cap_drop: [ALL]` kills them with `setpriv: setresuid failed:
+    Operation not permitted`. `cap_add: [SETUID, SETGID]` fixes both.
+  - **`crawl4ai` gets no `read_only`.** Three configurations were run and none is fit to
+    ship: `/tmp` alone crash-loops gunicorn on `/home/appuser/.crawl4ai`; adding that path
+    serves but still errors on `/home/appuser/.gunicorn`; a tmpfs over the whole home
+    directory logs clean and leaves the service unhealthy and unreachable.
+  - **`ollama` gets no `read_only`** — verified failing both with and without a tmpfs.
+  - `nats` needs `read_only` *and* a writable `/tmp`; `read_only` alone exits 1.
+
+  `kiwix`, `firecrawl-api` and `firecrawl-puppeteer` carry `cap_drop` and the limits but no
+  `read_only`: they could not be started here (no `.zim` corpus, no API keys, Chromium
+  sandbox), so it is recorded as unverified rather than assumed safe.
+
+  Also fixed while running it: the reference `cache` command line could not start on a large
+  host at all. Dragonfly sizes io threads to the core count and refuses to boot if
+  `maxmemory` is below 256MiB per thread — on a 32-core machine `--maxmemory=2gb` exits with
+  "There are 32 threads, so 8.00GiB are required", with no hardening involved.
+  `--proactor_threads=4` is now pinned in both files.
+
 - **vikunja#687 needed closing, not building.** Its premise died in v3.25.0: `648b60e`
   replaced the bare `catch { return null }` at `crawl4ai.ts:197` that the ticket describes.
   What survived was the *class*, in other files, which is what the above addresses.
