@@ -62,19 +62,31 @@ spec's *fallback tag* scheme instead, publishing the referrers index under a tag
 named `sha256-<digest>`:
 
 ```bash
-# Resolve the image digest, then read the referrers index from the fallback tag
-DIGEST=$(crane digest ghcr.io/tadmstr/searxng-mcp:latest)
-crane manifest "ghcr.io/tadmstr/searxng-mcp:${DIGEST/:/-}"
+REPO=tadmstr/searxng-mcp
+TOKEN=$(curl -s "https://ghcr.io/token?scope=repository:$REPO:pull&service=ghcr.io" \
+  | python3 -c 'import json,sys; print(json.load(sys.stdin)["token"])')
+
+# Resolve the tag to a digest...
+DIGEST=$(curl -sI -H "Authorization: Bearer $TOKEN" \
+  -H "Accept: application/vnd.oci.image.index.v1+json,application/vnd.docker.distribution.manifest.list.v2+json,application/vnd.oci.image.manifest.v1+json,application/vnd.docker.distribution.manifest.v2+json" \
+  "https://ghcr.io/v2/$REPO/manifests/latest" \
+  | tr -d '\r' | awk -F': ' '/[Dd]ocker-[Cc]ontent-[Dd]igest/{print $2}')
+
+# ...then read the referrers index from the fallback tag (note ':' -> '-')
+curl -s -H "Authorization: Bearer $TOKEN" \
+  -H "Accept: application/vnd.oci.image.index.v1+json" \
+  "https://ghcr.io/v2/$REPO/manifests/${DIGEST/:/-}" | python3 -m json.tool
 ```
 
 which returns an index whose entry carries
 `artifactType: application/vnd.dev.sigstore.bundle.v0.3+json` and
 `dev.sigstore.bundle.predicateType: https://slsa.dev/provenance/v1`.
 
-Tools that implement the fallback (`cosign`, `oras`, `crane`) find it without
-help. A bare `curl` against the referrers endpoint does not, and reports zero.
-Verified 2026-09-06 against both published images at v3.25.0 and v3.25.1
-(vikunja#689).
+`cosign`, `oras` and `crane` implement the fallback and find this without any
+of the above. A bare `curl` against `/referrers/` does not, and reports zero —
+which is exactly how vikunja#689 came to conclude the attestation was missing.
+
+Verified 2026-09-06 against both published images at v3.25.0 and v3.25.1.
 
 ## From source
 
