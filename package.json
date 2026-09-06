@@ -36,6 +36,7 @@
   "files": [
     "build/src/",
     "README.md",
+    "docs/",
     "LICENSE",
     "CHANGELOG.md"
   ],
