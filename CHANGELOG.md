@@ -82,6 +82,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   goes true and the aggregate silently begins describing a subset while still being read as
   a total — the same defect class as the rest of this release, arriving by a slower route.
 
+- **Build provenance was never missing (vikunja#689).** The ticket reported `referrers=0`
+  on both published images and concluded `push-to-registry: true` was a no-op. Diagnosed
+  before changing anything: neither hypothesised cause holds. GHCR does not implement the
+  OCI referrers *API* — `GET /v2/<name>/referrers/<digest>` returns `404 MANIFEST_UNKNOWN`
+  for a digest that exists and carries an attestation — and uses the spec's fallback tag
+  scheme instead, publishing the referrers index under `sha256-<digest>`.
+
+  Verified across both images and both releases: three fallback tags on `searxng-mcp`, two
+  on `searxng-mcp-reranker`, each carrying a sigstore bundle with
+  `predicateType: https://slsa.dev/provenance/v1` and timestamps matching their publish runs.
+
+  So the plan's recommendation — drop `push-to-registry: true` — would have deleted a working
+  supply-chain feature to make a false measurement consistent. The line stays, with a comment
+  recording why it must not be removed on the strength of a 404, and `docs/deployment.md` now
+  explains how to read the registry copy. The `referrers=0` reading was itself a query against
+  an unserved endpoint reported as an empty answer: the same defect class as everything else
+  in this release, which is why it was checked rather than acted on.
+
 - **vikunja#687 needed closing, not building.** Its premise died in v3.25.0: `648b60e`
   replaced the bare `catch { return null }` at `crawl4ai.ts:197` that the ticket describes.
   What survived was the *class*, in other files, which is what the above addresses.

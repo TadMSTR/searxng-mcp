@@ -51,6 +51,31 @@ and pushed to the registry alongside it:
 gh attestation verify oci://ghcr.io/tadmstr/searxng-mcp:latest --owner TadMSTR
 ```
 
+### Verifying the registry copy directly
+
+The attestation is also in GHCR, but **GHCR does not implement the OCI
+referrers API** — `GET /v2/<name>/referrers/<digest>` returns
+`404 MANIFEST_UNKNOWN` even for a digest that exists and has an attestation.
+
+That 404 is easy to read as "there is no attestation". It is not. GHCR uses the
+spec's *fallback tag* scheme instead, publishing the referrers index under a tag
+named `sha256-<digest>`:
+
+```bash
+# Resolve the image digest, then read the referrers index from the fallback tag
+DIGEST=$(crane digest ghcr.io/tadmstr/searxng-mcp:latest)
+crane manifest "ghcr.io/tadmstr/searxng-mcp:${DIGEST/:/-}"
+```
+
+which returns an index whose entry carries
+`artifactType: application/vnd.dev.sigstore.bundle.v0.3+json` and
+`dev.sigstore.bundle.predicateType: https://slsa.dev/provenance/v1`.
+
+Tools that implement the fallback (`cosign`, `oras`, `crane`) find it without
+help. A bare `curl` against the referrers endpoint does not, and reports zero.
+Verified 2026-09-06 against both published images at v3.25.0 and v3.25.1
+(vikunja#689).
+
 ## From source
 
 ```bash
