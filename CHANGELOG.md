@@ -55,6 +55,20 @@ documented but unobtainable.
   prose so truncation cannot remove it. Without it a 0.9.x server error carries no way to find
   the real cause in the server's own logs. A 422's array-shaped `detail` is no longer dropped.
 
+### Security
+- **The reranker container is hardened and its requests are bounded.** `cap_drop: ALL`,
+  `no-new-privileges`, a read-only root filesystem, an explicit non-root user, and mem/cpu
+  limits; plus caps on document count (1000), document and query length (20000 chars) and
+  request body size (4 MB), all env-tunable. The service has no authentication by design and
+  reranking is CPU-bound on caller-supplied text, so an uncapped request was a denial-of-service
+  surface for anything that could reach the port. Defaults were measured against the live
+  SearXNG that feeds it — ~30 documents of ~430 chars, ~6.7 KB per rerank — leaving 30–600×
+  headroom, so normal traffic cannot reach them. Oversized documents are truncated rather than
+  rejected, since anything past the cap is already beyond FlashRank's 512-token window.
+- **Crawl4AI's relayed error text is recorded as its own accepted risk** rather than inheriting
+  the v3.24.0 acceptance, which was scoped to Firecrawl's `data.error`. Same trust model,
+  separate row, per SC-23.
+
 ### Added
 - **The reranker ships in this repo** (vikunja#692), at `docker/reranker/`, and is published as
   `ghcr.io/tadmstr/searxng-mcp-reranker`. `docs/configuration.md` previously pointed adopters at

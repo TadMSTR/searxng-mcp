@@ -22,6 +22,14 @@ services:
       # endpoint that any caller can drive.
       - "127.0.0.1:8787:8787"
     restart: unless-stopped
+    # SECURITY[deferred]: this is the only compose file in the repo carrying the
+    # hardening below — docker-compose.full.yml, docker-compose.example.yml and
+    # docker/adblock-proxy/ have none, so the repo now models good practice in
+    # one place and not the others. Retrofitting the rest is vikunja#693 (id
+    # 776). Note `read_only` is NOT a blanket addition there: several of those
+    # services genuinely write to disk. Audit:
+    # 2026-09-06/searxng-mcp-crawl4ai-reranker-2026-09, INFO 2.
+    #
     # The image already runs as uid 10001; naming it here means a `docker run`
     # that overrides the entrypoint cannot quietly regain root.
     user: "10001"
