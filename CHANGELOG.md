@@ -4,7 +4,7 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [Unreleased]
+## [3.26.0] - 2026-09-06
 
 ### Fixed
 
@@ -165,6 +165,29 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
   `docker-compose.full.yml` repoints its renderer at the new build (note port 3003, not
   3000). `docker/puppeteer-adblock/` is kept for v1 adopters and marked v1-only.
+
+- **`adblock-proxy` and `playwright-adblock` are published images (vikunja#697, #696).**
+  `adblock-proxy` was the last stack component with no published image; the reference
+  deployment built it from an absolute path into a developer's working tree, which is not an
+  adoption path. `docker-compose.full.yml` now pulls it, matching what the reranker already
+  did, and `docker/adblock-proxy/docker-compose.yml` is added for standalone use — with a
+  pinned `name:` and no `container_name:`, because Phase 1's lesson applies to every new
+  compose file here.
+
+  Both smoke tests assert the **contract**, not the boot. The adblock-proxy test was drafted
+  wrong first and is worth recording: it used a local nginx origin and
+  `http://doubleclick.net/ad.js`. Both are refused by `ssrf.js` — the container origin
+  resolves to a private address, and this host's resolver blackholes ad domains to `::` — so
+  **both returned zero bytes and the "is it blocking ads?" assertion passed for every URL,
+  blocked or not.** It proved nothing. The shipped version uses a public origin for the
+  forwarding case, a URL EasyList actually matches for the blocking case, and asserts on
+  *which mechanism the log reports*, because an empty response alone cannot distinguish an
+  adblock hit from an SSRF refusal.
+
+  `docker/adblock-proxy/README.md` states the intended placement plainly: it is an open
+  forward proxy with no authentication, and `ssrf.js` is a backstop rather than a substitute
+  for keeping the port private. That control is now asserted against the built image — a
+  mitigation living in one compose file does not travel with the artefact.
 
 - **vikunja#687 needed closing, not building.** Its premise died in v3.25.0: `648b60e`
   replaced the bare `catch { return null }` at `crawl4ai.ts:197` that the ticket describes.

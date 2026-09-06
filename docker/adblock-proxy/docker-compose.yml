@@ -1,0 +1,39 @@
+# Standalone adblock-proxy. Run it from this directory with `docker compose up`.
+#
+# Compose derives the project name from this directory's basename, and project
+# and container names are GLOBAL to the Docker host — so an unpinned project
+# name silently shares a namespace with any other stack of the same name, and
+# `docker compose down` here would remove that stack's containers. That is how
+# a production reranker was removed for ~4.5h on 2026-09-06 (vikunja#694).
+#
+# `name:` is pinned, and there is deliberately NO `container_name:`.
+name: searxng-mcp-adblock-proxy
+
+services:
+  adblock-proxy:
+    image: ghcr.io/tadmstr/searxng-mcp-adblock-proxy:latest
+    # Or build it from the source beside this file:
+    # build: .
+    restart: unless-stopped
+    ports:
+      # ⚠ LOOPBACK ONLY, AND THIS IS NOT COSMETIC.
+      #
+      # This is an open forward proxy. It performs outbound requests on behalf
+      # of whoever can reach the port, and it has no authentication of any
+      # kind. Published on 0.0.0.0 it is an open relay.
+      #
+      # ssrf.js refuses targets that resolve to private or reserved addresses,
+      # which is what stops it being a pivot into the network it sits in — but
+      # that is a backstop, not a substitute for keeping the port private.
+      # See README.md, "Intended placement".
+      - "127.0.0.1:${ADBLOCK_PROXY_HOST_PORT:-8118}:8118"
+    environment:
+      ADBLOCK_FILTERS_URL: "https://easylist.to/easylist/easylist.txt,https://easylist.to/easylist/easyprivacy.txt"
+      ADBLOCK_REFRESH_HOURS: "168"
+      LOG_BLOCKED: "false"
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    # Verified running fully read-only (vikunja#693).
+    read_only: true
+    mem_limit: 512m
+    cpus: 1.0

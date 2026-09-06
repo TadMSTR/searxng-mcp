@@ -44,7 +44,10 @@ describe("compose files cannot collide with another stack on the host", () => {
     // A guard that silently scans nothing is worse than no guard. If this
     // number changes, the new file needs the two assertions below applied to
     // it deliberately — update the count in the same commit.
-    expect(files.length).toBe(3);
+    //
+    // 3 -> 4 in v3.26.0: docker/adblock-proxy/docker-compose.yml was added for
+    // standalone use. It went red here first, which is the guard working.
+    expect(files.length).toBe(4);
   });
 
   it.each(
