@@ -1,5 +1,10 @@
 import { YOUTUBE_IGNORE_ROBOTS, YOUTUBE_TRANSCRIPT_ENABLED } from "./config.js";
-import { readBoundedText, safeFetch, type TierResult } from "./fetch-utils.js";
+import {
+  readBoundedText,
+  safeFetch,
+  type TierResult,
+  USER_AGENT,
+} from "./fetch-utils.js";
 import { checkRobots } from "./robots.js";
 
 const YOUTUBE_HOSTS = new Set([
@@ -10,8 +15,6 @@ const YOUTUBE_HOSTS = new Set([
 ]);
 const YOUTUBE_ORIGIN = "https://www.youtube.com";
 const VIDEO_ID_RE = /^[A-Za-z0-9_-]{11}$/;
-const UA =
-  "searxng-mcp/3.15.0 (+https://github.com/TadMSTR/searxng-mcp; personal research)";
 
 export function isYouTubeHost(url: string): boolean {
   if (!YOUTUBE_TRANSCRIPT_ENABLED) return false;
@@ -155,7 +158,7 @@ export async function youtubeFetch(
 
   try {
     const watchRes = await safeFetch(`${YOUTUBE_ORIGIN}/watch?v=${videoId}`, {
-      headers: { "User-Agent": UA, "Accept-Language": "en" },
+      headers: { "User-Agent": USER_AGENT, "Accept-Language": "en" },
       redirect: "follow",
       signal: AbortSignal.timeout(10_000),
     });
@@ -169,7 +172,7 @@ export async function youtubeFetch(
     if (!track?.baseUrl) return null;
 
     const ttRes = await safeFetch(track.baseUrl, {
-      headers: { "User-Agent": UA },
+      headers: { "User-Agent": USER_AGENT },
       redirect: "follow",
       signal: AbortSignal.timeout(10_000),
     });

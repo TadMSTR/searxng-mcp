@@ -96,11 +96,29 @@ function applyPostExtract(
  * flag it sets is a local in fetchPage, so it is request-scoped by
  * construction — no shared or ambient state.
  */
+/**
+ * Why one tier did not produce content.
+ *
+ * `runTier` collapses every failure to `null`, which is right for the cascade —
+ * it just moves on — but wrong for the caller that has to explain the outcome
+ * once every tier is exhausted. The whole of vikunja#682 hid behind exactly
+ * that collapse: a null from one tier was reported as one specific cause
+ * ("CRAWL4AI_URL not configured") on a deployment where that cause was false,
+ * which sent an investigator to check configuration that was already correct.
+ * Carrying the reason out alongside the null is what stops the next such
+ * message from being invented.
+ */
+interface TierOutcome {
+  tier: TierName;
+  reason: string;
+}
+
 async function runTier<T extends TierResult | null>(
   tier: TierName,
   url: string,
   fn: () => Promise<T>,
   onChallenge?: (signal: ChallengeSignal) => void,
+  onOutcome?: (outcome: TierOutcome) => void,
 ): Promise<T> {
   const t0 = Date.now();
   try {
@@ -115,6 +133,7 @@ async function runTier<T extends TierResult | null>(
       recordHistogram("fetch", latency_ms / 1000, { tier, outcome: "miss" });
       events.fetchTierMiss({ url, tier, reason: "empty_result", latency_ms });
       recordTierAttempt(url, tier, "miss", "empty_result").catch(() => {});
+      onOutcome?.({ tier, reason: "attempted, no content" });
     }
     return out;
   } catch (err) {
@@ -137,6 +156,7 @@ async function runTier<T extends TierResult | null>(
         () => {},
       );
       onChallenge?.(err.signal);
+      onOutcome?.({ tier, reason: CHALLENGE_MISS_REASON });
       return null as T;
     }
     const reason = err instanceof Error ? err.message : "error";
@@ -144,6 +164,7 @@ async function runTier<T extends TierResult | null>(
     recordHistogram("fetch", latency_ms / 1000, { tier, outcome: "error" });
     events.fetchTierMiss({ url, tier, reason, latency_ms });
     recordTierAttempt(url, tier, "error", reason).catch(() => {});
+    onOutcome?.({ tier, reason });
     return null as T;
   }
 }
@@ -481,6 +502,16 @@ export async function fetchPage(
       // Run tier cascade and side-channel raw-HTML metadata fetch in parallel.
       const metadataHtmlPromise = fetchRawHtmlForMetadata(url);
 
+      // Why each tier produced nothing, in cascade order. Seeded with the
+      // tiers that never ran, so "skipped because unconfigured" and "ran and
+      // came back empty" stay distinguishable in the final error rather than
+      // collapsing into one unexplained failure (vikunja#682).
+      const outcomes: TierOutcome[] = skipDecisions.map((d) => ({
+        tier: TIER_NAME[d.tier],
+        reason: `skipped (${d.reason})`,
+      }));
+      const noteOutcome = (o: TierOutcome) => outcomes.push(o);
+
       let fetched: TierResult | null = null;
       for (const tier of activeTiers) {
         fetched = await runTier(
@@ -488,6 +519,7 @@ export async function fetchPage(
           url,
           () => tier.fetch(url, storeChars, preferFit, tuning),
           onChallenge,
+          noteOutcome,
         );
         if (fetched) {
           tierServed = tier.name;
@@ -516,8 +548,12 @@ export async function fetchPage(
       // wayback exactly as a tier miss does.
       if (!fetched && challengeDetected) {
         console.error(`[searxng-mcp] fetch solver_byparr attempt url=${url}`);
-        fetched = await runTier("solver_byparr", url, () =>
-          solverFetch(url, storeChars, tuning),
+        fetched = await runTier(
+          "solver_byparr",
+          url,
+          () => solverFetch(url, storeChars, tuning),
+          undefined,
+          noteOutcome,
         );
         if (fetched) {
           tierServed = "solver_byparr";
@@ -529,8 +565,12 @@ export async function fetchPage(
 
       if (!fetched && WAYBACK_ENABLED) {
         console.error(`[searxng-mcp] fetch tier4_wayback attempt url=${url}`);
-        fetched = await runTier("tier4_wayback", url, () =>
-          waybackFetch(url, storeChars),
+        fetched = await runTier(
+          "tier4_wayback",
+          url,
+          () => waybackFetch(url, storeChars),
+          undefined,
+          noteOutcome,
         );
         if (fetched) {
           tierServed = "tier4_wayback";
@@ -541,13 +581,21 @@ export async function fetchPage(
       }
 
       if (!fetched) {
+        // Name every tier and why. "All fetch tiers failed" on its own is the
+        // shape of error that hid #682 for weeks: it is equally consistent with
+        // nothing being configured, with a backend being down, and with the
+        // page genuinely having no content, so it sends the reader nowhere.
+        const detail = outcomes.map((o) => `${o.tier}: ${o.reason}`).join("; ");
+        const message = detail
+          ? `All fetch tiers failed — ${detail}`
+          : "All fetch tiers failed";
         events.error({
           stage: "fetch",
           url,
           error_type: "all_tiers_failed",
-          message: "All fetch tiers failed",
+          message,
         });
-        throw new Error("All fetch tiers failed");
+        throw new Error(message);
       }
 
       const tierFetched: TierResult = fetched;

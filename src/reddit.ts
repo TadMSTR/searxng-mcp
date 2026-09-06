@@ -1,5 +1,10 @@
 import { REDDIT_FASTPATH_ENABLED, REDDIT_IGNORE_ROBOTS } from "./config.js";
-import { readBoundedText, safeFetch, type TierResult } from "./fetch-utils.js";
+import {
+  readBoundedText,
+  safeFetch,
+  type TierResult,
+  USER_AGENT,
+} from "./fetch-utils.js";
 import { checkRobots } from "./robots.js";
 
 const REDDIT_HOSTS = new Set([
@@ -9,8 +14,6 @@ const REDDIT_HOSTS = new Set([
   "new.reddit.com",
   "np.reddit.com",
 ]);
-const UA =
-  "searxng-mcp/3.15.0 (+https://github.com/TadMSTR/searxng-mcp; personal research)";
 const MAX_COMMENTS = 20;
 
 export function isRedditHost(url: string): boolean {
@@ -106,7 +109,7 @@ export async function redditFetch(
 
   try {
     const res = await safeFetch(jsonUrl, {
-      headers: { "User-Agent": UA, Accept: "application/json" },
+      headers: { "User-Agent": USER_AGENT, Accept: "application/json" },
       redirect: "follow",
       signal: AbortSignal.timeout(10_000),
     });
