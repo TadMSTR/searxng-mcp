@@ -149,13 +149,18 @@ describe("enumerateDomains", () => {
     expect(truncated).toBe(false);
   });
 
-  it("is best-effort: returns empty on a scan error rather than throwing", async () => {
+  // Retargeted, not removed. The "best-effort" contract still holds — callers
+  // are a reporting tool and a scheduled job, and neither is improved by an
+  // exception. What this used to assert as well, via toEqual on the whole
+  // object, was that a scan error is INDISTINGUISHABLE from an empty corpus.
+  // That was the defect (vikunja#688), pinned as an invariant.
+  it("is best-effort: does not throw on a scan error, but says it failed", async () => {
     const scan = vi.fn().mockRejectedValue(new Error("connection reset"));
     getValkeyMock.mockResolvedValue(fakeClient({ scan }));
-    await expect(enumerateDomains()).resolves.toEqual({
-      records: [],
-      truncated: false,
-    });
+    const result = await enumerateDomains();
+    expect(result.records).toEqual([]);
+    expect(result.truncated).toBe(false);
+    expect(result.unavailable).toContain("connection reset");
   });
 
   it("returns empty (no mget) when the scan yields no keys", async () => {
@@ -364,5 +369,57 @@ describe("formatDomainRecord renders every tier slot", () => {
     TIER_SLOT_KEYS.forEach((slot, i) => {
       expect(block[i].trim().startsWith(slot)).toBe(true);
     });
+  });
+});
+
+// vikunja#688 sub-finding, and the more serious consequence of it.
+//
+// `enumerateDomains` caught every failure and returned `{records: [], truncated}`
+// — the exact shape of a healthy scan over an empty corpus. Two things then
+// read that as fact:
+//
+//   1. `domain_stats` reported "domains tracked: 0"
+//   2. `domain-db-maintenance` wrote a snapshot containing zero records, made
+//      it the NEWEST snapshot, and pruned by retention
+//
+// (2) is the one that does damage. `loadLatestSnapshot` returns the newest, so
+// a single maintenance run during a Valkey outage leaves `restore-domain-db`
+// restoring nothing; fourteen consecutive ones (the default retention) prune
+// every good snapshot away. A transport failure silently destroys the restore
+// path, and the artefact it leaves behind is indistinguishable from a
+// legitimate backup of an empty database.
+describe("enumerateDomains reports unreachability rather than emptiness", () => {
+  beforeEach(() => {
+    getValkeyMock.mockReset();
+  });
+
+  it("flags a scan that failed mid-flight instead of returning an empty corpus", async () => {
+    const err = Object.assign(new Error("fetch failed"), {
+      cause: { code: "ECONNREFUSED" },
+    });
+    const scan = vi.fn().mockRejectedValue(err);
+    getValkeyMock.mockResolvedValue(fakeClient({ scan }));
+
+    const result = await enumerateDomains();
+    expect(result.records).toEqual([]);
+    expect(result.unavailable).toBeDefined();
+    expect(result.unavailable).toContain("ECONNREFUSED");
+  });
+
+  it("distinguishes a genuinely empty corpus from an unreachable one", async () => {
+    const scan = vi.fn().mockResolvedValueOnce(["0", []]);
+    getValkeyMock.mockResolvedValue(fakeClient({ scan }));
+
+    const result = await enumerateDomains();
+    expect(result.records).toEqual([]);
+    expect(result.unavailable).toBeUndefined();
+  });
+
+  it("flags a domain database that is not configured at all", async () => {
+    getValkeyMock.mockResolvedValue(null);
+
+    const result = await enumerateDomains();
+    expect(result.unavailable).toBeDefined();
+    expect(result.unavailable).toMatch(/not configured/i);
   });
 });

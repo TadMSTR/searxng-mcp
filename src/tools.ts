@@ -702,6 +702,12 @@ export const DomainStatsOutputSchema = z.object({
   found: z.boolean(),
   record: SingleDomainOutputSchema.nullable(),
   aggregate: AggregateOutputSchema.nullable(),
+  // Set when the corpus could not be read. Declared here deliberately: the SDK
+  // validates structuredContent against this schema before it leaves the
+  // server, so an undeclared field is one the caller never receives however
+  // faithfully the handler sets it — and this is precisely the field a caller
+  // needs to not read `domains_tracked: 0` as a measurement (vikunja#688).
+  unavailable: z.string().nullable().optional(),
 });
 
 export async function handleDomainStats({ hostname }: { hostname?: string }) {
@@ -738,7 +744,35 @@ export async function handleDomainStats({ hostname }: { hostname?: string }) {
     }
 
     // Aggregate mode — operator-triggered, bounded off-hot-path scan.
-    const { records, truncated } = await enumerateDomains();
+    const { records, truncated, unavailable } = await enumerateDomains();
+
+    // "Could not read the database" and "the database is empty" produced the
+    // same answer here, and the second is the one a reader believes. Research
+    // hit exactly this while measuring for the plan that fixes it: a `0` that
+    // was an auth failure. Say so instead of reporting a count (vikunja#688).
+    if (unavailable) {
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text:
+              `Could not read the domain database: ${unavailable}\n\n` +
+              "This is not a report that the database is empty — no count was " +
+              "obtained. Check the cache backend is reachable and that " +
+              "VALKEY_URL's credentials are correct.",
+          },
+        ],
+        structuredContent: {
+          mode: "aggregate" as const,
+          hostname: null,
+          found: false,
+          record: null,
+          aggregate: null,
+          unavailable,
+        },
+      };
+    }
+
     const aggregate = aggregateDomainStats(records, truncated);
     return {
       content: [

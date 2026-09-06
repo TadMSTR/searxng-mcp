@@ -97,11 +97,18 @@ export async function emitGauges(data: GaugeData): Promise<boolean> {
 
 export interface MaintenanceResult {
   count: number;
+  /** Empty when no snapshot was written — see `skipped`. */
   snapshotPath: string;
   pruned: number;
   gaugesEmitted: boolean;
   truncated: boolean;
   aggregate: DomainAggregate;
+  /**
+   * Set when the corpus could not be read, in which case NOTHING was written
+   * or pruned. Reading zero records and writing that out is how a transient
+   * Valkey outage would have destroyed the restore path (vikunja#688).
+   */
+  skipped?: string;
 }
 
 export interface MaintenanceOptions {
@@ -116,8 +123,31 @@ export async function runMaintenance(
   const dir = opts.snapshotDir ?? DOMAIN_DB_SNAPSHOT_DIR;
   const retention = opts.retention ?? DOMAIN_DB_SNAPSHOT_RETENTION;
 
-  const { records, truncated } = await enumerateDomains();
+  const { records, truncated, unavailable } = await enumerateDomains();
   const aggregate = aggregateDomainStats(records, truncated);
+
+  // A corpus we could not read is not an empty corpus, and the difference is
+  // destructive here rather than merely misleading. writeSnapshot would make
+  // an empty file the NEWEST snapshot — the one loadLatestSnapshot returns and
+  // restore-domain-db restores from — and pruneSnapshots would then age out a
+  // real one. At the default retention of 14, fourteen consecutive failed runs
+  // leave nothing but empty snapshots, each indistinguishable from a genuine
+  // backup of an empty database.
+  //
+  // So: no snapshot, no prune, no gauges. Gauges are skipped too because
+  // `aggregate` here describes nothing, and a zero written to a time series is
+  // read later as a measurement rather than as an absence.
+  if (unavailable) {
+    return {
+      count: 0,
+      snapshotPath: "",
+      pruned: 0,
+      gaugesEmitted: false,
+      truncated,
+      aggregate,
+      skipped: unavailable,
+    };
+  }
 
   const gaugesEmitted = await emitGauges(deriveGauges(aggregate));
   const { path, count } = await writeSnapshot(dir, records);
@@ -136,6 +166,16 @@ export async function runMaintenance(
 export async function main(): Promise<number> {
   try {
     const r = await runMaintenance();
+    // Exit non-zero so a scheduler surfaces the run rather than recording a
+    // success that wrote nothing. This is the CI-shaped face of the same
+    // defect: a green step that delivered no work.
+    if (r.skipped) {
+      console.error(
+        `[domain-db-maintenance] SKIPPED — ${r.skipped}. No snapshot written, nothing pruned, no gauges emitted. ` +
+          `This is NOT a report that the database is empty.`,
+      );
+      return 1;
+    }
     console.log(
       `[domain-db-maintenance] snapshot ${r.snapshotPath} (${r.count} records${r.truncated ? ", TRUNCATED" : ""}); ` +
         `pruned ${r.pruned}; gauges ${r.gaugesEmitted ? "emitted" : "skipped (no OTLP endpoint)"}; ` +

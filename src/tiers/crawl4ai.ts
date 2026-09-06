@@ -8,6 +8,7 @@ import {
   readBoundedText,
   type TierResult,
 } from "../fetch-utils.js";
+import { describeTransportFailure } from "../transport-failure.js";
 
 /**
  * The crawl4ai version this tier is written against.
@@ -171,34 +172,6 @@ export function crawl4aiErrorReason(label: string, body: string): string {
   // corr goes before the prose for the same reason netErr does: it has to
   // survive a downstream truncation, and it is the actionable half.
   return [label, netErr, corr, prose].filter(Boolean).join(" ");
-}
-
-/**
- * Name a transport failure well enough to act on.
- *
- * Node's fetch reports every one of these as the bare string "fetch failed"
- * and hides the useful part on `cause.code`. The distinction is the whole
- * point of the Phase 7 negative control: a crawl4ai 0.9.x server started
- * without CRAWL4AI_API_TOKEN binds the container's loopback and answers with
- * ECONNRESET while its healthcheck stays green, and "fetch failed" would leave
- * an investigator no way to tell that from a DNS typo.
- */
-function describeTransportFailure(err: unknown): string {
-  const base = err instanceof Error ? err.message : String(err);
-  const cause = (err as { cause?: { code?: unknown; message?: unknown } })
-    ?.cause;
-  // `code` is present for the network failures (ECONNRESET, ECONNREFUSED,
-  // ENOTFOUND, …). Some causes carry only a message — Node rejects a request
-  // to a blocked port that way — so fall back to it rather than to nothing.
-  const detail =
-    typeof cause?.code === "string"
-      ? cause.code
-      : typeof cause?.message === "string"
-        ? cause.message
-        : undefined;
-  return detail
-    ? `Crawl4AI unreachable: ${detail} (${base})`
-    : `Crawl4AI: ${base}`;
 }
 
 /**
@@ -457,7 +430,7 @@ export async function crawl4aiFetch(
     if (err instanceof Error && err.name === "AbortError") {
       throw new Crawl4aiError("Crawl4AI timeout after 45s");
     }
-    const described = describeTransportFailure(err);
+    const described = describeTransportFailure(err, "Crawl4AI");
     // A connection reset with no token configured is the other face of the
     // same misconfiguration as a 401 — the server bound container-loopback.
     if (/ECONNRESET|ECONNREFUSED/.test(described)) {

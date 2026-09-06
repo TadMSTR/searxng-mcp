@@ -19,6 +19,7 @@ import {
   type TierStat,
   TIER_STATS_WINDOW_MS as WINDOW_MS,
 } from "./domain-db.js";
+import { describeTransportFailure } from "./transport-failure.js";
 
 const DOMAIN_KEY_PATTERN = "domain:*";
 // SCAN batch hint — how many keys Valkey returns per cursor step. Not a hard
@@ -73,6 +74,17 @@ export interface EnumerateOptions {
 export interface EnumerateResult {
   records: DomainRecord[];
   truncated: boolean;
+  /**
+   * Set when the corpus could not be read. `records` is then not a corpus —
+   * it is whatever had been collected before the failure, and callers must not
+   * treat it as the database's contents.
+   *
+   * This field exists because its absence caused real damage (vikunja#688).
+   * A failed scan returned `{records: [], truncated: false}`, byte-identical
+   * to a healthy scan over an empty database, and `domain-db-maintenance`
+   * wrote that as a snapshot — making an empty file the newest restore point.
+   */
+  unavailable?: string;
 }
 
 export interface TierAggregate {
@@ -183,6 +195,13 @@ function emptyTierAggregate(): TierAggregate {
  * Enumerate current-schema domain records via a bounded, cursor-based SCAN.
  * Stops once `maxKeys` keys have been collected and flags `truncated`. Stale or
  * malformed records are silently dropped (parseDomainRecord gate).
+ *
+ * A failure to read the corpus sets `unavailable` rather than returning an
+ * empty one. The two were previously the same value, which is how a Valkey
+ * outage could present as "domains tracked: 0" — and, worse, get written out
+ * as an empty snapshot (vikunja#688). Research hit the reporting half of this
+ * while measuring for the very plan that fixes it: a `0` that was an auth
+ * failure, not an empty database.
  */
 export async function enumerateDomains(
   opts: EnumerateOptions = {},
@@ -192,7 +211,14 @@ export async function enumerateDomains(
   let truncated = false;
   try {
     const client = await getValkey();
-    if (!client) return { records, truncated };
+    // Not configured is not the same as empty either: there is no corpus to
+    // report on, so callers must not record a zero against it.
+    if (!client)
+      return {
+        records,
+        truncated,
+        unavailable: "domain database not configured (no cache backend)",
+      };
 
     const keys: string[] = [];
     let cursor = "0";
@@ -223,9 +249,15 @@ export async function enumerateDomains(
       if (parsed) records.push(parsed);
     }
     return { records, truncated };
-  } catch {
-    // Best-effort — never throw onto the caller. Return whatever was collected.
-    return { records, truncated };
+  } catch (err) {
+    // Still never throws onto the caller — the callers are a reporting tool and
+    // a scheduled job, and neither is improved by an exception. What changed is
+    // that the result now says it is not a corpus.
+    return {
+      records,
+      truncated,
+      unavailable: describeTransportFailure(err, "domain database"),
+    };
   }
 }
 

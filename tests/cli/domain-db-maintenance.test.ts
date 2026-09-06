@@ -163,3 +163,91 @@ describe("runMaintenance", () => {
     expect(loaded?.count).toBe(0);
   });
 });
+
+// vikunja#688. The reporting half of this ticket ("domains tracked: 0") is
+// cosmetic. This half is not: the maintenance job wrote whatever
+// enumerateDomains returned, and a failed scan returned an empty array. That
+// made an empty file the NEWEST snapshot — the one loadLatestSnapshot returns
+// and restore-domain-db restores from — while pruneSnapshots aged out a real
+// one. At the default retention of 14, fourteen consecutive failed runs leave
+// nothing but empty snapshots, each indistinguishable from a genuine backup of
+// an empty database.
+//
+// The assertion that matters is the third one: a pre-existing good snapshot is
+// still the newest after a failed run.
+describe("runMaintenance refuses to snapshot a corpus it could not read", () => {
+  let dir: string;
+
+  beforeEach(async () => {
+    getValkeyMock.mockReset();
+    dir = await mkdtemp(join(tmpdir(), "dbm-unavailable-"));
+  });
+
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  async function runWithScan(scan: ReturnType<typeof vi.fn>) {
+    getValkeyMock.mockResolvedValue({
+      scan,
+      mget: vi.fn(),
+    } as unknown as NonNullable<Awaited<ReturnType<typeof getValkey>>>);
+    return runMaintenance({ snapshotDir: dir, retention: 14 });
+  }
+
+  it("writes nothing and reports why when the scan fails", async () => {
+    const err = Object.assign(new Error("fetch failed"), {
+      cause: { code: "ECONNREFUSED" },
+    });
+    const r = await runWithScan(vi.fn().mockRejectedValue(err));
+
+    expect(r.skipped).toBeDefined();
+    expect(r.skipped).toContain("ECONNREFUSED");
+    expect(r.snapshotPath).toBe("");
+    expect(r.pruned).toBe(0);
+    expect(r.gaugesEmitted).toBe(false);
+    expect(await loadLatestSnapshot(dir)).toBeNull();
+  });
+
+  it("does not overwrite the newest good snapshot with an empty one", async () => {
+    // A healthy run first.
+    const good = await runWithScan(
+      vi.fn().mockResolvedValueOnce(["0", ["domain:a.com", "domain:b.com"]]),
+    );
+    getValkeyMock.mockResolvedValue({
+      scan: vi
+        .fn()
+        .mockResolvedValueOnce(["0", ["domain:a.com", "domain:b.com"]]),
+      mget: vi
+        .fn()
+        .mockResolvedValueOnce([recordJson("a.com"), recordJson("b.com")]),
+    } as unknown as NonNullable<Awaited<ReturnType<typeof getValkey>>>);
+    await runMaintenance({ snapshotDir: dir, retention: 14 });
+    const before = await loadLatestSnapshot(dir);
+    expect(before?.records.length).toBeGreaterThan(0);
+    void good;
+
+    // Now Valkey goes away.
+    const err = Object.assign(new Error("fetch failed"), {
+      cause: { code: "ECONNRESET" },
+    });
+    const r = await runWithScan(vi.fn().mockRejectedValue(err));
+    expect(r.skipped).toBeDefined();
+
+    // The restore point must be untouched — this is the whole point.
+    const after = await loadLatestSnapshot(dir);
+    expect(after?.records.map((x) => x.domain)).toEqual(
+      before?.records.map((x) => x.domain),
+    );
+    expect(after?.count).toBe(before?.count);
+  });
+
+  it("still snapshots a genuinely empty corpus", async () => {
+    // The negative control: empty is a real state and must still be recorded,
+    // or this fix would just be a different way of losing data.
+    const r = await runWithScan(vi.fn().mockResolvedValueOnce(["0", []]));
+    expect(r.skipped).toBeUndefined();
+    expect(r.snapshotPath).not.toBe("");
+    expect((await loadLatestSnapshot(dir))?.count).toBe(0);
+  });
+});
