@@ -59,6 +59,29 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
     throwing would turn a degraded result into no result — so what changed is that they stop
     doing it silently.
 
+- **Stale-schema domain records are reaped (vikunja#688).** Re-measured through the
+  configured `VALKEY_URL` rather than taken on trust — the ticket's numbers were the
+  developer's own and research could not confirm them. They hold: 1,295 keys, of which
+  1,196 (92.4%) carry a superseded schema across four generations (122 at schema 2, 475 at
+  4, 436 at 5, 163 at 6) against 99 current. `domain-db-maintenance` now deletes them.
+
+  These records are already unreachable — every read goes through `parseDomainRecord`,
+  which gates on `schema_version` — so this changes no observable behaviour. It is safe
+  against the snapshot path for the same reason plus a second one: stale records never
+  enter a snapshot, and `isStructurallyValidRecord` would reject them on restore anyway.
+
+  The reap **re-reads every key immediately before deleting it** and drops any that no
+  longer carries a superseded schema. That is not defensive padding. The key list is built
+  during the scan and the delete happens after the snapshot and prune, in a process whose
+  fetch path is writing domain records throughout — a domain fetched in that window has its
+  record rewritten at the current schema under the same key, and deleting it on the
+  strength of the earlier read would destroy live data.
+
+  Why it is worth doing: the scan is bounded by `DEFAULT_MAX_KEYS` (5000). On the measured
+  trajectory a sixth and seventh generation crosses that bound, at which point `truncated`
+  goes true and the aggregate silently begins describing a subset while still being read as
+  a total — the same defect class as the rest of this release, arriving by a slower route.
+
 - **vikunja#687 needed closing, not building.** Its premise died in v3.25.0: `648b60e`
   replaced the bare `catch { return null }` at `crawl4ai.ts:197` that the ticket describes.
   What survived was the *class*, in other files, which is what the above addresses.

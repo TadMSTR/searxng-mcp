@@ -85,6 +85,16 @@ export interface EnumerateResult {
    * wrote that as a snapshot — making an empty file the newest restore point.
    */
   unavailable?: string;
+  /**
+   * Keys whose stored record parsed cleanly but carries a schema_version other
+   * than the current one. Already unreachable — `parseDomainRecord` gates every
+   * read on the schema — so deleting them changes no observable behaviour.
+   *
+   * Records that would NOT parse are deliberately excluded: unreadable is a
+   * different thing from stale, and deleting data we cannot read is a
+   * different decision from deleting data we have superseded.
+   */
+  staleKeys: string[];
 }
 
 export interface TierAggregate {
@@ -203,11 +213,39 @@ function emptyTierAggregate(): TierAggregate {
  * while measuring for the very plan that fixes it: a `0` that was an auth
  * failure, not an empty database.
  */
+/**
+ * Did this record parse as JSON with a schema_version that is simply not the
+ * current one? Distinguishes "superseded" from "corrupt": only the former is
+ * data we deliberately replaced.
+ *
+ * THIS IS A FILTER, NOT THE SAFETY GUARD. It cannot be reached for a
+ * current-schema record — `parseDomainRecord` returns non-null and
+ * short-circuits above — so a mutation making it return true for every
+ * parseable record changes nothing observable and passes the whole suite. Do
+ * not read it as the thing preventing a live delete.
+ *
+ * What prevents that is `reapStaleKeys`, which re-reads every key immediately
+ * before deleting it and drops any that no longer carries a superseded schema.
+ * That check is reachable, is tested, and additionally closes the race where
+ * the fetch path rewrites a record between the scan and the delete.
+ */
+function isStaleSchema(raw: string): boolean {
+  try {
+    const v = (JSON.parse(raw) as { schema_version?: unknown }).schema_version;
+    return typeof v === "number" && v !== SCHEMA_VERSION;
+  } catch {
+    // Reviewed (vikunja#687 class sweep): unparseable is not stale. Returning
+    // false here means a corrupt record is left alone rather than reaped.
+    return false;
+  }
+}
+
 export async function enumerateDomains(
   opts: EnumerateOptions = {},
 ): Promise<EnumerateResult> {
   const maxKeys = opts.maxKeys ?? DEFAULT_MAX_KEYS;
   const records: DomainRecord[] = [];
+  const staleKeys: string[] = [];
   let truncated = false;
   try {
     const client = await getValkey();
@@ -217,6 +255,7 @@ export async function enumerateDomains(
       return {
         records,
         truncated,
+        staleKeys,
         unavailable: "domain database not configured (no cache backend)",
       };
 
@@ -240,15 +279,31 @@ export async function enumerateDomains(
       }
     } while (cursor !== "0" && !truncated);
 
-    if (keys.length === 0) return { records, truncated };
+    if (keys.length === 0) return { records, truncated, staleKeys };
 
     // Bulk-read the collected keys; skip stale-schema / malformed entries.
+    //
+    // Stale ones are now also collected by key so the maintenance job can reap
+    // them (vikunja#688). Measured on the live corpus 2026-09-06: 1,295 keys,
+    // of which 1,196 (92.4%) are stale across four superseded generations —
+    // schema 2 (122), 4 (475), 5 (436) and 6 (163) — against 99 current. That
+    // is dead weight inside a scan bounded by DEFAULT_MAX_KEYS (5000), and the
+    // bound is the reason it matters: once the corpus crosses it, `truncated`
+    // goes true and the aggregate silently starts describing a subset. A
+    // truncated total reported as a total is the same class of defect as the
+    // rest of this build.
     const raws = await client.mget(keys);
-    for (const raw of raws) {
+    for (let i = 0; i < raws.length; i++) {
+      const raw = raws[i];
       const parsed = parseDomainRecord(raw);
-      if (parsed) records.push(parsed);
+      if (parsed) {
+        records.push(parsed);
+        continue;
+      }
+      const key = keys[i];
+      if (raw && key && isStaleSchema(raw)) staleKeys.push(key);
     }
-    return { records, truncated };
+    return { records, truncated, staleKeys };
   } catch (err) {
     // Still never throws onto the caller — the callers are a reporting tool and
     // a scheduled job, and neither is improved by an exception. What changed is
@@ -256,6 +311,10 @@ export async function enumerateDomains(
     return {
       records,
       truncated,
+      // Whatever was collected before the failure is not a complete set, and
+      // the caller is told not to act on it — but do not hand back a partial
+      // delete list either.
+      staleKeys: [],
       unavailable: describeTransportFailure(err, "domain database"),
     };
   }

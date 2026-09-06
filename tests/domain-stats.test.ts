@@ -423,3 +423,69 @@ describe("enumerateDomains reports unreachability rather than emptiness", () => 
     expect(result.unavailable).toMatch(/not configured/i);
   });
 });
+
+/**
+ * vikunja#688 — collecting the stale-schema keys the reaper deletes.
+ *
+ * Measured on the live corpus 2026-09-06 (the ticket's numbers, which research
+ * could not independently confirm, re-measured through the configured
+ * VALKEY_URL): 1,295 keys, of which 1,196 (92.4%) carry a superseded schema —
+ * 122 at schema 2, 475 at 4, 436 at 5, 163 at 6 — against 99 current.
+ *
+ * The distinction that matters here is stale vs corrupt. A record we
+ * deliberately superseded is safe to delete; a record we cannot read is a
+ * different decision and is left alone.
+ */
+describe("enumerateDomains collects stale-schema keys for reaping", () => {
+  beforeEach(() => {
+    getValkeyMock.mockReset();
+  });
+
+  function withRaws(keys: string[], raws: (string | null)[]) {
+    const scan = vi.fn().mockResolvedValueOnce(["0", keys]);
+    const mget = vi.fn().mockResolvedValueOnce(raws);
+    getValkeyMock.mockResolvedValue(fakeClient({ scan, mget }));
+  }
+
+  it("lists superseded records and keeps current ones out of the list", async () => {
+    const current = mkRecord("current.com");
+    const stale = { ...mkRecord("stale.com"), schema_version: 2 };
+    withRaws(
+      ["domain:current.com", "domain:stale.com"],
+      [JSON.stringify(current), JSON.stringify(stale)],
+    );
+
+    const r = await enumerateDomains();
+
+    expect(r.records.map((x) => x.domain)).toEqual(["current.com"]);
+    expect(r.staleKeys).toEqual(["domain:stale.com"]);
+    // The assertion that matters: a live key must never reach the delete list.
+    expect(r.staleKeys).not.toContain("domain:current.com");
+  });
+
+  it("does not mark an unreadable record as stale", async () => {
+    // Corrupt is not superseded. Deleting data we cannot read is a different
+    // decision from deleting data we replaced, and this reaper does not make
+    // it.
+    withRaws(["domain:corrupt.com"], ["{ this is not json"]);
+
+    const r = await enumerateDomains();
+
+    expect(r.records).toEqual([]);
+    expect(r.staleKeys).toEqual([]);
+  });
+
+  it("returns no delete list when the corpus could not be read", async () => {
+    const scan = vi.fn().mockRejectedValue(
+      Object.assign(new Error("fetch failed"), {
+        cause: { code: "ECONNREFUSED" },
+      }),
+    );
+    getValkeyMock.mockResolvedValue(fakeClient({ scan }));
+
+    const r = await enumerateDomains();
+
+    expect(r.unavailable).toBeDefined();
+    expect(r.staleKeys).toEqual([]);
+  });
+});

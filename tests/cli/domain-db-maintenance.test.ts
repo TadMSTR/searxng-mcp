@@ -251,3 +251,192 @@ describe("runMaintenance refuses to snapshot a corpus it could not read", () => 
     expect((await loadLatestSnapshot(dir))?.count).toBe(0);
   });
 });
+
+/**
+ * The stale-schema reaper (vikunja#688).
+ *
+ * These records are already unreachable — every read goes through
+ * parseDomainRecord, which gates on schema_version — so deleting them changes
+ * no observable behaviour. The plan's verification is the second test here:
+ * the tracked-domain count must be unchanged, because a change means the
+ * reaper deleted something live.
+ */
+describe("runMaintenance reaps stale-schema keys", () => {
+  let dir: string;
+
+  beforeEach(async () => {
+    getValkeyMock.mockReset();
+    dir = await mkdtemp(join(tmpdir(), "dbm-reap-"));
+  });
+
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  // mget is called twice: once during enumeration, once by the reaper's
+  // re-check immediately before deleting. Serving it by key keeps the two
+  // consistent, which is what the non-racing case looks like.
+  function mockCorpus(keys: string[], raws: (string | null)[], del = vi.fn()) {
+    del.mockResolvedValue(1);
+    const byKey = new Map(keys.map((k, i) => [k, raws[i] ?? null]));
+    getValkeyMock.mockResolvedValue({
+      scan: vi.fn().mockResolvedValue(["0", keys]),
+      mget: vi
+        .fn()
+        .mockImplementation(async (...ks: string[]) =>
+          (ks.length === 1 && Array.isArray(ks[0]) ? ks[0] : ks).map(
+            (k: string) => byKey.get(k) ?? null,
+          ),
+        ),
+      del,
+    } as unknown as NonNullable<Awaited<ReturnType<typeof getValkey>>>);
+    return del;
+  }
+
+  it("deletes superseded keys and reports how many", async () => {
+    const staleJson = JSON.stringify({
+      ...JSON.parse(recordJson("old.com")),
+      schema_version: 2,
+    });
+    const del = mockCorpus(
+      ["domain:live.com", "domain:old.com"],
+      [recordJson("live.com"), staleJson],
+    );
+
+    const r = await runMaintenance({ snapshotDir: dir, retention: 14 });
+
+    expect(del).toHaveBeenCalledTimes(1);
+    expect(del).toHaveBeenCalledWith("domain:old.com");
+    expect(r.reaped).toBe(1);
+  });
+
+  it("leaves the tracked-domain count unchanged — the plan's own check", async () => {
+    // "A change in tracked domains means the reaper deleted something live."
+    const staleJson = JSON.stringify({
+      ...JSON.parse(recordJson("old.com")),
+      schema_version: 4,
+    });
+    const keys = ["domain:live.com", "domain:old.com"];
+    const raws = [recordJson("live.com"), staleJson];
+
+    mockCorpus(keys, raws);
+    const before = await runMaintenance({
+      snapshotDir: dir,
+      retention: 14,
+      reap: false,
+    });
+
+    mockCorpus(keys, raws);
+    const after = await runMaintenance({ snapshotDir: dir, retention: 14 });
+
+    expect(before.aggregate.domains_tracked).toBe(1);
+    expect(after.aggregate.domains_tracked).toBe(
+      before.aggregate.domains_tracked,
+    );
+    expect(after.reaped).toBe(1);
+    // And the snapshot still holds the live record, not the reaped one.
+    expect(
+      (await loadLatestSnapshot(dir))?.records.map((x) => x.domain),
+    ).toEqual(["live.com"]);
+  });
+
+  it("never issues a delete when there is nothing superseded", async () => {
+    const del = mockCorpus(["domain:live.com"], [recordJson("live.com")]);
+    const r = await runMaintenance({ snapshotDir: dir, retention: 14 });
+    expect(del).not.toHaveBeenCalled();
+    expect(r.reaped).toBe(0);
+  });
+
+  it("reaps nothing when the corpus could not be read", async () => {
+    const del = vi.fn();
+    getValkeyMock.mockResolvedValue({
+      scan: vi.fn().mockRejectedValue(
+        Object.assign(new Error("fetch failed"), {
+          cause: { code: "ECONNREFUSED" },
+        }),
+      ),
+      mget: vi.fn(),
+      del,
+    } as unknown as NonNullable<Awaited<ReturnType<typeof getValkey>>>);
+
+    const r = await runMaintenance({ snapshotDir: dir, retention: 14 });
+
+    expect(r.skipped).toBeDefined();
+    expect(del).not.toHaveBeenCalled();
+    expect(r.reaped).toBe(0);
+  });
+});
+
+/**
+ * The reap re-checks each key immediately before deleting it.
+ *
+ * This is the race it closes: the key list is built during the scan, and the
+ * delete happens after the snapshot and prune. In between, the fetch path may
+ * rewrite a domain record under the same key at the CURRENT schema. Deleting
+ * it on the strength of the earlier read destroys a live record.
+ *
+ * It is also where "never delete a live record" becomes testable. Before the
+ * re-check, that property was an artefact of statement ordering in
+ * enumerateDomains — a mutation making isStaleSchema return true for every
+ * parseable record passed all 42 tests, because parseDomainRecord
+ * short-circuits first and isStaleSchema is never consulted for the records
+ * that matter.
+ */
+describe("the reaper re-checks before deleting", () => {
+  let dir: string;
+
+  beforeEach(async () => {
+    getValkeyMock.mockReset();
+    dir = await mkdtemp(join(tmpdir(), "dbm-recheck-"));
+  });
+
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  it("does not delete a key rewritten at the current schema after the scan", async () => {
+    const staleJson = JSON.stringify({
+      ...JSON.parse(recordJson("racy.com")),
+      schema_version: 2,
+    });
+    const del = vi.fn().mockResolvedValue(1);
+    let mgetCalls = 0;
+    getValkeyMock.mockResolvedValue({
+      scan: vi.fn().mockResolvedValue(["0", ["domain:racy.com"]]),
+      mget: vi.fn().mockImplementation(async () => {
+        mgetCalls += 1;
+        // First read (enumeration): stale. Second read (reap re-check): the
+        // fetch path has rewritten it at the current schema.
+        return mgetCalls === 1 ? [staleJson] : [recordJson("racy.com")];
+      }),
+      del,
+    } as unknown as NonNullable<Awaited<ReturnType<typeof getValkey>>>);
+
+    const r = await runMaintenance({ snapshotDir: dir, retention: 14 });
+
+    expect(del).not.toHaveBeenCalled();
+    expect(r.reaped).toBe(0);
+  });
+
+  it("does not delete a key that became unreadable after the scan", async () => {
+    const staleJson = JSON.stringify({
+      ...JSON.parse(recordJson("corrupt.com")),
+      schema_version: 4,
+    });
+    const del = vi.fn().mockResolvedValue(1);
+    let mgetCalls = 0;
+    getValkeyMock.mockResolvedValue({
+      scan: vi.fn().mockResolvedValue(["0", ["domain:corrupt.com"]]),
+      mget: vi.fn().mockImplementation(async () => {
+        mgetCalls += 1;
+        return mgetCalls === 1 ? [staleJson] : ["{ not json"];
+      }),
+      del,
+    } as unknown as NonNullable<Awaited<ReturnType<typeof getValkey>>>);
+
+    const r = await runMaintenance({ snapshotDir: dir, retention: 14 });
+
+    expect(del).not.toHaveBeenCalled();
+    expect(r.reaped).toBe(0);
+  });
+});
