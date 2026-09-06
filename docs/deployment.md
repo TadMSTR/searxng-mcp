@@ -14,6 +14,43 @@ Or run directly with `npx`:
 npx @tadmstr/searxng-mcp
 ```
 
+## Container image
+
+Published to GHCR on every release tag:
+
+```bash
+docker pull ghcr.io/tadmstr/searxng-mcp:latest
+```
+
+```bash
+docker run -d --name searxng-mcp -p 127.0.0.1:3001:3001 \
+  -e SEARXNG_URL=http://searxng:8080 \
+  -e SEARXNG_MCP_TRANSPORT=http \
+  -e SEARXNG_MCP_AUTH_TOKEN="$(openssl rand -hex 32)" \
+  ghcr.io/tadmstr/searxng-mcp:latest
+```
+
+Available tags, `linux/amd64`:
+
+| Tag | Moves | Use it when |
+|-----|-------|-------------|
+| `v3.24.0` and `3.24.0` | never | You want a specific release pinned. Both spellings are published — the git tag carries the `v`, the conventional Docker tag does not. |
+| `3.24` | to the newest stable `3.24.x` | You want patches automatically but not minor bumps. |
+| `latest` | to the newest stable release | You want the current release and can tolerate minor bumps. |
+
+Prereleases (`v3.24.0-rc1`) publish their exact tags only — they never move
+`3.24` or `latest`.
+
+The image runs as uid 1000 and is not root. Every published image has passed
+the same smoke assertions CI runs — `/health` answers unauthenticated, `/mcp`
+returns 401 without a bearer token and 200 with the right one — executed
+against that exact image before it was pushed. Build provenance is attested
+and pushed to the registry alongside it:
+
+```bash
+gh attestation verify oci://ghcr.io/tadmstr/searxng-mcp:latest --owner TadMSTR
+```
+
 ## From source
 
 ```bash

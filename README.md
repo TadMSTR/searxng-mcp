@@ -42,6 +42,14 @@ docker compose -f docker-compose.example.yml up -d
 SEARXNG_URL=http://localhost:8081 CACHE_URL=redis://localhost:6381 npx @tadmstr/searxng-mcp
 ```
 
+**As a container** — published to GHCR on every release:
+
+```bash
+docker pull ghcr.io/tadmstr/searxng-mcp:latest
+```
+
+Tags, uid, and provenance verification: [Deployment](docs/deployment.md#container-image).
+
 For a full local topology including Firecrawl, Crawl4AI, Ollama, Kiwix, the adblock proxy, and NATS, see [`docker-compose.full.yml`](docker-compose.full.yml).
 
 ## Tools
