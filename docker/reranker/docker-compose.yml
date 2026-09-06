@@ -22,6 +22,25 @@ services:
       # endpoint that any caller can drive.
       - "127.0.0.1:8787:8787"
     restart: unless-stopped
+    # The image already runs as uid 10001; naming it here means a `docker run`
+    # that overrides the entrypoint cannot quietly regain root.
+    user: "10001"
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    # The model is baked in and read at startup, so nothing needs to write to
+    # the filesystem. /tmp is still given a tmpfs because FlashRank's own
+    # default cache_dir is /tmp and a library that falls back to it should hit
+    # a writable path rather than a confusing permission error.
+    read_only: true
+    tmpfs:
+      - /tmp
+    # Bounds on an endpoint with no authentication. Reranking is CPU-bound and
+    # the request body is caller-controlled, so an unbounded container is a
+    # denial-of-service surface for anything that can reach the port.
+    mem_limit: 2g
+    cpus: 2.0
     healthcheck:
       # The model is baked into the image, so this reports ready in seconds
       # rather than after a 30-60s download. model_loaded is the field that
