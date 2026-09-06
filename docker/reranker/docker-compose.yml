@@ -8,19 +8,43 @@
 # To integrate with a full searxng-mcp stack instead, see the reranker service
 # in ../../docker-compose.full.yml, which pulls the published image rather
 # than building.
+#
+# Compose derives the project name from this directory's basename — "reranker"
+# — and container/project names are GLOBAL to the Docker host. A host already
+# running a stack from any other directory called `reranker` therefore shares a
+# namespace with this file: `docker compose down` here removes THAT stack's
+# containers, and `docker compose up` adopts or recreates them with this file's
+# config. Measured 2026-09-06, both behaviours reproduced. vikunja#694.
+#
+# Pinning `name:` decouples the project from the directory, so a clone in any
+# location is isolated from whatever else the host is running.
+name: searxng-mcp-reranker
+
 services:
   reranker:
     build: .
     # Or skip the build entirely:
     # image: ghcr.io/tadmstr/searxng-mcp-reranker:latest
-    container_name: reranker
+    # No `container_name:` — deliberately. A fixed name is global to the host,
+    # so it collides with any other `reranker` container and makes `up` fail
+    # with a conflict whose suggested remedy is `docker rm -f reranker`. That
+    # is how a production reranker was removed for ~4.5h on 2026-09-06.
+    # Compose derives `searxng-mcp-reranker-reranker-1`; nothing references the
+    # container by name. Do not restore it. vikunja#694.
     environment:
       - RERANKER_MODEL=ms-marco-MiniLM-L-12-v2
     ports:
       # Loopback-only. The service has no authentication of any kind — see the
       # README. Publishing it on 0.0.0.0 exposes an unauthenticated CPU-bound
       # endpoint that any caller can drive.
-      - "127.0.0.1:8787:8787"
+      #
+      # 8787 is RERANKER_URL's default, so it is kept here to make the
+      # copy-paste path work unmodified. On a host already serving a reranker
+      # on 8787 this bind fails — loudly, with "address already in use", which
+      # is the intended behaviour: two rerankers on one port is a mistake worth
+      # surfacing. Override with `RERANKER_HOST_PORT=8788 docker compose up`
+      # and point RERANKER_URL at it.
+      - "127.0.0.1:${RERANKER_HOST_PORT:-8787}:8787"
     restart: unless-stopped
     # SECURITY[deferred]: this is the only compose file in the repo carrying the
     # hardening below — docker-compose.full.yml, docker-compose.example.yml and

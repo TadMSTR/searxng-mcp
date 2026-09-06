@@ -7,6 +7,13 @@
 # For a full topology (Firecrawl, Crawl4AI, Ollama, Kiwix, NATS),
 # see docker-compose.full.yml.
 
+# Pinned so the project name comes from this file rather than from whatever
+# the clone directory happens to be called. Compose project names are global to
+# the Docker host, and a directory-derived one silently shares a namespace with
+# any other stack of the same name — `down` in one removes the other's
+# containers. vikunja#694.
+name: searxng-mcp
+
 services:
   cache:
     image: docker.dragonflydb.io/dragonflydb/dragonfly:latest # SECURITY[accepted]: latest tag — example file; pin for production
