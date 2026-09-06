@@ -1,4 +1,5 @@
 import { readBoundedText, safeFetch, type TierResult } from "../fetch-utils.js";
+import { warnDependencyFailure } from "../transport-failure.js";
 import { rawFetch } from "./raw.js";
 
 const CDX_URL = "https://archive.org/wayback/available";
@@ -44,7 +45,10 @@ export async function waybackFetch(
       title: `[Archived] ${result.title}`,
       text: provenance + result.text,
     };
-  } catch {
+  } catch (err) {
+    // web.archive.org being unreachable or rate-limiting is not the same as a
+    // URL having no archived snapshot, which is this tier's normal miss.
+    warnDependencyFailure(err, "wayback");
     return null;
   }
 }

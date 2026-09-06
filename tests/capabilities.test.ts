@@ -32,10 +32,10 @@ beforeEach(() => {
 afterEach(clearCapEnv);
 
 describe("capabilityLine", () => {
-  it("reports a bare deployment as tier3 + cache + reranker only", async () => {
+  it("reports a bare deployment as tier3 on, the rest unverified or off", async () => {
     const { capabilityLine } = await import("../src/capabilities.js");
     expect(capabilityLine()).toBe(
-      "capabilities on=tier1,tier3,cache,reranker " +
+      "capabilities on=tier3 unverified=tier1,cache,reranker " +
         "off=tier2,llm,kiwix,hister,solver,wayback,otel,nats",
     );
   });
@@ -43,7 +43,7 @@ describe("capabilityLine", () => {
   it("moves tier1 to off when Firecrawl is switched off", async () => {
     process.env.FIRECRAWL_ENABLED = "false";
     const { capabilityLine } = await import("../src/capabilities.js");
-    expect(capabilityLine()).toContain("on=tier3,cache,reranker");
+    expect(capabilityLine()).toContain("on=tier3 unverified=cache,reranker");
     expect(capabilityLine()).toMatch(/off=tier1,tier2,/);
   });
 
@@ -105,6 +105,60 @@ describe("capabilityLine", () => {
       "user:pw",
     ]) {
       expect(line).not.toContain(leak);
+    }
+  });
+
+  // vikunja#695. The line said `reranker` was on for the whole of a 4.5h
+  // reranker outage, because a URL was set the entire time. `Boolean(URL)` is
+  // a statement about configuration and was being rendered as a statement
+  // about health. These two assertions are the ones that would have caught it.
+  it("never reports a configured-but-uncontacted backend as on", async () => {
+    process.env.KIWIX_URL = "http://kiwix:8080";
+    process.env.LLM_BASE_URL = "http://llm:8000/v1";
+    process.env.SOLVER_URL = "http://byparr:8191";
+    process.env.SOLVER_ENABLED = "true";
+    process.env.OTEL_EXPORTER_OTLP_ENDPOINT = "http://otel:4318";
+    process.env.NATS_URL = "nats://nats:4222";
+    const { capabilityStates } = await import("../src/capabilities.js");
+    const states = capabilityStates();
+    for (const backed of [
+      "tier1",
+      "cache",
+      "reranker",
+      "llm",
+      "kiwix",
+      "solver",
+      "otel",
+      "nats",
+    ]) {
+      expect(states[backed], `${backed} is backed by a remote dependency`).toBe(
+        "unverified",
+      );
+    }
+  });
+
+  it("reports only the capabilities that need no backend as on", async () => {
+    process.env.WAYBACK_ENABLED = "true";
+    const { capabilityStates } = await import("../src/capabilities.js");
+    const states = capabilityStates();
+    const on = Object.keys(states).filter((k) => states[k] === "on");
+    // tier3 is in-process; wayback is a plain feature flag. Anything else
+    // appearing here is claiming health it has not established.
+    expect(on.sort()).toEqual(["tier3", "wayback"]);
+  });
+
+  // The fix has to apply to every capability derived from a URL, not just the
+  // one whose outage prompted it — fixing `reranker` and leaving `cache` is
+  // exactly how this class has survived three releases.
+  it("applies the distinction to every capability, not just reranker", async () => {
+    const { capabilities, capabilityStates } = await import(
+      "../src/capabilities.js"
+    );
+    const configured = capabilities();
+    const states = capabilityStates();
+    expect(Object.keys(states).sort()).toEqual(Object.keys(configured).sort());
+    for (const [name, isConfigured] of Object.entries(configured)) {
+      expect(states[name] === "off").toBe(!isConfigured);
     }
   });
 

@@ -8,6 +8,7 @@ import {
   readBoundedText,
   type TierResult,
 } from "../fetch-utils.js";
+import { describeTransportFailure } from "../transport-failure.js";
 
 /**
  * The crawl4ai version this tier is written against.
@@ -171,34 +172,6 @@ export function crawl4aiErrorReason(label: string, body: string): string {
   // corr goes before the prose for the same reason netErr does: it has to
   // survive a downstream truncation, and it is the actionable half.
   return [label, netErr, corr, prose].filter(Boolean).join(" ");
-}
-
-/**
- * Name a transport failure well enough to act on.
- *
- * Node's fetch reports every one of these as the bare string "fetch failed"
- * and hides the useful part on `cause.code`. The distinction is the whole
- * point of the Phase 7 negative control: a crawl4ai 0.9.x server started
- * without CRAWL4AI_API_TOKEN binds the container's loopback and answers with
- * ECONNRESET while its healthcheck stays green, and "fetch failed" would leave
- * an investigator no way to tell that from a DNS typo.
- */
-function describeTransportFailure(err: unknown): string {
-  const base = err instanceof Error ? err.message : String(err);
-  const cause = (err as { cause?: { code?: unknown; message?: unknown } })
-    ?.cause;
-  // `code` is present for the network failures (ECONNRESET, ECONNREFUSED,
-  // ENOTFOUND, …). Some causes carry only a message — Node rejects a request
-  // to a blocked port that way — so fall back to it rather than to nothing.
-  const detail =
-    typeof cause?.code === "string"
-      ? cause.code
-      : typeof cause?.message === "string"
-        ? cause.message
-        : undefined;
-  return detail
-    ? `Crawl4AI unreachable: ${detail} (${base})`
-    : `Crawl4AI: ${base}`;
 }
 
 /**
@@ -442,7 +415,24 @@ export async function crawl4aiFetch(
       );
     }
 
-    return null;
+    // An empty `results` array IS an answer: the backend ran the crawl and
+    // found nothing. That is a real empty result and must stay `null`, or this
+    // tier starts erroring on pages that are genuinely blank.
+    //
+    // Note the branch above tests `.length > 0`, so it does NOT cover this —
+    // an early version of this guard threw here and converted every genuine
+    // empty crawl into a tier error. The test named "still treats an empty
+    // results array as a genuine empty answer" is what caught it.
+    if (Array.isArray(data.results)) return null;
+
+    // Neither `results` in any form nor a `task_id`: the backend is speaking a
+    // protocol we do not recognise — a version skew, or something else
+    // answering in its place (a proxy error page, an auth portal). Not an
+    // empty page. `null` here would be booked by runTier as `empty_result`,
+    // the exact conflation #690 existed to remove.
+    throw new Crawl4aiError(
+      "Crawl4AI returned 200 with neither results nor a task_id — unrecognised response shape",
+    );
   } catch (err) {
     // Transport failures reach here: connection refused, connection reset, DNS
     // failure, TLS rejection — and our own 45s abort. None of them mean the
@@ -457,7 +447,7 @@ export async function crawl4aiFetch(
     if (err instanceof Error && err.name === "AbortError") {
       throw new Crawl4aiError("Crawl4AI timeout after 45s");
     }
-    const described = describeTransportFailure(err);
+    const described = describeTransportFailure(err, "Crawl4AI");
     // A connection reset with no token configured is the other face of the
     // same misconfiguration as a 401 — the server bound container-loopback.
     if (/ECONNRESET|ECONNREFUSED/.test(described)) {

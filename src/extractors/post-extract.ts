@@ -38,6 +38,8 @@ export function postExtract(input: PostExtractInput): PostExtractResult {
 
   let dom: JSDOM;
   try {
+    // Reviewed (vikunja#687 class sweep): local parse; the baseline fallback
+    // below is a real, documented degradation rather than a swallowed failure.
     dom = new JSDOM(html, { url });
   } catch {
     return {

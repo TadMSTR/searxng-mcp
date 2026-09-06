@@ -21,6 +21,19 @@ services:
     #   image: redis:7-alpine
     #   image: valkey/valkey:8-alpine
     restart: unless-stopped
+    # Container hardening (vikunja#693). Verified by RUNNING it against a green
+    # no-hardening baseline, not by reading the diff.
+    #
+    # Dragonfly's entrypoint drops privileges with setpriv, so a bare
+    # `cap_drop: [ALL]` kills it at startup with "setpriv: setresuid failed:
+    # Operation not permitted" (exit 127). ALL + SETUID/SETGID runs.
+    cap_drop: [ALL]
+    cap_add: [SETUID, SETGID]
+    security_opt: [no-new-privileges:true]
+    read_only: true
+    tmpfs: [/tmp]
+    mem_limit: 2g
+    cpus: 2.0
     ports:
       - "127.0.0.1:6381:6379"
     command: ["--maxmemory=512mb", "--save_schedule="]

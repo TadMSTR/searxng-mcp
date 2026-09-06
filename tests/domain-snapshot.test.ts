@@ -1,8 +1,12 @@
 import { mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import type { DomainRecord } from "../src/domain-db.js";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  type DomainRecord,
+  SCHEMA_VERSION,
+  TIER_SLOT_KEYS,
+} from "../src/domain-db.js";
 import {
   applyRestore,
   listSnapshots,
@@ -281,5 +285,85 @@ describe("applyRestore", () => {
       mkRecord("b.com", "2026-06-01T00:00:00Z"),
     ]);
     expect(result).toEqual({ total: 2, restored: 0, skipped: 2 });
+  });
+});
+
+/**
+ * `applyRestore` counted a transport failure as a per-record skip.
+ *
+ * The loop is deliberately best-effort — a single malformed or unwritable
+ * record should not abort a restore. But a dead connection is not one bad
+ * record: every record after it fails too, so a Valkey that died after record
+ * four counted the remaining 1,287 as "skipped" and restore-domain-db printed
+ * "restored 4, skipped 1287 of 1291" and exited 0.
+ *
+ * An operator reads that as a finished restore from a mostly-stale snapshot.
+ * It is a failed restore, and this is the path the domain-db is supposed to be
+ * recoverable through.
+ */
+describe("applyRestore abandons rather than reporting a dead datastore as skips", () => {
+  const rec = (domain: string, lastFetch = "2026-06-01T00:00:00Z") =>
+    ({
+      schema_version: SCHEMA_VERSION,
+      domain,
+      first_seen: "2026-05-01T00:00:00Z",
+      last_fetch: lastFetch,
+      capabilities: {},
+      tier_stats_30d: Object.fromEntries(
+        TIER_SLOT_KEYS.map((k) => [
+          k,
+          { attempts: 0, ok: 0, fail: 0, window_start_ms: Date.now() },
+        ]),
+      ),
+    }) as unknown as DomainRecord;
+
+  it("stops and reports when the connection dies mid-restore", async () => {
+    let calls = 0;
+    const client = {
+      get: vi.fn().mockResolvedValue(null),
+      set: vi.fn().mockImplementation(async () => {
+        calls += 1;
+        if (calls > 2) {
+          throw Object.assign(new Error("fetch failed"), {
+            cause: { code: "ECONNRESET" },
+          });
+        }
+        return "OK";
+      }),
+    };
+    const records = Array.from({ length: 10 }, (_, i) => rec(`d${i}.com`));
+
+    const r = await applyRestore(client, records);
+
+    expect(r.failed).toBeDefined();
+    expect(r.failed).toContain("ECONNRESET");
+    expect(r.restored).toBe(2);
+    // The remaining records were NOT attempted, so they must not be counted as
+    // skipped — that is the miscount the whole fix is about.
+    expect(r.skipped).toBe(0);
+    expect(r.restored + r.skipped).toBeLessThan(r.total);
+  });
+
+  it("still counts ordinary per-record failures as skips", async () => {
+    // The negative control. If the guard treated every error as fatal, a
+    // single unwritable record would abort an otherwise fine restore — trading
+    // one failure mode for another.
+    let calls = 0;
+    const client = {
+      get: vi.fn().mockResolvedValue(null),
+      set: vi.fn().mockImplementation(async () => {
+        calls += 1;
+        if (calls === 2) throw new Error("WRONGTYPE against a key");
+        return "OK";
+      }),
+    };
+    const records = Array.from({ length: 4 }, (_, i) => rec(`d${i}.com`));
+
+    const r = await applyRestore(client, records);
+
+    expect(r.failed).toBeUndefined();
+    expect(r.restored).toBe(3);
+    expect(r.skipped).toBe(1);
+    expect(r.restored + r.skipped).toBe(r.total);
   });
 });

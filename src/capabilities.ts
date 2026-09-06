@@ -3,9 +3,14 @@
 // was never configured, and until now nothing said so at startup.
 //
 // This reports *configuration*, never health: nothing here probes a service or
-// opens a socket. A capability listed as on can still be unreachable, and that
-// shows up separately on the existing degradation paths (rerankWithFallback,
-// the Ollama fallbacks, the throttled cache lines).
+// opens a socket. That has always been true, but until v3.26.0 the line said
+// `on=` for a configured-but-uncontacted backend, which an operator reads as
+// "working" — and it said `reranker` was on through the whole of a 4.5h
+// reranker outage (vikunja#695). Configured-but-unverified now renders as
+// `unverified=`, so the line stops making a claim it cannot support.
+//
+// Actual reachability still shows up on the existing degradation paths
+// (rerankWithFallback, the Ollama fallbacks, the throttled cache lines).
 
 import {
   CACHE_URL,
@@ -50,12 +55,53 @@ export function capabilities(): Record<string, boolean> {
   };
 }
 
+/**
+ * Capabilities whose truth is complete without contacting anything.
+ *
+ * Everything NOT listed here is backed by a remote dependency this process has
+ * not spoken to at startup, so "configured" is all we can honestly claim about
+ * it. tier3 is in-process (raw fetch + Readability) and wayback is a plain
+ * feature flag; both are as true as they will ever be.
+ */
+const SELF_CONTAINED = new Set(["tier3", "wayback"]);
+
+export type CapabilityState = "on" | "unverified" | "off";
+
+/**
+ * Capability name → what we actually know about it.
+ *
+ * `on`          configured, and nothing remote has to work for it to be true
+ * `unverified`  configured, but this process has never contacted the backend
+ * `off`         not configured
+ *
+ * The distinction is the point (vikunja#695). `Boolean(RERANKER_URL)` says a
+ * URL is set, and the line rendered that as `reranker` being *on* right
+ * through a 4.5-hour reranker outage — a URL was set the entire time. Nothing
+ * here probes, so `unverified` is not a health failure; it is the honest
+ * absence of a health claim, and an operator reading it knows the difference
+ * between "I did not configure that" and "I configured it and nobody checked".
+ */
+export function capabilityStates(): Record<string, CapabilityState> {
+  const caps = capabilities();
+  const states: Record<string, CapabilityState> = {};
+  for (const [name, configured] of Object.entries(caps)) {
+    states[name] = !configured
+      ? "off"
+      : SELF_CONTAINED.has(name)
+        ? "on"
+        : "unverified";
+  }
+  return states;
+}
+
 /** The single startup line. Kept to one line however many capabilities exist. */
 export function capabilityLine(): string {
-  const caps = capabilities();
-  const on = Object.keys(caps).filter((k) => caps[k]);
-  const off = Object.keys(caps).filter((k) => !caps[k]);
-  return `capabilities on=${on.join(",") || "none"} off=${off.join(",") || "none"}`;
+  const states = capabilityStates();
+  const names = (want: CapabilityState) =>
+    Object.keys(states)
+      .filter((k) => states[k] === want)
+      .join(",") || "none";
+  return `capabilities on=${names("on")} unverified=${names("unverified")} off=${names("off")}`;
 }
 
 export function logCapabilities(): void {

@@ -51,6 +51,43 @@ and pushed to the registry alongside it:
 gh attestation verify oci://ghcr.io/tadmstr/searxng-mcp:latest --owner TadMSTR
 ```
 
+### Verifying the registry copy directly
+
+The attestation is also in GHCR, but **GHCR does not implement the OCI
+referrers API** — `GET /v2/<name>/referrers/<digest>` returns
+`404 MANIFEST_UNKNOWN` even for a digest that exists and has an attestation.
+
+That 404 is easy to read as "there is no attestation". It is not. GHCR uses the
+spec's *fallback tag* scheme instead, publishing the referrers index under a tag
+named `sha256-<digest>`:
+
+```bash
+REPO=tadmstr/searxng-mcp
+TOKEN=$(curl -s "https://ghcr.io/token?scope=repository:$REPO:pull&service=ghcr.io" \
+  | python3 -c 'import json,sys; print(json.load(sys.stdin)["token"])')
+
+# Resolve the tag to a digest...
+DIGEST=$(curl -sI -H "Authorization: Bearer $TOKEN" \
+  -H "Accept: application/vnd.oci.image.index.v1+json,application/vnd.docker.distribution.manifest.list.v2+json,application/vnd.oci.image.manifest.v1+json,application/vnd.docker.distribution.manifest.v2+json" \
+  "https://ghcr.io/v2/$REPO/manifests/latest" \
+  | tr -d '\r' | awk -F': ' '/[Dd]ocker-[Cc]ontent-[Dd]igest/{print $2}')
+
+# ...then read the referrers index from the fallback tag (note ':' -> '-')
+curl -s -H "Authorization: Bearer $TOKEN" \
+  -H "Accept: application/vnd.oci.image.index.v1+json" \
+  "https://ghcr.io/v2/$REPO/manifests/${DIGEST/:/-}" | python3 -m json.tool
+```
+
+which returns an index whose entry carries
+`artifactType: application/vnd.dev.sigstore.bundle.v0.3+json` and
+`dev.sigstore.bundle.predicateType: https://slsa.dev/provenance/v1`.
+
+`cosign`, `oras` and `crane` implement the fallback and find this without any
+of the above. A bare `curl` against `/referrers/` does not, and reports zero —
+which is exactly how vikunja#689 came to conclude the attestation was missing.
+
+Verified 2026-09-06 against both published images at v3.25.0 and v3.25.1.
+
 ## From source
 
 ```bash

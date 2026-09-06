@@ -149,13 +149,18 @@ describe("enumerateDomains", () => {
     expect(truncated).toBe(false);
   });
 
-  it("is best-effort: returns empty on a scan error rather than throwing", async () => {
+  // Retargeted, not removed. The "best-effort" contract still holds — callers
+  // are a reporting tool and a scheduled job, and neither is improved by an
+  // exception. What this used to assert as well, via toEqual on the whole
+  // object, was that a scan error is INDISTINGUISHABLE from an empty corpus.
+  // That was the defect (vikunja#688), pinned as an invariant.
+  it("is best-effort: does not throw on a scan error, but says it failed", async () => {
     const scan = vi.fn().mockRejectedValue(new Error("connection reset"));
     getValkeyMock.mockResolvedValue(fakeClient({ scan }));
-    await expect(enumerateDomains()).resolves.toEqual({
-      records: [],
-      truncated: false,
-    });
+    const result = await enumerateDomains();
+    expect(result.records).toEqual([]);
+    expect(result.truncated).toBe(false);
+    expect(result.unavailable).toContain("connection reset");
   });
 
   it("returns empty (no mget) when the scan yields no keys", async () => {
@@ -364,5 +369,123 @@ describe("formatDomainRecord renders every tier slot", () => {
     TIER_SLOT_KEYS.forEach((slot, i) => {
       expect(block[i].trim().startsWith(slot)).toBe(true);
     });
+  });
+});
+
+// vikunja#688 sub-finding, and the more serious consequence of it.
+//
+// `enumerateDomains` caught every failure and returned `{records: [], truncated}`
+// — the exact shape of a healthy scan over an empty corpus. Two things then
+// read that as fact:
+//
+//   1. `domain_stats` reported "domains tracked: 0"
+//   2. `domain-db-maintenance` wrote a snapshot containing zero records, made
+//      it the NEWEST snapshot, and pruned by retention
+//
+// (2) is the one that does damage. `loadLatestSnapshot` returns the newest, so
+// a single maintenance run during a Valkey outage leaves `restore-domain-db`
+// restoring nothing; fourteen consecutive ones (the default retention) prune
+// every good snapshot away. A transport failure silently destroys the restore
+// path, and the artefact it leaves behind is indistinguishable from a
+// legitimate backup of an empty database.
+describe("enumerateDomains reports unreachability rather than emptiness", () => {
+  beforeEach(() => {
+    getValkeyMock.mockReset();
+  });
+
+  it("flags a scan that failed mid-flight instead of returning an empty corpus", async () => {
+    const err = Object.assign(new Error("fetch failed"), {
+      cause: { code: "ECONNREFUSED" },
+    });
+    const scan = vi.fn().mockRejectedValue(err);
+    getValkeyMock.mockResolvedValue(fakeClient({ scan }));
+
+    const result = await enumerateDomains();
+    expect(result.records).toEqual([]);
+    expect(result.unavailable).toBeDefined();
+    expect(result.unavailable).toContain("ECONNREFUSED");
+  });
+
+  it("distinguishes a genuinely empty corpus from an unreachable one", async () => {
+    const scan = vi.fn().mockResolvedValueOnce(["0", []]);
+    getValkeyMock.mockResolvedValue(fakeClient({ scan }));
+
+    const result = await enumerateDomains();
+    expect(result.records).toEqual([]);
+    expect(result.unavailable).toBeUndefined();
+  });
+
+  it("flags a domain database that is not configured at all", async () => {
+    getValkeyMock.mockResolvedValue(null);
+
+    const result = await enumerateDomains();
+    expect(result.unavailable).toBeDefined();
+    expect(result.unavailable).toMatch(/not configured/i);
+  });
+});
+
+/**
+ * vikunja#688 — collecting the stale-schema keys the reaper deletes.
+ *
+ * Measured on the live corpus 2026-09-06 (the ticket's numbers, which research
+ * could not independently confirm, re-measured through the configured
+ * VALKEY_URL): 1,295 keys, of which 1,196 (92.4%) carry a superseded schema —
+ * 122 at schema 2, 475 at 4, 436 at 5, 163 at 6 — against 99 current.
+ *
+ * The distinction that matters here is stale vs corrupt. A record we
+ * deliberately superseded is safe to delete; a record we cannot read is a
+ * different decision and is left alone.
+ */
+describe("enumerateDomains collects stale-schema keys for reaping", () => {
+  beforeEach(() => {
+    getValkeyMock.mockReset();
+  });
+
+  function withRaws(keys: string[], raws: (string | null)[]) {
+    const scan = vi.fn().mockResolvedValueOnce(["0", keys]);
+    const mget = vi.fn().mockResolvedValueOnce(raws);
+    getValkeyMock.mockResolvedValue(fakeClient({ scan, mget }));
+  }
+
+  it("lists superseded records and keeps current ones out of the list", async () => {
+    const current = mkRecord("current.com");
+    const stale = { ...mkRecord("stale.com"), schema_version: 2 };
+    withRaws(
+      ["domain:current.com", "domain:stale.com"],
+      [JSON.stringify(current), JSON.stringify(stale)],
+    );
+
+    const r = await enumerateDomains();
+
+    expect(r.records.map((x) => x.domain)).toEqual(["current.com"]);
+    expect(r.staleKeys).toEqual(["domain:stale.com"]);
+    // The assertion that matters: a live key must never reach the delete list.
+    expect(r.staleKeys).not.toContain("domain:current.com");
+  });
+
+  it("does not mark an unreadable record as stale", async () => {
+    // Corrupt is not superseded. Deleting data we cannot read is a different
+    // decision from deleting data we replaced, and this reaper does not make
+    // it.
+    withRaws(["domain:corrupt.com"], ["{ this is not json"]);
+
+    const r = await enumerateDomains();
+
+    expect(r.records).toEqual([]);
+    expect(r.staleKeys).toEqual([]);
+  });
+
+  it("returns no delete list when the corpus could not be read", async () => {
+    const scan = vi.fn().mockRejectedValue(
+      Object.assign(new Error("fetch failed"), {
+        cause: { code: "ECONNREFUSED" },
+      }),
+    );
+    getValkeyMock.mockResolvedValue(fakeClient({ scan }));
+
+    const r = await enumerateDomains();
+
+    expect(r.unavailable).toBeDefined();
+    expect(r.staleKeys).toEqual([]);
   });
 });

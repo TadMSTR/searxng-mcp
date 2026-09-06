@@ -20,6 +20,8 @@ export function runReadability(
       text: article.textContent,
     };
   } catch {
+    // Reviewed (vikunja#687 class sweep): pure local parse over HTML already
+    // in hand. Null means "could not extract an article", which is true.
     return null;
   }
 }

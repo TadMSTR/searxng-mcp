@@ -19,6 +19,7 @@ import { logWarn } from "./log.js";
 import { incCounter, recordHistogram } from "./observability.js";
 import { checkRobots, getRobotsForOrigin } from "./robots.js";
 import { assertResolvedPublic } from "./ssrf-guard.js";
+import { warnDependencyFailure } from "./transport-failure.js";
 
 export interface CrawlPage {
   url: string;
@@ -339,7 +340,8 @@ export function extractSitemapUrls(xml: string): string[] {
         .filter((loc) => loc.startsWith("http"));
     }
   } catch {
-    // malformed XML — return empty
+    // Reviewed (vikunja#687 class sweep): malformed XML in a sitemap we DID
+    // fetch is a fact about the sitemap, not a failure to reach it.
   }
   return [];
 }
@@ -355,7 +357,12 @@ async function fetchSitemapXml(url: string): Promise<string | null> {
     });
     if (!res.ok) return null;
     return await readBoundedText(res); // bounded read — prevents oversized sitemap DoS (F-02)
-  } catch {
+  } catch (err) {
+    // A sitemap we could not fetch is not a site without a sitemap, and the
+    // caller reports the latter. Null still propagates — a crawl must not hard
+    // fail because one sitemap URL was unreachable — but the reason is no
+    // longer invisible.
+    warnDependencyFailure(err, `sitemap ${url}`);
     return null;
   }
 }
@@ -461,7 +468,11 @@ export async function sitemapCrawl(
       pages,
       cached: false,
     };
-  } catch {
+  } catch (err) {
+    // The outer crawl catch. Returning null routes the caller to its other
+    // strategies, which is right — but doing it silently made a failed crawl
+    // and a site with no crawlable structure the same event.
+    warnDependencyFailure(err, `sitemap crawl of ${url}`);
     return null;
   }
 }

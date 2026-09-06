@@ -16,6 +16,7 @@ import {
   USER_AGENT,
 } from "../fetch-utils.js";
 import { firecrawlSupportsPdf } from "../firecrawl-api.js";
+import { warnDependencyFailure } from "../transport-failure.js";
 
 // Create a ProxyAgent once at module init when ADBLOCK_PROXY_URL is configured.
 // Passed as `dispatcher` to undici-backed fetch calls (Node.js 18+ global fetch).
@@ -171,7 +172,15 @@ export async function fetchRawHtmlForMetadata(
     });
     if (!res.ok) return null;
     return await readBoundedText(res);
-  } catch {
+  } catch (err) {
+    // This is a side-channel enrichment fetch running in parallel with the
+    // tier cascade, and a probe must not turn a fetchable URL into a hard
+    // failure — so null stays the return value. What was wrong was doing it
+    // silently: a metadata fetch failing for every URL (a DNS or egress
+    // problem) looked exactly like every page happening to lack JSON-LD, and
+    // `capabilities.metadata_fetch` was populated on 0 of 572 live records
+    // with no indication of why (vikunja#687's class).
+    warnDependencyFailure(err, "raw metadata fetch");
     return null;
   }
 }

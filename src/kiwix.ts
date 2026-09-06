@@ -1,6 +1,7 @@
 import { KIWIX_URL } from "./config.js";
 import { runReadability } from "./extractors/readability.js";
 import type { TierResult } from "./fetch-utils.js";
+import { warnDependencyFailure } from "./transport-failure.js";
 
 // Hostnames served by Kiwix, mapped to stable ZIM book names.
 // Book names are stable because kiwix-serve runs with --nodatealiases (-z),
@@ -60,7 +61,10 @@ export async function kiwixFetch(
       text: readable.text.slice(0, maxChars),
       html,
     };
-  } catch {
+  } catch (err) {
+    // A dead Kiwix backend looked exactly like "this article is not in the
+    // offline corpus" — the tier's ordinary and expected miss.
+    warnDependencyFailure(err, "kiwix");
     return null;
   }
 }

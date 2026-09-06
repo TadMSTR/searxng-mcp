@@ -402,4 +402,40 @@ describe("domain_stats advertised output schema", () => {
     const live = await validateAsClient(result.structuredContent);
     expect(live.valid, JSON.stringify(live.errors ?? live.error)).toBe(true);
   });
+
+  /**
+   * vikunja#688. The unavailable payload has to survive the SAME path the
+   * `solver` slot did not: the advertised JSON Schema emits
+   * `additionalProperties: false`, so a field the handler sets but the zod
+   * schema does not declare is stripped by the client's validator and the
+   * caller sees nothing. A server-side `.parse()` test would pass regardless —
+   * zod's z.object() strips rather than rejects — which is the whole reason
+   * this file validates as a client instead.
+   *
+   * Without `unavailable` declared on DomainStatsOutputSchema, the operator
+   * gets a payload with `aggregate: null` and no stated reason, which reads as
+   * a failure of the tool rather than of the database.
+   */
+  it("advertises `unavailable`, so an unreadable corpus reaches the caller", async () => {
+    const err = Object.assign(new Error("fetch failed"), {
+      cause: { code: "ECONNREFUSED" },
+    });
+    vi.mocked(getValkey).mockResolvedValueOnce({
+      scan: vi.fn().mockRejectedValue(err),
+      mget: vi.fn(),
+    } as unknown as NonNullable<Awaited<ReturnType<typeof getValkey>>>);
+
+    const result = await handleDomainStats({});
+
+    expect(result.structuredContent.unavailable).toContain("ECONNREFUSED");
+    expect(result.structuredContent.aggregate).toBeNull();
+    // And it is not reported as a zero-domain corpus.
+    expect(result.content[0].text).not.toMatch(/domains tracked: 0/);
+    expect(result.content[0].text).toMatch(
+      /not a report that the database is empty/i,
+    );
+
+    const r = await validateAsClient(result.structuredContent);
+    expect(r.valid, JSON.stringify(r.errors ?? r.error)).toBe(true);
+  });
 });

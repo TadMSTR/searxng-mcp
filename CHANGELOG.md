@@ -6,6 +6,133 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **A failure is no longer reported as a benign state (vikunja#695, #688, #687's survivors).**
+  One change with fourteen sites, not fourteen changes. Three instances of this class shipped
+  in a single week, and the build that fixed the first two shipped the next three, so the
+  reference implementation written for #690 is now extracted into `src/transport-failure.ts`
+  and applied across the codebase. All 38 `catch`-to-benign-value sites in `src/` were
+  triaged; the ~20 where the exception genuinely means the data is absent are annotated as
+  reviewed rather than changed.
+
+  - `capabilities.ts` gains a third state. The module always documented that it reports
+    configuration and never health, then rendered a configured backend as `on=` — which is
+    read as "working", and which said `reranker` was on through the entire 4.5h reranker
+    outage because a URL was set the whole time. Configured-but-uncontacted now renders as
+    `unverified=`. Applied to all ten URL-derived capabilities: fixing `reranker` and leaving
+    `cache` is how this class survived three releases.
+  - `enumerateDomains` sets `unavailable` instead of returning an empty corpus. Research hit
+    this while measuring for the plan that fixes it — a `0` that was an auth failure.
+    `domain_stats` now says it could not read the database; the field is declared on the
+    output schema, since the advertised JSON Schema emits `additionalProperties: false` and
+    an undeclared field never reaches the caller.
+  - **`domain-db-maintenance` no longer destroys the restore path.** It wrote whatever
+    `enumerateDomains` returned, so a failed scan wrote an *empty snapshot* and made it the
+    newest — the one `loadLatestSnapshot` returns and `restore-domain-db` restores from —
+    then pruned by retention. At the default retention of 14, fourteen consecutive failed
+    runs leave nothing but empty snapshots, each indistinguishable from a genuine backup of
+    an empty database. It now writes nothing, prunes nothing and emits no gauges when the
+    corpus is unreadable, and exits non-zero. This was not in the ticket.
+  - **`applyRestore` no longer reports a dead datastore as skipped records.** A Valkey that
+    died after record four counted the remaining 1,287 as "skipped", so `restore-domain-db`
+    printed `restored 4, skipped 1287 of 1291` and exited 0 — a failed restore presented as a
+    finished one from a mostly-stale snapshot. A transport failure now abandons and reports;
+    ordinary per-record failures are still skips.
+  - **`robots.txt` failures are no longer indistinguishable from consent.** A 404, a 5xx, a
+    missing body and a transport failure all became `allowed: true, reason: "no_robots_txt"`,
+    cached for **24 hours**, and written into the domain database via `recordRobotsProbe` as
+    a fact about a third party's site. So one bad five-second window asserted for a day that
+    a site had no crawl rules. The permissive default is deliberate and unchanged — failing
+    closed would stop crawling on every transient blip — but it now reports
+    `robots_unreachable`, caches for 5 minutes rather than a day, and records no capability.
+    The parser-throw path was also mislabelled `fetch_failed` for a body that was fetched
+    successfully; it is now `parse_failed`.
+  - `crawl4ai.ts` throws on a 200 carrying neither `results` nor a `task_id` — an
+    unrecognised response shape is a version skew or something else answering in the
+    backend's place, and `null` there was booked by `runTier` as `empty_result`, the exact
+    conflation #690 removed one branch above. An empty `results` array is a real empty answer
+    and still returns `null`.
+  - `raw.ts`, `solver.ts` (3 sites), `crawl.ts` (2), `kiwix.ts`, `wayback.ts`, `youtube.ts`,
+    `reddit.ts`, `llms-txt.ts` and `domain-snapshot.ts` now name the dependency that failed.
+    These are cascade and enrichment paths where returning the benign value is correct —
+    throwing would turn a degraded result into no result — so what changed is that they stop
+    doing it silently.
+
+- **Stale-schema domain records are reaped (vikunja#688).** Re-measured through the
+  configured `VALKEY_URL` rather than taken on trust — the ticket's numbers were the
+  developer's own and research could not confirm them. They hold: 1,295 keys, of which
+  1,196 (92.4%) carry a superseded schema across four generations (122 at schema 2, 475 at
+  4, 436 at 5, 163 at 6) against 99 current. `domain-db-maintenance` now deletes them.
+
+  These records are already unreachable — every read goes through `parseDomainRecord`,
+  which gates on `schema_version` — so this changes no observable behaviour. It is safe
+  against the snapshot path for the same reason plus a second one: stale records never
+  enter a snapshot, and `isStructurallyValidRecord` would reject them on restore anyway.
+
+  The reap **re-reads every key immediately before deleting it** and drops any that no
+  longer carries a superseded schema. That is not defensive padding. The key list is built
+  during the scan and the delete happens after the snapshot and prune, in a process whose
+  fetch path is writing domain records throughout — a domain fetched in that window has its
+  record rewritten at the current schema under the same key, and deleting it on the
+  strength of the earlier read would destroy live data.
+
+  Why it is worth doing: the scan is bounded by `DEFAULT_MAX_KEYS` (5000). On the measured
+  trajectory a sixth and seventh generation crosses that bound, at which point `truncated`
+  goes true and the aggregate silently begins describing a subset while still being read as
+  a total — the same defect class as the rest of this release, arriving by a slower route.
+
+- **Build provenance was never missing (vikunja#689).** The ticket reported `referrers=0`
+  on both published images and concluded `push-to-registry: true` was a no-op. Diagnosed
+  before changing anything: neither hypothesised cause holds. GHCR does not implement the
+  OCI referrers *API* — `GET /v2/<name>/referrers/<digest>` returns `404 MANIFEST_UNKNOWN`
+  for a digest that exists and carries an attestation — and uses the spec's fallback tag
+  scheme instead, publishing the referrers index under `sha256-<digest>`.
+
+  Verified across both images and both releases: three fallback tags on `searxng-mcp`, two
+  on `searxng-mcp-reranker`, each carrying a sigstore bundle with
+  `predicateType: https://slsa.dev/provenance/v1` and timestamps matching their publish runs.
+
+  So the plan's recommendation — drop `push-to-registry: true` — would have deleted a working
+  supply-chain feature to make a false measurement consistent. The line stays, with a comment
+  recording why it must not be removed on the strength of a 404, and `docs/deployment.md` now
+  explains how to read the registry copy. The `referrers=0` reading was itself a query against
+  an unserved endpoint reported as an empty answer: the same defect class as everything else
+  in this release, which is why it was checked rather than acted on.
+
+- **Compose hardening retrofitted to the two top-level files (vikunja#693).** `cap_drop:
+  [ALL]`, `security_opt: [no-new-privileges:true]` and memory/CPU limits on all ten services;
+  `read_only: true` only where it was verified by running the service. Directive counts went
+  from 0 and 0 to 51 and 7.
+
+  Every setting was probed against a **green no-hardening baseline first**, which is what
+  made the results mean anything. Four things a diff read would have got wrong:
+
+  - **`cache` and `firecrawl-redis` need two capabilities back.** Both drop privileges with
+    `setpriv`, so a bare `cap_drop: [ALL]` kills them with `setpriv: setresuid failed:
+    Operation not permitted`. `cap_add: [SETUID, SETGID]` fixes both.
+  - **`crawl4ai` gets no `read_only`.** Three configurations were run and none is fit to
+    ship: `/tmp` alone crash-loops gunicorn on `/home/appuser/.crawl4ai`; adding that path
+    serves but still errors on `/home/appuser/.gunicorn`; a tmpfs over the whole home
+    directory logs clean and leaves the service unhealthy and unreachable.
+  - **`ollama` gets no `read_only`** — verified failing both with and without a tmpfs.
+  - `nats` needs `read_only` *and* a writable `/tmp`; `read_only` alone exits 1.
+
+  `kiwix`, `firecrawl-api` and `firecrawl-puppeteer` carry `cap_drop` and the limits but no
+  `read_only`: they could not be started here (no `.zim` corpus, no API keys, Chromium
+  sandbox), so it is recorded as unverified rather than assumed safe.
+
+  Also fixed while running it: the reference `cache` command line could not start on a large
+  host at all. Dragonfly sizes io threads to the core count and refuses to boot if
+  `maxmemory` is below 256MiB per thread — on a 32-core machine `--maxmemory=2gb` exits with
+  "There are 32 threads, so 8.00GiB are required", with no hardening involved.
+  `--proactor_threads=4` is now pinned in both files.
+
+- **vikunja#687 needed closing, not building.** Its premise died in v3.25.0: `648b60e`
+  replaced the bare `catch { return null }` at `crawl4ai.ts:197` that the ticket describes.
+  What survived was the *class*, in other files, which is what the above addresses.
+
+
 ## [3.25.1] - 2026-09-06
 
 Patch for a trap shipped in v3.25.0. Released on its own, ahead of the rest of the

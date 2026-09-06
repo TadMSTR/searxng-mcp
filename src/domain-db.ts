@@ -214,6 +214,8 @@ export function normalizeHostname(input: string): string | null {
     const host = input.includes("://") ? new URL(input).hostname : input.trim();
     return host.replace(/^www\./i, "").toLowerCase() || null;
   } catch {
+    // Reviewed (vikunja#687 class sweep): a caller-supplied string that is not
+    // a URL genuinely is not a hostname. Nothing remote is involved.
     return null;
   }
 }
@@ -235,6 +237,9 @@ export function parseDomainRecord(raw: string | null): DomainRecord | null {
     if (parsed.schema_version !== SCHEMA_VERSION) return null;
     return parsed;
   } catch {
+    // Reviewed (vikunja#687 class sweep): a stored record that will not parse
+    // is a malformed record, which is exactly what the documented contract
+    // says null means here. The read that produced `raw` is the caller's.
     return null;
   }
 }

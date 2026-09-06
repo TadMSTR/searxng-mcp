@@ -147,6 +147,20 @@ jobs:
           echo "digest=$DIGEST" >> "$GITHUB_OUTPUT"
           echo "pushed digest $DIGEST"
 
+      # `push-to-registry: true` WORKS — do not remove it on the strength of a
+      # 404 from the referrers API. GHCR does not implement
+      # GET /v2/<name>/referrers/<digest>; it returns 404 MANIFEST_UNKNOWN even
+      # for a digest that exists and carries an attestation. GHCR uses the OCI
+      # spec's fallback tag scheme instead, publishing the referrers index under
+      # a tag named `sha256-<digest>`.
+      #
+      # vikunja#689 reported "referrers=0" on both published images and
+      # concluded this line was a no-op. It is not: verified 2026-09-06, both
+      # images at v3.25.0 and v3.25.1 carry a sigstore bundle with predicateType
+      # https://slsa.dev/provenance/v1 under their fallback tag. The zero came
+      # from querying an endpoint GHCR does not serve — a failed query reported
+      # as an empty answer, which is the same defect class as the rest of this
+      # release. See docs/deployment.md for how to read it.
       - name: Attest build provenance
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:

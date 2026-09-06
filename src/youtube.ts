@@ -6,6 +6,7 @@ import {
   USER_AGENT,
 } from "./fetch-utils.js";
 import { checkRobots } from "./robots.js";
+import { warnDependencyFailure } from "./transport-failure.js";
 
 const YOUTUBE_HOSTS = new Set([
   "youtube.com",
@@ -32,6 +33,7 @@ export function extractVideoId(url: string): string | null {
   try {
     parsed = new URL(url);
   } catch {
+    // Reviewed (vikunja#687 class sweep): local parse of caller input.
     return null;
   }
   if (parsed.hostname === "youtu.be") {
@@ -187,7 +189,10 @@ export async function youtubeFetch(
       url,
       text: `Transcript:\n\n${transcript}`.slice(0, maxChars),
     };
-  } catch {
+  } catch (err) {
+    // Being unable to reach YouTube is not the same as a video having no
+    // transcript, which is the common and expected case here.
+    warnDependencyFailure(err, "youtube transcript");
     return null;
   }
 }

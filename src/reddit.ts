@@ -6,6 +6,7 @@ import {
   USER_AGENT,
 } from "./fetch-utils.js";
 import { checkRobots } from "./robots.js";
+import { warnDependencyFailure } from "./transport-failure.js";
 
 const REDDIT_HOSTS = new Set([
   "reddit.com",
@@ -33,6 +34,7 @@ function toJsonUrl(url: string): string | null {
     parsed.pathname = `${parsed.pathname.replace(/\/+$/, "")}.json`;
     return parsed.toString();
   } catch {
+    // Reviewed (vikunja#687 class sweep): local URL rewrite of a bad input.
     return null;
   }
 }
@@ -124,7 +126,11 @@ export async function redditFetch(
     if (!parsed) return null;
 
     return { title: parsed.title, url, text: parsed.text.slice(0, maxChars) };
-  } catch {
+  } catch (err) {
+    // Falling through to the standard cascade stays correct — Reddit
+    // rate-limits datacenter IPs aggressively and that is handled above. This
+    // catch also swallows DNS and connection failures, which are not that.
+    warnDependencyFailure(err, "reddit fastpath");
     return null;
   }
 }
