@@ -16,7 +16,7 @@ MCP client (stdio)
       │                     ├→ Kiwix ($KIWIX_URL)         → ZIM content (Wikipedia/SO/Arch Wiki, fast path)
       │                     ├→ Hister ($HISTER_URL)       → browsing-history index (login-walled/JS-heavy fast path)
       │                     ├→ Firecrawl ($FIRECRAWL_URL) → page markdown (tier 1)
-      │                     ├→ Crawl4AI ($CRAWL4AI_URL)  → page markdown (tier 2, optional; via $ADBLOCK_PROXY_URL if set)
+      │                     ├→ Crawl4AI ($CRAWL4AI_URL)  → page markdown (tier 2, optional; direct — no proxy, see below)
       │                     ├→ Raw HTTP + Readability     → page markdown (tier 3 fallback; via $ADBLOCK_PROXY_URL if set)
       │                     ├→ Byparr solver (opt-in)     → challenge-solved page markdown (only on a detected challenge, $SOLVER_ENABLED)
       │                     └→ Wayback Machine (opt-in)  → archived page markdown (tier 4, $WAYBACK_ENABLED)
@@ -40,7 +40,7 @@ flowchart TD
     robots["robots.txt pre-check — tiers 1–3\ndisallowed → RobotsDisallowedError (cached 24h)"]
     tier_skip(["Per-domain tier skip\nsuccess rate &lt;30% over ≥10 tries\nor tier_skip operator override"])
     t1["Tier 1 — Firecrawl\n$FIRECRAWL_URL\nserves PDFs under FIRECRAWL_API_VERSION=v2"]
-    t2["Tier 2 — Crawl4AI\n$CRAWL4AI_URL · optional\nadblock proxy if $ADBLOCK_PROXY_URL"]
+    t2["Tier 2 — Crawl4AI\n$CRAWL4AI_URL · optional\ndirect — no adblock proxy"]
     t3["Tier 3 — Raw HTTP + Readability\nfallback: raw HTML slice\nadblock proxy if $ADBLOCK_PROXY_URL"]
     challenge(["Challenge detected\non this URL, this request?"])
     solver["Solver — Byparr\n$SOLVER_URL · opt-in, SOLVER_ENABLED=true\nSSRF-guarded replay"]
@@ -101,7 +101,7 @@ searxng-mcp ships two adblocking sidecars, but only one of them applies to every
 
 | Sidecar | Tier | Mechanism | Applies when |
 |---------|------|-----------|--------------|
-| `docker/adblock-proxy/` | Tiers 2+3 (Crawl4AI, raw fetch) | HTTP forward proxy — filters plain-HTTP ad domains | `ADBLOCK_PROXY_URL` is set |
+| `docker/adblock-proxy/` | Tier 3 (raw fetch) only | HTTP forward proxy — filters plain-HTTP ad domains | `ADBLOCK_PROXY_URL` is set |
 | `docker/puppeteer-adblock/` | Tier 1 (Firecrawl) | CDP-level interception in the browser service | **Only** on a `v1` firecrawl-simple stack built from `docker-compose.full.yml` |
 
 ### Tier 1 — Puppeteer adblock (v1 stacks only)
@@ -135,9 +135,11 @@ docker compose -f docker-compose.full.yml up -d --build firecrawl-puppeteer
 
 **Per-domain bypass:** `domains.json` reserves an `adblock_skip` slot for future operator overrides. Wiring isn't implemented — it would require Firecrawl to forward a custom header through to the browser service, which isn't part of its API. Tracked as scope-creep item I.
 
-### Tier 2+3 — Adblock proxy
+### Tier 3 — Adblock proxy
 
-Set `ADBLOCK_PROXY_URL` (e.g. `http://adblock-proxy:8118`) to route Crawl4AI and raw Node fetch requests through an HTTP forward proxy that filters ad and tracker requests. HTTPS CONNECT tunnels are passed through unmodified — no MITM, so filtering applies to plain-HTTP ad domains only. Where the tier-1 hook above is in play it handles HTTPS filtering for that tier; where it is not — including every `v2` deployment — nothing filters tier 1 at all.
+Set `ADBLOCK_PROXY_URL` (e.g. `http://adblock-proxy:8118`) to route raw Node fetch requests through an HTTP forward proxy that filters ad and tracker requests.
+
+**This applies to tier 3 only. Tier 2 does not use it, and must not.** Tier 3 resolves the proxy hostname *in this process*; a proxy passed to Crawl4AI is resolved by *Crawl4AI*, inside its own container, which is a different network position entirely. Sending it was a 100% tier-2 outage until v3.25.0 — every crawl returned `net::ERR_PROXY_CONNECTION_FAILED` and was recorded as an ordinary empty result (vikunja#690). Crawl4AI 0.9.x additionally rejects the field at its trust boundary with HTTP 400. Adblocking for tier 2 would have to be configured server-side on Crawl4AI, which is a deployment change rather than a client one. HTTPS CONNECT tunnels are passed through unmodified — no MITM, so filtering applies to plain-HTTP ad domains only. Where the tier-1 hook above is in play it handles HTTPS filtering for that tier; where it is not — including every `v2` deployment — nothing filters tier 1 at all.
 
 As of v3.19.0, the proxy validates the **resolved** address — not just the requested hostname string — on both its CONNECT and plain-HTTP paths before connecting, closing a DNS-rebinding gap (audit finding SSRF-10).
 
