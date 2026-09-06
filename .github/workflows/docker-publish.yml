@@ -229,6 +229,35 @@ jobs:
           print('rerank contract OK')
           "
 
+          # Request bounds. Asserted here because they are a property of the
+          # published artefact, not of the compose file that happens to bind it
+          # to loopback — an adopter can front this image however they like.
+          docker exec rr-publish python -c "
+          import urllib.request, urllib.error, json
+
+          def post(payload):
+              body = json.dumps(payload).encode()
+              req = urllib.request.Request(
+                  'http://127.0.0.1:8787/v1/rerank', data=body,
+                  headers={'Content-Type': 'application/json'})
+              try:
+                  return urllib.request.urlopen(req).status
+              except urllib.error.HTTPError as e:
+                  return e.code
+
+          # The real caller's measured shape must be unaffected: the live
+          # SearXNG feeding this sends ~30 documents of ~430 chars.
+          real = {'query': 'q', 'documents': ['title. ' + 'x' * 420 for _ in range(34)]}
+          assert post(real) == 200, 'the real caller shape was rejected'
+
+          assert post({'query': 'q', 'documents': ['d'] * 1000}) == 200, 'cap is too tight'
+          assert post({'query': 'q', 'documents': ['d'] * 1001}) == 422, 'document cap not enforced'
+          assert post({'query': 'q' * 20001, 'documents': ['d']}) == 422, 'query cap not enforced'
+          # Oversized documents truncate rather than reject.
+          assert post({'query': 'q', 'documents': ['x' * 50000]}) == 200, 'long document should truncate'
+          print('request bounds OK')
+          "
+
           uid=$(docker exec rr-publish id -u)
           echo "runtime uid -> $uid"
           [ "$uid" = 10001 ]

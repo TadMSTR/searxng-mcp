@@ -72,6 +72,31 @@ container that is serving from one that is up but reranking nothing.
 |---|---|---|
 | `RERANKER_MODEL` | `ms-marco-MiniLM-L-12-v2` | Any FlashRank model name. Changing it discards the pre-baked model — see below. |
 | `RERANKER_CACHE_DIR` | `/opt/flashrank` | Where the model lives. Read at build *and* run time. |
+| `RERANKER_MAX_DOCUMENTS` | `1000` | Requests with more documents are rejected with 422. |
+| `RERANKER_MAX_DOC_CHARS` | `20000` | Longer documents are **truncated**, not rejected. Also caps `query` length, which *is* rejected. |
+| `RERANKER_MAX_BODY_BYTES` | `4194304` (4 MB) | Bodies over this are rejected with 413. |
+
+### Request bounds
+
+The defaults are far above real use and exist for the deployment you have not
+thought about yet. Measured against the SearXNG that feeds this service: ~30
+documents per rerank, longest document ~430 characters, ~6.7 KB total — so the
+caps leave roughly 30×, 45× and 600× headroom and cannot affect normal traffic.
+
+Oversized *documents* are truncated rather than refused, because anything past
+this length is already beyond what the cross-encoder reads (FlashRank's
+`max_length` is 512 tokens) and refusing would turn a harmless long snippet
+into a failed search.
+
+Two things the body cap does not do, stated because "there is a size limit"
+reads as stronger than it is:
+
+- It reads `Content-Length`, so a **chunked** request slips past it. Such a
+  request is still bounded by the document caps once parsed — later, not never.
+- A body **substantially** over the cap is answered while the client is still
+  sending, so the client sees a connection reset rather than the 413. A body
+  slightly over gets a clean 413. Either way the request is rejected without
+  being processed.
 
 ## The model is baked into the image
 
