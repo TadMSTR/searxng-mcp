@@ -1,1 +1,14 @@
-{ "name": "playwright-adblock", "private": true }
+{
+  "name": "playwright-adblock",
+  "version": "1.0.0",
+  "private": true,
+  "description": "EasyList/EasyPrivacy layer for Firecrawl v2's playwright-service",
+  "type": "commonjs",
+  "dependencies": {
+    "@ghostery/adblocker-playwright": "^2.3.0",
+    "cross-fetch": "^4.1.0"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

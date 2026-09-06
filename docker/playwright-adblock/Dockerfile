@@ -38,11 +38,20 @@ WORKDIR /usr/src/app
 # so a sibling directory cannot be created as uid 1000) and let Node resolve and let Node's normal resolution find them —
 # init-adblock.js lives in the same directory as its node_modules, so
 # `require("@ghostery/adblocker-playwright")` resolves without NODE_PATH.
-RUN mkdir -p /usr/src/app/adblock \
- && cd /usr/src/app/adblock \
- && npm init -y > /dev/null \
- && npm install --no-audit --no-fund \
-      @ghostery/adblocker-playwright@^2 cross-fetch@^4
+# `npm ci` from a COMMITTED lockfile, not `npm install <range>`.
+#
+# The previous version resolved `@ghostery/adblocker-playwright@^2` fresh on
+# every build, so two builds of the same commit could produce different
+# dependency trees — which quietly weakens the build-provenance attestation
+# this image publishes, and leaves the deps invisible to any audit. The root
+# `pnpm audit --prod` does not see this directory: it is not in the workspace
+# (audit LOW, 2026-09-06).
+# --chown is not optional: COPY creates the destination directory as root, and
+# this image runs as uid 1000, so npm ci then fails EACCES trying to mkdir
+# node_modules inside it. Same ownership trap as the COPY'd file under /tmp
+# further down.
+COPY --chown=node:node package.json package-lock.json /usr/src/app/adblock/
+RUN cd /usr/src/app/adblock && npm ci --omit=dev --no-audit --no-fund
 
 # Bake the filter lists into the image. A startup that fetches them over TLS
 # can crash the service outright: undici threw an internal assertion mid-fetch

@@ -10,8 +10,11 @@ RUN addgroup -S proxy && adduser -S proxy -G proxy
 
 WORKDIR /app
 
-COPY package.json ./
-RUN npm install --omit=dev
+# `npm ci` from a committed lockfile: reproducible, and the pinned set is
+# visible to the CI audit step. `npm install` re-resolved the caret range on
+# every build (audit LOW, 2026-09-06).
+COPY package.json package-lock.json ./
+RUN npm ci --omit=dev --no-audit --no-fund
 
 # ssrf.js is required by proxy.js at startup — a COPY that lists only proxy.js
 # produces an image that crash-loops on MODULE_NOT_FOUND.
