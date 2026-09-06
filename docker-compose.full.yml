@@ -148,8 +148,10 @@ services:
   # On fetch-net only — unreachable from firecrawl, ollama, reranker, kiwix, nats.
   # Port 8118 exposed to host so searxng-mcp (PM2/host process) can reach it.
   adblock-proxy:
-    build:
-      context: ./docker/adblock-proxy
+    image: ghcr.io/tadmstr/searxng-mcp-adblock-proxy:latest # SECURITY[accepted]: latest tag — example file; pin for production
+    # To build from source instead of pulling:
+    # build:
+    #   context: ./docker/adblock-proxy
     restart: unless-stopped
     cap_drop: [ALL]
     security_opt: [no-new-privileges:true]
