@@ -9,6 +9,9 @@ on:
 
 env:
   IMAGE: ghcr.io/tadmstr/searxng-mcp
+  # Not bare `reranker`: this lands in a shared namespace alongside every other
+  # package, and a rename after publication is worse than a long name.
+  RERANKER_IMAGE: ghcr.io/tadmstr/searxng-mcp-reranker
 
 jobs:
   publish:
@@ -148,5 +151,135 @@ jobs:
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-name: ${{ env.IMAGE }}
+          subject-digest: ${{ steps.push.outputs.digest }}
+          push-to-registry: true
+
+  # A sibling job rather than more steps in `publish`: it is a different image
+  # with a different contract, and keeping it separate means a reranker failure
+  # names itself instead of appearing as "the publish job broke". It shares the
+  # release tag, because the reranker is versioned by the repo that vendors it
+  # (vikunja#692).
+  publish-reranker:
+    name: Build, smoke test, publish reranker
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      # amd64 only, consistent with the main image.
+      - name: Build reranker image
+        run: docker build -t "$RERANKER_IMAGE:candidate" ./docker/reranker
+
+      # Asserts the CONTRACT, not the boot. A reranker that starts and returns
+      # the documents in the order it received them passes any liveness check
+      # while silently doing nothing — which is the exact failure this service
+      # degrades into, since searxng-mcp falls back to SearXNG's ordering when
+      # reranking is absent and says so only in a throttled log line.
+      - name: Smoke test the reranker image
+        run: |
+          set -euo pipefail
+
+          # --network none is the assertion that the model is genuinely baked
+          # into the image. If the pre-bake ever silently stops working, the
+          # container cannot reach the download and this step fails here rather
+          # than becoming a 30-60s cold start in production.
+          docker run -d --name rr-publish --network none "$RERANKER_IMAGE:candidate"
+
+          for i in $(seq 1 30); do
+            if docker exec rr-publish python -c "
+          import urllib.request, json, sys
+          sys.exit(0 if json.load(urllib.request.urlopen('http://127.0.0.1:8787/health'))['model_loaded'] else 1)
+          " 2>/dev/null; then break; fi
+            if [ "$i" = 30 ]; then
+              echo "reranker never became ready"; docker logs rr-publish; exit 1
+            fi
+            sleep 1
+          done
+          echo "model_loaded true with no network — the model is baked in"
+
+          docker exec rr-publish python -c "
+          import urllib.request, json, sys
+          body = json.dumps({
+              'query': 'how do I train a dog',
+              'documents': [
+                  'Bananas are a yellow fruit that grows in tropical climates.',
+                  'Puppy obedience training uses positive reinforcement and short daily sessions.',
+              ],
+              'return_documents': True,
+          }).encode()
+          req = urllib.request.Request(
+              'http://127.0.0.1:8787/v1/rerank', data=body,
+              headers={'Content-Type': 'application/json'})
+          d = json.load(urllib.request.urlopen(req))
+
+          results = d['results']
+          print('results:', json.dumps(results, indent=2))
+
+          # The relevant document is index 1, so a service that preserved input
+          # order — i.e. reranked nothing — fails here.
+          assert results[0]['index'] == 1, 'not reordered: reranking is a no-op'
+          assert results[0]['relevance_score'] > results[1]['relevance_score'], 'scores not ordered'
+          assert all('relevance_score' in r for r in results), 'missing relevance_score'
+          assert len(results) == 2, 'documents lost'
+          print('rerank contract OK')
+          "
+
+          uid=$(docker exec rr-publish id -u)
+          echo "runtime uid -> $uid"
+          [ "$uid" = 10001 ]
+
+      - name: Reranker logs
+        if: always()
+        run: docker logs rr-publish || true
+
+      - name: Log in to GHCR
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GHCR_USER: ${{ github.actor }}
+        run: |
+          set -euo pipefail
+          printf '%s' "$GHCR_TOKEN" \
+            | docker login ghcr.io -u "$GHCR_USER" --password-stdin
+
+      # Same tag policy as the main image, for the same reasons: both `v`-
+      # prefixed and bare tags, and floating tags that do not move for a
+      # prerelease.
+      - name: Tag and push reranker
+        id: push
+        env:
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          V="${REF_NAME#v}"
+          MINOR="$(echo "$V" | cut -d. -f1,2)"
+
+          TAGS=("$REF_NAME" "$V")
+          case "$V" in
+            *-*) echo "prerelease $V — publishing exact tags only, not :$MINOR or :latest" ;;
+            *)   TAGS+=("$MINOR" "latest") ;;
+          esac
+
+          for t in "${TAGS[@]}"; do
+            echo "pushing $RERANKER_IMAGE:$t"
+            docker tag "$RERANKER_IMAGE:candidate" "$RERANKER_IMAGE:$t"
+            docker push "$RERANKER_IMAGE:$t"
+          done
+
+          DIGEST=$(docker inspect --format='{{index .RepoDigests 0}}' "$RERANKER_IMAGE:$V" | cut -d@ -f2)
+          echo "digest=$DIGEST" >> "$GITHUB_OUTPUT"
+          echo "pushed digest $DIGEST"
+
+      # vikunja#689 (provenance not attached as an OCI referrer) applies here
+      # exactly as it does to the main image. Not re-derived, and registry-
+      # native verification is not a gate until #689 is resolved.
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ${{ env.RERANKER_IMAGE }}
           subject-digest: ${{ steps.push.outputs.digest }}
           push-to-registry: true
