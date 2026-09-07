@@ -4,6 +4,95 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [3.29.0] - 2026-09-07
+
+### Changed
+
+- **The `playwright-adblock` image no longer downloads its filter lists at build time
+  (vikunja#716).** EasyList and EasyPrivacy are vendored under
+  `docker/playwright-adblock/lists/` with a `SHA256SUMS` file the Dockerfile asserts via
+  `sha256sum -c`. Two builds of the same commit now produce the same image.
+
+  This was not a theoretical reproducibility concern. **The v3.28.0 release failed on exactly
+  this step and needed a re-run** — `easylist.to` was reachable from forge at the time, so the
+  failure was specific to the runner's egress and not something to design around. The re-run
+  is the part that mattered: this image sits in front of Firecrawl v2's renderer, its
+  `verify-ssrf-guard.sh` step is a real security control, and a build that fails for unrelated
+  network reasons teaches whoever is releasing to re-run until green.
+
+  `sha256sum -c` replaces `fetch-lists.mjs`'s `MIN_BYTES` floor and is strictly stronger: it
+  fails on a corrupted or substituted list, not only an implausibly small one. `SHA256SUMS`
+  deliberately carries no `.txt` extension, because `init-adblock.js` parses every `*.txt` in
+  that directory as filter rules.
+
+  **The acceptance test is `--add-host easylist.to:127.0.0.1`, not `--network none`, and that
+  is deliberate.** `npm ci` in this Dockerfile genuinely needs the npm registry, so an offline
+  build fails for a reason unrelated to the property under test — red whether or not the
+  vendoring worked. Blackholing one host fails if anything reaches `easylist.to` and passes
+  only because nothing does. Verified two-sided before it shipped: the pre-vendoring
+  Dockerfile **fails** that build, this one passes. Both assertions run in CI as a new
+  `playwright-adblock` job, the second checking that the baked lists parse into an engine that
+  blocks two known rules and allows two known non-rules — a file can pass a checksum and still
+  be rules nobody can parse.
+
+  `fetch-lists.mjs` survives as a maintenance script and is excluded from the build context by
+  a new `.dockerignore`, so a future `COPY` cannot quietly restore the coupling.
+  `.github/workflows/adblock-lists-refresh.yml` re-fetches weekly and opens a PR; note that PR
+  carries **no CI checks**, because GitHub does not trigger workflows for a PR opened with
+  `GITHUB_TOKEN` — the workflow therefore runs the build and engine assertions itself before
+  opening it.
+
+  Cost, measured: 2.07 MB + 1.50 MB = **3.41 MB** vendored, ~1.1 MB per refresh in git history
+  once compressed. Expect header-only churn in those diffs even when no rule changed —
+  upstream regenerates `! Version` / `! Last modified` / `! Commit` roughly every ten minutes.
+
+  `docker/adblock-proxy` is untouched and still fetches at **runtime** from a defaulted
+  `ADBLOCK_FILTERS_URL` — non-reproducible in the opposite direction. Deliberate for now, since
+  only the playwright image fronts an SSRF guard; tracked as vikunja#718.
+
+- Dependency bumps: `@opentelemetry/{sdk-node,exporter-metrics-otlp-http,exporter-trace-otlp-http}`
+  0.220.0 → 0.222.0, `@opentelemetry/sdk-metrics` 2.9.0 → 2.11.0, `iovalkey` 0.3.3 → 0.4.0,
+  `@biomejs/biome` 2.5.3 → 2.5.12, `vitest` + `@vitest/coverage-v8` 4.1.10 → 4.1.11,
+  `actions/setup-node` 6.3.0 → 6.5.0, `actions/checkout` 6.0.2 → 6.1.0.
+
+  `exporter-trace-otlp-http` had no Dependabot PR: `open-pull-requests-limit: 5` was already
+  saturated, so it was never opened. Since `^0.220.0` on a 0.x version pins the minor, taking
+  the other three OTel bumps without it would have left one SDK component two minors behind
+  its siblings — a skew produced by a queue limit rather than a decision.
+
+  `iovalkey` 0.4.0 is a 0.x minor on a runtime dependency whose cache fails **soft**, so a
+  regression would look like nothing being wrong and CI has no cache backend to catch it. It
+  was exercised against a real Valkey 8.1.9 with 0.3.3 as a control: identical on nine
+  functional checks — including `cacheAtomicUpdate`'s custom Lua `casSet` path on both
+  branches and 20 concurrent increments — and on five failure-path checks.
+
+### Security
+
+- **Transport-failure descriptions are redacted at the sink, not at one call site
+  (vikunja#715).** `describeTransportFailure` interpolates the raw `err.message`, and both
+  Node's `fetch` and ioredis put a credentialed URL in that message — for a cache backend,
+  that means an inline password.
+
+  The ticket reads as one line in `src/tools.ts`. It is not: the function has **five** call
+  sites and exactly one of them redacted. `src/domain-stats.ts`, `src/domain-snapshot.ts`,
+  `src/robots.ts` and `src/tiers/crawl4ai.ts` were all returning it verbatim. Fixing the named
+  call site would have closed one and left three — the same "guarded one path, missed the
+  others" pattern `src/log.ts` already documents. The redaction now lives in
+  `describeTransportFailure` itself and covers all five plus `warnDependencyFailure`'s stderr
+  line. `src/resources.ts` keeps its own call as defence in depth; the function is idempotent.
+
+- **`redactUrlCredentialsInText` now redacts bare-token userinfo, not only the colon form.**
+  It required a `:` inside the userinfo segment, so `scheme://TOKEN@host` passed through
+  unredacted — which is exactly how a bearer token or a GitHub PAT appears in a URL. No
+  credential this repo reads takes that shape today, but this is the release that took the
+  redaction sink from one call site to five, so a shape the shared regex misses now leaks on
+  all of them at once. Excluding `/` is what keeps the widening safe: an `@` in a path, query
+  or fragment cannot be reached, and there are now five negative controls asserting exactly
+  that.
+
+  Found by the `searxng-mcp-release-hygiene-2026-09` security audit (its only Low finding;
+  0 Critical/High/Medium).
+
 ## [3.28.0] - 2026-09-07
 
 ### Added

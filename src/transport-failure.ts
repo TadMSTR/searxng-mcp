@@ -19,6 +19,8 @@
  * "we could not find out", that has to reach the operator.
  */
 
+import { redactUrlCredentialsInText } from "./log.js";
+
 /**
  * Name a transport failure well enough to act on.
  *
@@ -37,9 +39,25 @@
 export function describeTransportFailure(err: unknown, label: string): string {
   const base = err instanceof Error ? err.message : String(err);
   const detail = transportErrorCode(err);
-  return detail
+  const described = detail
     ? `${label} unreachable: ${detail} (${base})`
     : `${label}: ${base}`;
+  // Scrubbed HERE, at the sink, not at the five call sites (vikunja#715).
+  //
+  // Node's fetch rejects a credentialed URL with the URL in the message, and
+  // ioredis does the same for a bad VALKEY_URL — so `base` can carry an inline
+  // password, and every one of this function's return paths is a sink that
+  // forwards it: a tool result, an MCP Resource, a log line.
+  //
+  // Measured before choosing: five call sites, one of which redacted. Fixing
+  // the caller that #715 named would have closed one and left three
+  // (domain-snapshot.ts, robots.ts, tiers/crawl4ai.ts) — which is the same
+  // "guarded one path, missed the others" mistake this subsystem has now made
+  // twice, and which log.ts already documents as the reason to redact at the
+  // generic sink instead. redactUrlCredentialsInText is idempotent, so the
+  // call site in resources.ts stays as defence in depth without double-mangling
+  // anything.
+  return redactUrlCredentialsInText(described);
 }
 
 /**

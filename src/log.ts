@@ -84,9 +84,20 @@ export function redactUrlCredentials(url: string): string {
  */
 export function redactUrlCredentialsInText(text: string): string {
   // scheme:// then a userinfo segment (no '/', '@' or whitespace) ending at '@'.
-  // Requires a ':' so a bare `http://host@` style is left alone.
-  return text.replace(
-    /\b([a-z][a-z0-9+.-]*:\/\/)[^\s/@]*:[^\s/@]*@/gi,
-    "$1<redacted>@",
-  );
+  //
+  // A ':' inside the userinfo is NOT required. It used to be, on the reasoning
+  // that a bare `scheme://host@` was not a credential — but `scheme://TOKEN@host`
+  // is precisely how a bearer token or a GitHub PAT appears in a URL, and that
+  // form passed through unredacted (audit searxng-mcp-release-hygiene-2026-09,
+  // Low). No credential on forge takes that shape today; that is a fact about
+  // today, not a property of this function, and this function now backs five
+  // describeTransportFailure call sites, so a shape it misses leaks on all of
+  // them at once.
+  //
+  // Excluding '/' is what keeps it honest: an '@' in a path, query or fragment
+  // (`github.com/@handle`, `?q=a@b.com`, `matrix.to/#/@user:server`) cannot be
+  // reached without crossing a '/', so those are left alone. Covered by controls
+  // in tests/log.test.ts — without them a regex that redacted every '@' would
+  // satisfy every positive case here.
+  return text.replace(/\b([a-z][a-z0-9+.-]*:\/\/)[^\s/@]+@/gi, "$1<redacted>@");
 }

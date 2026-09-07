@@ -53,17 +53,43 @@ WORKDIR /usr/src/app
 COPY --chown=node:node package.json package-lock.json /usr/src/app/adblock/
 RUN cd /usr/src/app/adblock && npm ci --omit=dev --no-audit --no-fund
 
-# Bake the filter lists into the image. A startup that fetches them over TLS
-# can crash the service outright: undici threw an internal assertion mid-fetch
-# and killed the process, asynchronously and past any .catch(). Same reasoning
-# as vendoring FlashRank's model into the reranker in v3.25.0.
+# The filter lists are VENDORED, not downloaded. Nothing in this build touches
+# the network.
 #
-# fetch-lists.mjs fails the BUILD on a bad download rather than producing an
-# image whose adblocker silently blocks nothing.
-COPY fetch-lists.mjs /tmp/fetch-lists.mjs
-# No `&& rm` here: COPY lands the file as root, /tmp is sticky, and the image
-# runs as uid 1000 — the delete fails and takes the build with it.
-RUN node /tmp/fetch-lists.mjs
+# Baking them in was already the right call — a startup that fetches them over
+# TLS can crash the service outright: undici threw an internal assertion
+# mid-fetch and killed the process, asynchronously and past any .catch(). Same
+# reasoning as vendoring FlashRank's model into the reranker in v3.25.0.
+#
+# What changed in v3.29.0 is WHEN they are fetched. This step used to be
+# `RUN node /tmp/fetch-lists.mjs`, which downloaded EasyList + EasyPrivacy at
+# image build time. Two builds of the same commit could therefore produce
+# different images, and somebody else's uptime sat on the release path: the
+# v3.28.0 release failed on exactly this step and needed a re-run (vikunja#716).
+#
+# The re-run is the part that matters. This image sits in front of Firecrawl's
+# in-browser SSRF guard and verify-ssrf-guard.sh is a real security control. A
+# build that fails for unrelated network reasons trains whoever is releasing to
+# re-run until green — which is precisely how a genuine verify-ssrf-guard
+# failure would get re-run past.
+#
+# `sha256sum -c` replaces fetch-lists.mjs's MIN_BYTES guard and is strictly
+# stronger: it fails the build on a corrupted, truncated or substituted list,
+# not only on an implausibly small one. The invariant is unchanged — never
+# produce an image whose adblocker reports success while blocking nothing.
+#
+# SHA256SUMS deliberately carries no .txt extension. init-adblock.js parses
+# every *.txt in this directory as filter rules, so a checksum file named
+# SHA256SUMS.txt would be fed to PlaywrightBlocker.parse() as if it were a list.
+#
+# Refresh with `node docker/playwright-adblock/fetch-lists.mjs`, or let
+# .github/workflows/adblock-lists-refresh.yml open the PR. Each list's own
+# `! Commit:` header records the exact upstream revision it came from.
+#
+# --chown is not optional here either: COPY creates the destination as root and
+# this image runs as uid 1000.
+COPY --chown=node:node lists/ /usr/src/app/adblock/lists/
+RUN cd /usr/src/app/adblock/lists && sha256sum -c SHA256SUMS
 
 COPY init-adblock.js /usr/src/app/adblock/init-adblock.js
 

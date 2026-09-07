@@ -1,0 +1,194 @@
+# Keep the vendored EasyList/EasyPrivacy copies current, as a reviewable diff.
+#
+# Vendoring the lists (vikunja#716) bought reproducibility at the cost of them
+# going stale, and a filter list nobody refreshes is an adblocker slowly
+# reporting success while blocking less and less. This is the other half of that
+# trade: upstream is re-fetched on a schedule and the change arrives as a PR, so
+# "which rules are in here" is both pinned and current.
+#
+# THE PR IS NOT VALIDATED BY CI. A pull request opened with GITHUB_TOKEN does not
+# trigger workflows — that is GitHub's recursion guard, not something to work
+# around. So this job runs the assertions ITSELF, on the refreshed lists, before
+# it opens anything. If they fail, no PR is opened and the run is red. Do not
+# merge a PR from here on the basis that "the checks look fine": there are no
+# checks on it. The evidence is in this workflow's own run.
+name: Refresh adblock filter lists
+
+on:
+  schedule:
+    # Mondays. Offset from codeql.yml and scorecard.yml so the three do not
+    # contend for runners.
+    - cron: "17 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: adblock-lists-refresh
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    name: Re-fetch upstream and open a PR on change
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
+        with:
+          node-version: "22"
+
+      # fetch-lists.mjs keeps its own MIN_BYTES floor and rewrites SHA256SUMS
+      # only when a hash actually moved, so a re-run inside one upstream
+      # regeneration window is a no-op rather than a date-only commit.
+      - name: Re-fetch upstream lists
+        run: |
+          set -euo pipefail
+          node docker/playwright-adblock/fetch-lists.mjs
+
+      - name: Detect change
+        id: diff
+        run: |
+          set -euo pipefail
+          if git diff --quiet -- docker/playwright-adblock/lists; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "lists unchanged — nothing to do"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            git diff --stat -- docker/playwright-adblock/lists
+          fi
+
+      # Same scoped assertion as ci.yml: blackhole easylist.to so the build fails
+      # if anything reaches for it. Running it here is what makes the un-CI'd PR
+      # safe to review — the refreshed lists are proven to build and to parse
+      # BEFORE the PR exists, not after.
+      - name: Refreshed lists still build without reaching easylist.to
+        if: steps.diff.outputs.changed == 'true'
+        run: |
+          set -euo pipefail
+          docker build --add-host easylist.to:127.0.0.1 \
+            -t playwright-adblock:refresh docker/playwright-adblock/
+
+      - name: Refreshed lists still produce a working engine
+        if: steps.diff.outputs.changed == 'true'
+        run: |
+          set -euo pipefail
+          docker run --rm --entrypoint sh playwright-adblock:refresh -c '
+            cd /usr/src/app/adblock && node -e "
+              const fs = require(\"node:fs\"), path = require(\"node:path\");
+              const { PlaywrightBlocker } = require(\"@ghostery/adblocker-playwright\");
+              const { Request } = require(\"@ghostery/adblocker\");
+              const d = \"/usr/src/app/adblock/lists\";
+              const files = fs.readdirSync(d).filter((f) => f.endsWith(\".txt\")).sort();
+              if (files.length === 0) throw new Error(\"no filter lists in the image\");
+              const text = files.map((f) => fs.readFileSync(path.join(d, f), \"utf8\")).join(\"\\n\");
+              const b = PlaywrightBlocker.parse(text);
+              const cases = [
+                [\"https://adservice.google.com/pagead.js\", true],
+                [\"https://www.google.com/gen_204?x=1\", true],
+                [\"https://example.com/app.js\", false],
+                [\"https://cdn.jsdelivr.net/npm/x.js\", false],
+              ];
+              let bad = 0;
+              for (const [url, want] of cases) {
+                const got = b.match(Request.fromRawDetails({
+                  type: \"script\", url, sourceUrl: \"https://news.example.org/\",
+                })).match;
+                console.log((got ? \"BLOCKED\" : \"allowed\") + \"  \" + url);
+                if (got !== want) { console.error(\"  ^ expected \" + (want ? \"BLOCKED\" : \"allowed\")); bad++; }
+              }
+              if (bad) throw new Error(bad + \" filter-list assertion(s) failed\");
+              console.log(\"engine OK: \" + files.length + \" list(s), \" + cases.length + \" assertions\");
+            "
+          '
+
+      # git push and gh both read the token from the environment rather than from
+      # argv or a remote URL, so it never lands in a process listing or in the
+      # run log's command echo.
+      - name: Open or update the refresh PR
+        if: steps.diff.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BRANCH: chore/adblock-lists-refresh
+        run: |
+          set -euo pipefail
+
+          # The upstream revision each list came from, so the PR body says which
+          # EasyList commit this is rather than only that something changed.
+          # The `! Commit:` header is THIRD-PARTY TEXT — easylist.to writes it and
+          # it lands in a git commit message and a PR body. Shell expansion does
+          # not re-parse an expanded value, so this is not a command-injection
+          # path, but "not exploitable today" is not a reason to interpolate
+          # unvalidated remote content into a commit. Accept only a hex sha; on
+          # anything else report unknown rather than echoing what was served.
+          rev() {
+            local raw
+            raw="$(sed -n 's/^! Commit: //p' "docker/playwright-adblock/lists/$1" | head -1)"
+            if printf '%s' "$raw" | grep -qE '^[0-9a-f]{7,40}$'; then
+              printf '%s' "$raw"
+            else
+              printf 'unknown'
+            fi
+          }
+          EL_REV="$(rev easylist.txt)"
+          EP_REV="$(rev easyprivacy.txt)"
+          STAT="$(git diff --stat -- docker/playwright-adblock/lists | tail -1)"
+
+          git config --local user.name "github-actions[bot]"
+          git config --local user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git config --local credential.helper \
+            '!f() { echo username=x-access-token; echo "password=$GITHUB_TOKEN"; }; f'
+
+          git checkout -B "$BRANCH"
+          git add docker/playwright-adblock/lists
+          git commit -m "chore(adblock): refresh vendored EasyList/EasyPrivacy
+
+          EasyList    upstream commit ${EL_REV:-unknown}
+          EasyPrivacy upstream commit ${EP_REV:-unknown}
+
+          Verified in the workflow run that opened this PR: the image builds with
+          easylist.to blackholed, and the refreshed lists parse into an engine
+          that blocks two known rules and allows two known non-rules."
+
+          # Force-push: this branch is a rolling snapshot of upstream, not a
+          # history. Reusing it means one open PR at a time rather than a new
+          # branch every Monday.
+          git push --force origin "HEAD:refs/heads/$BRANCH"
+
+          if gh pr view "$BRANCH" --json state --jq .state 2>/dev/null | grep -q OPEN; then
+            echo "PR already open for $BRANCH — force-push updated it"
+            exit 0
+          fi
+
+          gh pr create \
+            --base main \
+            --head "$BRANCH" \
+            --title "chore(adblock): refresh vendored EasyList/EasyPrivacy" \
+            --body "Scheduled refresh of the filter lists vendored in \`docker/playwright-adblock/lists/\` (vikunja#716).
+
+          | | upstream commit |
+          |---|---|
+          | EasyList | \`${EL_REV:-unknown}\` |
+          | EasyPrivacy | \`${EP_REV:-unknown}\` |
+
+          \`\`\`
+          ${STAT}
+          \`\`\`
+
+          **There are no CI checks on this PR.** A PR opened with \`GITHUB_TOKEN\` does not
+          trigger workflows. The assertions were run in the workflow run that created it:
+          the image builds with \`easylist.to\` blackholed, and the refreshed lists parse
+          into an engine that blocks two known rules and allows two known non-rules.
+          Read that run, not the (absent) checks.
+
+          Expect header-only churn in the diff even when no rules moved — upstream
+          regenerates \`! Version\`/\`! Last modified\`/\`! Commit\` roughly every ten minutes."
