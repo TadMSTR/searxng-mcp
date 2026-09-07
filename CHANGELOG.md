@@ -49,6 +49,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   reason, never a count. Confirmed live — with no cache backend it returns
   `"domain database not configured (no cache backend)"` rather than zero domains (vikunja#688).
 
+  **Post-audit remediation.** The security audit (1 Low, no Critical/High/Medium) found
+  `LLM_API_KEY` missing from `credentials_configured` — a real bearer token sent as
+  `Authorization: Bearer` in `src/ollama.ts`. No value leaked, since every field there is a
+  boolean, but a transparency resource that under-reports a configured credential fails at
+  the one job it has.
+
+  Sweeping every credential-shaped env var in `src/` rather than fixing the single instance
+  found two more: `NATS_PASSWORD` and `NATS_CREDS`, both read straight from `process.env` in
+  `events.ts` rather than exported from `config.ts` — so any check that enumerated
+  `config.ts` alone would still have missed them. `VALKEY_URL`/`REDIS_URL` were confirmed
+  NOT gaps: they resolve into `CACHE_URL` and are already redacted at `endpoints.cache`.
+
+  The list is now a single exported `CREDENTIAL_ENV`, and `tests/resources.test.ts` walks the
+  source tree and fails when a credential-shaped env var is absent from it — so the next
+  credential added breaks CI instead of silently going unreported. An allowlist cannot leak
+  but it can under-report, and no assertion about the fields that DO exist can detect one
+  that does not. Mutation-tested three ways: removing `LLM_API_KEY` (the audit's finding),
+  removing `NATS_PASSWORD` (the sweep's), and introducing an undeclared
+  `NEW_SERVICE_API_KEY` — all three fail with a message naming the variable and the fix.
+
   **Not reachable through scoped-mcp.** Established before building, per the plan. scoped_mcp
   1.14.0's `mcp_proxy.py` touches exactly `client.list_tools()` and `client.call_tool()` — a tool
   re-registration model, not a JSON-RPC passthrough — and `grep -rln "list_resources\|read_resource"`

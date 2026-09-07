@@ -13,13 +13,23 @@
 // exactly how this class of leak survives review.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+// One sentinel per entry in CREDENTIAL_ENV. Keeping these in step is not
+// bookkeeping — every one of them is swept for in the leak test below, so a
+// credential missing HERE is a credential nothing checks for leakage.
+//
+// LLM_API_KEY was added after the security audit found it missing from the
+// resource entirely; NATS_PASSWORD and NATS_CREDS after a follow-up sweep found
+// the same gap in events.ts's directly-read env vars.
 const SECRETS = {
   SEARXNG_MCP_AUTH_TOKEN: "sentinel-mcp-auth-token",
   FIRECRAWL_API_KEY: "sentinel-firecrawl-key",
   CRAWL4AI_API_TOKEN: "sentinel-crawl4ai-token",
   OLLAMA_API_KEY: "sentinel-ollama-key",
+  LLM_API_KEY: "sentinel-llm-api-key",
   HISTER_TOKEN: "sentinel-hister-token",
   GITHUB_TOKEN: "sentinel-github-token",
+  NATS_PASSWORD: "sentinel-nats-password",
+  NATS_CREDS: "sentinel-nats-creds-path",
 };
 // Credentials embedded in URLs — the shape the plan called out, and the one
 // that is easiest to emit by accident because the URL is otherwise useful.
@@ -112,14 +122,16 @@ describe("config://searxng-mcp — credential containment", () => {
     for (const [k, v] of Object.entries(c)) {
       expect(typeof v, `${k} is not a boolean`).toBe("boolean");
     }
-    expect(c).toEqual({
-      searxng_mcp_auth_token: true,
-      firecrawl_api_key: true,
-      crawl4ai_api_token: true,
-      ollama_api_key: true,
-      hister_token: true,
-      github_token: true,
-    });
+    // Every declared credential, driven from the same list the resource uses —
+    // so a new entry is covered here automatically rather than needing this
+    // assertion updated by hand.
+    const { CREDENTIAL_ENV } = await import("../src/resources.js");
+    expect(Object.keys(c).sort()).toEqual(
+      CREDENTIAL_ENV.map((n) => n.toLowerCase()).sort(),
+    );
+    for (const name of CREDENTIAL_ENV) {
+      expect(c[name.toLowerCase() as keyof typeof c], name).toBe(true);
+    }
   });
 
   it("reports an UNSET credential as false even where config.ts applies a default", async () => {
@@ -375,5 +387,85 @@ describe("registerResources", () => {
     // serialisation step is where a toJSON or a getter could reintroduce one.
     expect(String(entry?.text)).not.toContain(URL_PASSWORD);
     expect(String(entry?.text)).not.toContain(SECRETS.FIRECRAWL_API_KEY);
+  });
+});
+
+// ── The guard that stops this class recurring ───────────────────────────────
+//
+// The security audit for this build found `LLM_API_KEY` missing from
+// `credentials_configured`. Sweeping for it afterwards found `NATS_PASSWORD`
+// and `NATS_CREDS` missing too — those two are read straight from `process.env`
+// in events.ts rather than exported from config.ts, so any check that
+// enumerated config.ts alone would still have missed them.
+//
+// An allowlist cannot leak, but it CAN under-report, and no assertion about the
+// fields that DO exist can detect one that does not. So this walks the source
+// tree instead: every credential-shaped env var in `src/` must appear in
+// CREDENTIAL_ENV or be explicitly excused below with a reason.
+//
+// Deliberately a source scan, not a hand-maintained second list — a second list
+// is just the same omission one file over.
+import { readdirSync, readFileSync, statSync } from "node:fs";
+import { join } from "node:path";
+
+function sourceFiles(dir: string, out: string[] = []): string[] {
+  for (const e of readdirSync(dir)) {
+    const full = join(dir, e);
+    if (statSync(full).isDirectory()) sourceFiles(full, out);
+    else if (e.endsWith(".ts")) out.push(full);
+  }
+  return out;
+}
+
+// Env vars that LOOK credential-shaped but are not secrets, each with the
+// reason it is out of scope. Anything not here must be in CREDENTIAL_ENV.
+const NOT_A_CREDENTIAL: Record<string, string> = {
+  NATS_USER:
+    "a username, not a secret; NATS_PASSWORD answers whether auth is configured",
+  VALKEY_URL:
+    "a CACHE_URL fallback — any inline password resolves into CACHE_URL, redacted at endpoints.cache",
+  REDIS_URL: "a CACHE_URL fallback — same as VALKEY_URL",
+};
+
+describe("credentials_configured completeness", () => {
+  it("every credential-shaped env var in src/ is declared or explicitly excused", async () => {
+    const { CREDENTIAL_ENV } = await import("../src/resources.js");
+    const declared = new Set<string>(CREDENTIAL_ENV);
+
+    const found = new Set<string>();
+    for (const f of sourceFiles(join(__dirname, "..", "src"))) {
+      const text = readFileSync(f, "utf8");
+      for (const m of text.matchAll(
+        /process\.env\.([A-Z0-9_]*(?:KEY|TOKEN|SECRET|PASSWORD|CREDS|AUTH)[A-Z0-9_]*)/g,
+      )) {
+        found.add(m[1]);
+      }
+    }
+
+    // Control: if the scan finds nothing, every assertion below is vacuous.
+    expect(found.size).toBeGreaterThanOrEqual(8);
+
+    const unaccounted = [...found].filter(
+      (n) => !declared.has(n) && !(n in NOT_A_CREDENTIAL),
+    );
+    expect(
+      unaccounted,
+      `credential-shaped env vars missing from CREDENTIAL_ENV in src/resources.ts: ${unaccounted.join(", ")}. ` +
+        "Add them there, or add them to NOT_A_CREDENTIAL with the reason they are not secrets.",
+    ).toEqual([]);
+  });
+
+  it("nothing is excused that is not actually referenced any more", async () => {
+    // Stops NOT_A_CREDENTIAL becoming a graveyard that quietly excuses a name
+    // someone later reintroduces as a real secret.
+    const all = sourceFiles(join(__dirname, "..", "src"))
+      .map((f) => readFileSync(f, "utf8"))
+      .join("\n");
+    for (const name of Object.keys(NOT_A_CREDENTIAL)) {
+      expect(
+        all,
+        `${name} is excused but no longer referenced in src/`,
+      ).toContain(name);
+    }
   });
 });

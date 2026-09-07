@@ -26,11 +26,20 @@
 //
 // `config://searxng-mcp` is an ALLOWLIST, deliberately, and must stay one.
 // Building it by dumping config and stripping known secrets would leak the next
-// credential someone adds — and there are already seven in config.ts
-// (FIRECRAWL_API_KEY, GITHUB_TOKEN, OLLAMA_API_KEY, HISTER_TOKEN,
-// CRAWL4AI_API_TOKEN, SEARXNG_MCP_AUTH_TOKEN, plus any inline userinfo in
-// CACHE_URL/SEARXNG_URL). Secrets are reported as a BOOLEAN — configured or
+// credential someone adds. Secrets are reported as a BOOLEAN — configured or
 // not — and never by value.
+//
+// An allowlist has the opposite failure mode, though, and this one hit it: it
+// cannot leak, but it CAN under-report. The first version of this file listed
+// six credentials and missed LLM_API_KEY (caught by the security audit), then a
+// sweep of every credential-shaped env var in src/ found NATS_PASSWORD and
+// NATS_CREDS missing too — both read straight from process.env in events.ts
+// rather than via config.ts, which is why enumerating config.ts's exports alone
+// did not surface them.
+//
+// CREDENTIAL_ENV below is now the single source of truth, and
+// tests/resources.test.ts enumerates the source tree and fails if a
+// credential-shaped env var is missing from it. Add new credentials THERE.
 //
 // Every URL that is emitted goes through `redactUrlCredentials`, because we
 // accept Basic Auth in SEARXNG_URL and forge's CACHE_URL carries an inline
@@ -83,6 +92,38 @@ const safeUrl = (u: string | null | undefined): string | null =>
   u ? redactUrlCredentials(u) : null;
 
 /**
+ * Every credential-bearing environment variable this server reads.
+ *
+ * Reported as booleans in `credentials_configured`. Read from `process.env`
+ * directly rather than from config.ts's exports, because a default applied
+ * there — FIRECRAWL_API_KEY falls back to "placeholder-local" — would report a
+ * credential the operator never set.
+ *
+ * NATS_USER is deliberately absent: it is a username, not a secret, and
+ * NATS_PASSWORD already answers "is NATS authentication configured".
+ *
+ * VALKEY_URL and REDIS_URL are absent for a different reason: they are CACHE_URL
+ * fallbacks, so any inline password in them resolves into CACHE_URL and is
+ * already redacted at `endpoints.cache`. They are endpoints, not credentials.
+ *
+ * `tests/resources.test.ts` greps the source tree for credential-shaped env
+ * vars and fails if one is missing from this list.
+ */
+export const CREDENTIAL_ENV = [
+  "SEARXNG_MCP_AUTH_TOKEN",
+  "FIRECRAWL_API_KEY",
+  "CRAWL4AI_API_TOKEN",
+  "OLLAMA_API_KEY",
+  "LLM_API_KEY",
+  "HISTER_TOKEN",
+  "GITHUB_TOKEN",
+  "NATS_PASSWORD",
+  "NATS_CREDS",
+] as const;
+
+export type CredentialEnvName = (typeof CREDENTIAL_ENV)[number];
+
+/**
  * The `config://searxng-mcp` payload.
  *
  * Exported for testing so the redaction guarantees can be asserted against the
@@ -130,18 +171,13 @@ export function buildConfigResource() {
       rerank_recency_weight: RERANK_RECENCY_WEIGHT,
     },
 
-    // Whether a credential is configured — NEVER its value. Read from the
-    // environment directly rather than from config.ts's exports, so a default
-    // applied there (FIRECRAWL_API_KEY defaults to "placeholder-local") cannot
-    // report a credential the operator never set.
-    credentials_configured: {
-      searxng_mcp_auth_token: isSet(process.env.SEARXNG_MCP_AUTH_TOKEN),
-      firecrawl_api_key: isSet(process.env.FIRECRAWL_API_KEY),
-      crawl4ai_api_token: isSet(process.env.CRAWL4AI_API_TOKEN),
-      ollama_api_key: isSet(process.env.OLLAMA_API_KEY),
-      hister_token: isSet(process.env.HISTER_TOKEN),
-      github_token: isSet(process.env.GITHUB_TOKEN),
-    },
+    // Whether a credential is configured — NEVER its value.
+    credentials_configured: Object.fromEntries(
+      CREDENTIAL_ENV.map((name) => [
+        name.toLowerCase(),
+        isSet(process.env[name]),
+      ]),
+    ) as Record<Lowercase<CredentialEnvName>, boolean>,
   };
 }
 
