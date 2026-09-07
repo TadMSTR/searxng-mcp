@@ -65,27 +65,29 @@ describe("compose files cannot collide with another stack on the host", () => {
     expect(files.length).toBe(6);
   });
 
-  it.each(
-    files.map((f) => [f.slice(root.length + 1), f]),
-  )("%s pins a top-level project name", (_rel, file) => {
-    const doc = parse(readFileSync(file, "utf8")) as { name?: unknown };
-    expect(typeof doc.name).toBe("string");
-    expect((doc.name as string).trim()).not.toBe("");
-  });
+  it.each(files.map((f) => [f.slice(root.length + 1), f]))(
+    "%s pins a top-level project name",
+    (_rel, file) => {
+      const doc = parse(readFileSync(file, "utf8")) as { name?: unknown };
+      expect(typeof doc.name).toBe("string");
+      expect((doc.name as string).trim()).not.toBe("");
+    },
+  );
 
-  it.each(
-    files.map((f) => [f.slice(root.length + 1), f]),
-  )("%s sets no container_name on any service", (_rel, file) => {
-    const doc = parse(readFileSync(file, "utf8")) as {
-      services?: Record<string, Record<string, unknown>>;
-    };
-    for (const [name, svc] of Object.entries(doc.services ?? {})) {
-      expect(
-        svc?.container_name,
-        `service "${name}" sets container_name — it is global to the host`,
-      ).toBeUndefined();
-    }
-  });
+  it.each(files.map((f) => [f.slice(root.length + 1), f]))(
+    "%s sets no container_name on any service",
+    (_rel, file) => {
+      const doc = parse(readFileSync(file, "utf8")) as {
+        services?: Record<string, Record<string, unknown>>;
+      };
+      for (const [name, svc] of Object.entries(doc.services ?? {})) {
+        expect(
+          svc?.container_name,
+          `service "${name}" sets container_name — it is global to the host`,
+        ).toBeUndefined();
+      }
+    },
+  );
 
   it("the standalone reranker's project name is not the bare directory name", () => {
     // The specific collision that caused the outage. `reranker` is what the
