@@ -488,3 +488,184 @@ describe("handleDomainStats", () => {
     expect(result.structuredContent.aggregate?.domains_tracked).toBe(0);
   });
 });
+
+// ── Result and meta rendering: the optional-field branches ───────────────────
+//
+// formatResults and formatMeta are internal, so these go through handleSearch.
+// Every branch below is an OPTIONAL field on a SearXNG response — engine name,
+// published date, snippet, infobox title, answer URL — and each one is absent
+// on some real engine's output. The failure they guard against is a literal
+// "undefined" appearing in text an agent reads as fact.
+describe("handleSearch — result rendering with fields absent", () => {
+  it("falls back through engines[0] → engine → 'unknown'", async () => {
+    vi.mocked(searxSearch).mockResolvedValueOnce({
+      results: [
+        {
+          title: "A",
+          url: "https://e/a",
+          content: "c",
+          engines: ["brave", "google"],
+        },
+        { title: "B", url: "https://e/b", content: "c", engine: "duckduckgo" },
+        { title: "C", url: "https://e/c", content: "c" },
+        { title: "D", url: "https://e/d", content: "c", engines: [] },
+      ],
+      meta: EMPTY_META,
+    });
+    const text = (await handleSearch({ query: "q", num_results: 5 })).content[0]
+      .text;
+    expect(text).toContain("Source: brave");
+    expect(text).toContain("Source: duckduckgo");
+    // Both the missing-key and the empty-array case must reach the same
+    // fallback; an empty array is truthy, so `r.engines?.[0] ?? r.engine` is
+    // doing real work here.
+    expect(text.match(/Source: unknown/g)).toHaveLength(2);
+    expect(text).not.toContain("undefined");
+  });
+
+  it("omits the date and snippet segments entirely when those fields are absent", async () => {
+    vi.mocked(searxSearch).mockResolvedValueOnce({
+      results: [
+        {
+          title: "Dated",
+          url: "https://e/a",
+          content: "snip",
+          publishedDate: "2026-01-02",
+        },
+        { title: "Bare", url: "https://e/b" },
+      ],
+      meta: EMPTY_META,
+    });
+    const text = (await handleSearch({ query: "q", num_results: 5 })).content[0]
+      .text;
+    expect(text).toContain("1. Dated [2026-01-02]");
+    // No empty brackets and no dangling indent for the result with neither.
+    expect(text).toContain("2. Bare\n   URL: https://e/b");
+    expect(text).not.toContain("[]");
+    expect(text).not.toContain("undefined");
+  });
+
+  it("truncates a long snippet to 250 characters", async () => {
+    vi.mocked(searxSearch).mockResolvedValueOnce({
+      results: [{ title: "T", url: "https://e/a", content: "x".repeat(400) }],
+      meta: EMPTY_META,
+    });
+    const text = (await handleSearch({ query: "q", num_results: 5 })).content[0]
+      .text;
+    expect(text).toContain("x".repeat(250));
+    expect(text).not.toContain("x".repeat(251));
+  });
+});
+
+describe("handleSearch — meta block rendering", () => {
+  const oneResult = [
+    { title: "R", url: "https://e/r", content: "c", engines: ["brave"] },
+  ];
+
+  it("pluralises the answer heading and includes the URL only when present", async () => {
+    vi.mocked(searxSearch).mockResolvedValueOnce({
+      results: oneResult,
+      meta: {
+        answers: [
+          { answer: "first", url: "https://ref/1" },
+          { answer: "second" },
+        ],
+        infoboxes: [],
+        corrections: [],
+        suggestions: [],
+      },
+    });
+    const text = (await handleSearch({ query: "q", num_results: 5 })).content[0]
+      .text;
+    expect(text).toContain("Direct answers:");
+    expect(text).toContain("• first (https://ref/1)");
+    expect(text).toContain("• second");
+    expect(text).not.toContain("second (");
+  });
+
+  it("uses the singular heading for exactly one answer", async () => {
+    vi.mocked(searxSearch).mockResolvedValueOnce({
+      results: oneResult,
+      meta: {
+        answers: [{ answer: "only" }],
+        infoboxes: [],
+        corrections: [],
+        suggestions: [],
+      },
+    });
+    const text = (await handleSearch({ query: "q", num_results: 5 })).content[0]
+      .text;
+    expect(text).toContain("Direct answer:");
+    expect(text).not.toContain("Direct answers:");
+  });
+
+  it("renders an infobox with and without its optional title and url", async () => {
+    vi.mocked(searxSearch).mockResolvedValueOnce({
+      results: oneResult,
+      meta: {
+        answers: [],
+        infoboxes: [
+          { title: "Debian", content: "an OS", url: "https://debian.org" },
+          { content: "no title, no url" },
+        ],
+        corrections: [],
+        suggestions: [],
+      },
+    });
+    const text = (await handleSearch({ query: "q", num_results: 5 })).content[0]
+      .text;
+    expect(text).toContain("Debian: an OS (https://debian.org)");
+    expect(text).toContain("no title, no url");
+    expect(text).not.toContain("undefined");
+    expect(text).not.toMatch(/^\s+: /m);
+  });
+
+  it("renders corrections and suggestions as their own blocks", async () => {
+    vi.mocked(searxSearch).mockResolvedValueOnce({
+      results: oneResult,
+      meta: {
+        answers: [],
+        infoboxes: [],
+        corrections: ["debian", "trixie"],
+        suggestions: ["debian 13", "debian release"],
+      },
+    });
+    const text = (await handleSearch({ query: "q", num_results: 5 })).content[0]
+      .text;
+    expect(text).toContain("Did you mean: debian, trixie");
+    expect(text).toContain("Related searches: debian 13, debian release");
+  });
+
+  it("adds no separator at all when there is no meta to surface", async () => {
+    vi.mocked(searxSearch).mockResolvedValueOnce({
+      results: oneResult,
+      meta: EMPTY_META,
+    });
+    const text = (await handleSearch({ query: "q", num_results: 5 })).content[0]
+      .text;
+    // withMeta returns the body untouched, so the text starts with result 1.
+    expect(text.startsWith("1. R")).toBe(true);
+  });
+
+  it("maps every meta field into structuredContent, nulling absent URLs", async () => {
+    vi.mocked(searxSearch).mockResolvedValueOnce({
+      results: [{ title: "R", url: "https://e/r" }],
+      meta: {
+        answers: [{ answer: "a1" }],
+        infoboxes: [{ title: "T", content: "C" }],
+        corrections: ["c1"],
+        suggestions: ["s1"],
+      },
+    });
+    const r = await handleSearch({ query: "q", num_results: 5 });
+    // null rather than undefined: the SDK validates against SearchOutputSchema
+    // before this leaves the server, and undefined would drop the key entirely.
+    expect(r.structuredContent).toEqual({
+      answers: [{ answer: "a1", url: null }],
+      infoboxes: [{ title: "T", content: "C", url: null }],
+      corrections: ["c1"],
+      suggestions: ["s1"],
+      results: [{ title: "R", url: "https://e/r", content: null }],
+    });
+  });
+});

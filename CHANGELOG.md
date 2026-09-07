@@ -23,6 +23,38 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   ladder was ported forward from them — both predated #690, #694 and #697, and each service block
   was re-derived against current reality.
 
+### Added
+
+- **Property-based testing with `fast-check`, and the coverage gate raised to 90 lines /
+  85 branches (vikunja#706)** — matching the gate `ihor-sokoliuk/mcp-searxng` runs.
+
+  Measured 2026-09-07: **statements 90.47%, branches 85.09%, functions 88.93%, lines 92.53%**,
+  up from 85.72 / 79.14 / 84.73 / 88.00. Test count 1024 → 1157.
+
+  `tests/ssrf-guard.fuzz.test.ts` generates across every reserved IPv4/IPv6 range rather than at
+  hand-picked addresses, and asserts representation equivalence — the same address written two
+  legal ways must classify identically, which is where SSRF guards actually fail. Mutation-tested:
+  4 of 5 deliberately-broken guards were caught. The survivor (a `::`-expansion off-by-one) is
+  recorded in the test file as **unreachable** rather than papered over — `isIP()` rejects those
+  inputs before `ipv6ToBytes` ever runs, verified directly.
+
+  `tests/extractors.fuzz.test.ts` runs the extractor layer over malformed, truncated and hostile
+  HTML. Its generator was instrumented rather than trusted: the first version produced JSON-LD on
+  132 of 400 runs but `source === "json_ld"` on **zero**, so the implication test at the bottom of
+  the file was passing with an antecedent that never held. Widening the generator to emit bodies
+  above the 300-char threshold took that to 78 of 400 — and immediately failed, exposing that the
+  assertion itself named a field (`body`) that does not exist on `JsonLdArticle`.
+
+  Hand-written branch tests then covered what properties could not reach: the compare-and-set
+  write path and SCAN pagination in `cache.ts`, the CLI exit codes (a maintenance run that wrote
+  nothing must not exit 0), `withSpan`'s credential redaction, the NATS publish hooks, the
+  profile/tier-skip config paths in `domains.ts`, and the version-varying SearXNG meta shapes.
+
+  Coverage is stable run-to-run despite the random seeds — four consecutive full runs at exactly
+  1661/1952 branches. Checked, because random input would otherwise be a real source of a flaky
+  gate. The gate itself was proven by raising the branch floor to 86 and confirming a non-zero
+  exit, then restoring it.
+
 ### Security
 
 - **CodeQL and OSSF Scorecard workflows added (vikunja#705)**, both SHA-pinned. CodeQL scans

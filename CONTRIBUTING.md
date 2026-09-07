@@ -56,25 +56,30 @@ in the summary and no failing assertion, that is what happened.
 
 Coverage is gated in CI and enforced by `vitest.config.ts`:
 
-| Metric | Floor |
-|---|---|
-| Lines | 86% |
-| Statements | 84% |
-| Functions | 83% |
-| Branches | 77% |
+| Metric | Floor | Measured 2026-09-07 |
+|---|---|---|
+| Lines | 90% | 92.53% |
+| Statements | 89% | 90.47% |
+| Functions | 87% | 88.93% |
+| Branches | 85% | 85.09% |
 
 ```bash
 pnpm coverage
 ```
 
-**These numbers are a measured baseline, not a target.** Read the comment block above
-`thresholds:` in `vitest.config.ts` before changing them — it records what was actually measured
-and when, and it explains why. The short version: the floor once went ten releases untouched
-while real coverage climbed twelve points, so the gate silently permitted a twelve-point
-regression. If you raise the floor, record the measured numbers and the date in that comment, the
-way the existing entries do. A floor with no provenance is indistinguishable from a stale one.
+**Read the comment block above `thresholds:` in `vitest.config.ts` before changing these.** It
+records what was measured and when, and why the margins are what they are. The short version: the
+floor once went ten releases untouched while real coverage climbed twelve points, so the gate
+silently permitted a twelve-point regression.
 
-Do not lower the floor to make a PR pass.
+**Branches has only ~0.09 points of headroom — about two branches.** That is deliberate: the
+floor is pinned at the target rather than set below it, so the coverage just achieved cannot slip
+away unnoticed. If your change costs those two branches, cover them.
+
+If you do move a floor, record the new measured numbers and the date in that comment, the way the
+existing entries do. A floor with no provenance is indistinguishable from a stale one.
+
+**Do not lower the floor to make a PR pass.**
 
 ## Running locally
 
