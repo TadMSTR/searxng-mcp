@@ -101,10 +101,26 @@ On startup the server logs one line naming exactly which of these are configured
 lower-quality result set can be traced to a missing service rather than guessed at:
 
 ```
-[searxng-mcp] capabilities on=tier3,cache,reranker off=tier1,tier2,llm,kiwix,hister,solver,wayback,otel,nats
+[searxng-mcp] capabilities on=tier3 unverified=none off=tier1,tier2,cache,reranker,llm,kiwix,hister,solver,wayback,otel,nats
 ```
 
-It reports configuration, not reachability — nothing is probed, so the line never delays startup.
+That example is the minimal run from the README's Quick Start, measured 2026-09-07 — not an
+illustration. Three states, not two:
+
+| State | Meaning |
+|---|---|
+| `on` | Self-contained — nothing remote has to work for it to be true. Only `tier3` (in-process fetch + Readability) and `wayback` (a plain feature flag) can ever be `on`. |
+| `unverified` | Configured, but this process has never contacted the backend. |
+| `off` | Not configured. |
+
+It reports configuration, not reachability — nothing is probed, so the line never delays
+startup, and `unverified` is not a health failure. It is the honest absence of a health claim:
+before v3.26.0 this line rendered a configured-but-uncontacted backend as `on`, and reported
+`reranker` as on through a 4.5-hour reranker outage, because a URL was set the whole time.
+
+Note that `cache` and `reranker` have non-empty default URLs and no kill switch, so they report
+`unverified` even when nothing is deployed. Setting either to an **empty string** is what turns
+them `off` — and, as of v3.28.0, what stops the process dialling them at all.
 
 The rest of this section is setup reference for whichever of the above you chose to deploy —
 skip any you did not.
