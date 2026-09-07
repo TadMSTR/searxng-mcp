@@ -31,7 +31,12 @@ function composeFiles(dir: string, found: string[] = []): string[] {
       continue;
     const full = join(dir, entry);
     if (statSync(full).isDirectory()) composeFiles(full, found);
-    else if (/^docker-compose.*\.ya?ml$/.test(entry)) found.push(full);
+    // Both naming conventions. `docker-compose.yml` is the legacy name; the
+    // Compose Specification's is a bare `compose.yml`, and examples/ uses that
+    // form. Matching only the legacy pattern is how a guard ends up scanning a
+    // shrinking set while new files land outside it entirely — which is exactly
+    // what happened when the compose ladder was added in examples/.
+    else if (/^(docker-)?compose.*\.ya?ml$/.test(entry)) found.push(full);
   }
   return found;
 }
@@ -47,7 +52,17 @@ describe("compose files cannot collide with another stack on the host", () => {
     //
     // 3 -> 4 in v3.26.0: docker/adblock-proxy/docker-compose.yml was added for
     // standalone use. It went red here first, which is the guard working.
-    expect(files.length).toBe(4);
+    //
+    // 4 -> 6 with the compose ladder (vikunja#710): docker-compose.example.yml
+    // and docker-compose.full.yml were retired (-2) and examples/ gained four
+    // rungs (+4). This went red at 2, not 6 — the retirement was visible to the
+    // matcher and the four new files were not, because they use the Compose
+    // Specification's `compose.*.yml` name and the pattern above only accepted
+    // the legacy `docker-compose*` form. Bumping the count alone would have
+    // left every new file unguarded while the suite went green, which is the
+    // failure this assertion exists to prevent. The pattern was widened
+    // instead.
+    expect(files.length).toBe(6);
   });
 
   it.each(

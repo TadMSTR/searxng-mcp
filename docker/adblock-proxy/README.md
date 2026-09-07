@@ -52,7 +52,7 @@ provides full HTTPS filtering for that tier.
 ## Usage
 
 ```yaml
-# docker-compose.full.yml excerpt
+# examples/compose.full.yml excerpt
 services:
   adblock-proxy:
     build:

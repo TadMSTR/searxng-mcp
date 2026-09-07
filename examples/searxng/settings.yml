@@ -1,0 +1,29 @@
+# Minimal SearXNG settings for searxng-mcp.
+#
+# `use_default_settings: true` merges this on top of the image's own
+# settings.yml, so everything not named here keeps upstream's default. That is
+# why this file is six lines instead of six hundred — do not replace it with a
+# full copy of upstream's settings, which then has to be re-merged by hand on
+# every SearXNG release.
+use_default_settings: true
+
+server:
+  # Read from the environment so the secret is not committed. Compose passes
+  # SEARXNG_SECRET through; generate one with `openssl rand -hex 32`.
+  secret_key: "${SEARXNG_SECRET}"
+  limiter: false          # no bot-detection in front of a loopback-only instance
+  image_proxy: false
+
+search:
+  # THE ONE SETTING searxng-mcp CANNOT WORK WITHOUT.
+  #
+  # SearXNG serves `html` only by default. Every searxng-mcp tool calls the
+  # search endpoint with `format=json`, so against a default SearXNG install
+  # every single call fails — and it fails as a 403, not as a connection
+  # error, which reads like an auth problem rather than a missing format.
+  #
+  # If `search` returns nothing and the logs show 403s from SearXNG, this is
+  # the line you are missing. docs/configuration.md § SearXNG says the same.
+  formats:
+    - html
+    - json

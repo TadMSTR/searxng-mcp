@@ -4,6 +4,204 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [3.28.0] - 2026-09-07
+
+### Added
+
+- **A four-rung compose ladder in `examples/` (vikunja#710).** `compose.minimal.yml`,
+  `compose.crawl4ai.yml`, `compose.reranker.yml` and `compose.full.yml`, each a strict superset
+  of the one above it (asserted in `tests/compose-namespace.test.ts`). The graceful degradation
+  the README describes was previously only visible by reading `src/config.ts`; each rung now
+  states in its header what works, what does not, what it costs in containers and RAM, and which
+  environment variable moves you up.
+
+  Every capability line quoted in a header was **measured against the built artefact on
+  2026-09-07**, not predicted. That mattered: rungs 2 and 3 originally printed an identical line,
+  because `reranker` reported `unverified` whether or not one was deployed.
+
+  `docker-compose.example.yml` and `docker-compose.full.yml` are **removed**. Nothing on the
+  ladder was ported forward from them — both predated #690, #694 and #697, and each service block
+  was re-derived against current reality.
+
+### Added
+
+- **Two MCP Resources (vikunja#707)** — `config://searxng-mcp` and `stats://domains`. Additive:
+  all seven tools are unchanged, and `resources/list` was verified live alongside a `tools/list`
+  still returning 7.
+
+  `config://searxng-mcp` is built from an **allowlist**, deliberately. Assembling it by dumping
+  config and stripping known secrets would leak the next credential someone adds, and there are
+  already seven in `config.ts`. Secrets are reported as a boolean — configured or not — and every
+  emitted URL goes through `redactUrlCredentials`, since Basic Auth in `SEARXNG_URL` and an inline
+  password in `CACHE_URL` are both supported. `credentials_configured` reads the environment
+  directly rather than the config exports, so `FIRECRAWL_API_KEY`'s `placeholder-local` default
+  cannot report a credential the operator never set.
+
+  Verified on the live wire, not just in unit tests: a server started with credentialed
+  `SEARXNG_URL`/`CACHE_URL` and four sentinel secrets returned a payload containing **none** of
+  them. The guarantee is mutation-tested — four deliberate leaks were introduced (disable URL
+  redaction, emit the raw auth token, add a new field carrying an API key, aggregate despite an
+  unavailable database) and all four were caught. The "new field" case is why the test scans the
+  whole serialised payload for each sentinel rather than checking named fields.
+
+  `stats://domains` mirrors the aggregate projection of the `domain_stats` tool, including its
+  `unavailable` branch: a database that could not be read reports `available: false` with the
+  reason, never a count. Confirmed live — with no cache backend it returns
+  `"domain database not configured (no cache backend)"` rather than zero domains (vikunja#688).
+
+  **Post-audit remediation.** The security audit (1 Low, no Critical/High/Medium) found
+  `LLM_API_KEY` missing from `credentials_configured` — a real bearer token sent as
+  `Authorization: Bearer` in `src/ollama.ts`. No value leaked, since every field there is a
+  boolean, but a transparency resource that under-reports a configured credential fails at
+  the one job it has.
+
+  Sweeping every credential-shaped env var in `src/` rather than fixing the single instance
+  found two more: `NATS_PASSWORD` and `NATS_CREDS`, both read straight from `process.env` in
+  `events.ts` rather than exported from `config.ts` — so any check that enumerated
+  `config.ts` alone would still have missed them. `VALKEY_URL`/`REDIS_URL` were confirmed
+  NOT gaps: they resolve into `CACHE_URL` and are already redacted at `endpoints.cache`.
+
+  The list is now a single exported `CREDENTIAL_ENV`, and `tests/resources.test.ts` walks the
+  source tree and fails when a credential-shaped env var is absent from it — so the next
+  credential added breaks CI instead of silently going unreported. An allowlist cannot leak
+  but it can under-report, and no assertion about the fields that DO exist can detect one
+  that does not. Mutation-tested three ways: removing `LLM_API_KEY` (the audit's finding),
+  removing `NATS_PASSWORD` (the sweep's), and introducing an undeclared
+  `NEW_SERVICE_API_KEY` — all three fail with a message naming the variable and the fix.
+
+  **Not reachable through scoped-mcp.** Established before building, per the plan. scoped_mcp
+  1.14.0's `mcp_proxy.py` touches exactly `client.list_tools()` and `client.call_tool()` — a tool
+  re-registration model, not a JSON-RPC passthrough — and `grep -rln "list_resources\|read_resource"`
+  over its tree returns zero files. So these ship value to Claude Desktop and LibreChat but not to
+  agents behind that proxy. Recorded in `src/resources.ts` and the README rather than left for the
+  next reader to rediscover.
+
+- **Property-based testing with `fast-check`, and the coverage gate raised to 90 lines /
+  85 branches (vikunja#706)** — matching the gate `ihor-sokoliuk/mcp-searxng` runs.
+
+  Measured 2026-09-07: **statements 90.47%, branches 85.09%, functions 88.93%, lines 92.53%**,
+  up from 85.72 / 79.14 / 84.73 / 88.00. Test count 1024 → 1157.
+
+  `tests/ssrf-guard.fuzz.test.ts` generates across every reserved IPv4/IPv6 range rather than at
+  hand-picked addresses, and asserts representation equivalence — the same address written two
+  legal ways must classify identically, which is where SSRF guards actually fail. Mutation-tested:
+  4 of 5 deliberately-broken guards were caught. The survivor (a `::`-expansion off-by-one) is
+  recorded in the test file as **unreachable** rather than papered over — `isIP()` rejects those
+  inputs before `ipv6ToBytes` ever runs, verified directly.
+
+  `tests/extractors.fuzz.test.ts` runs the extractor layer over malformed, truncated and hostile
+  HTML. Its generator was instrumented rather than trusted: the first version produced JSON-LD on
+  132 of 400 runs but `source === "json_ld"` on **zero**, so the implication test at the bottom of
+  the file was passing with an antecedent that never held. Widening the generator to emit bodies
+  above the 300-char threshold took that to 78 of 400 — and immediately failed, exposing that the
+  assertion itself named a field (`body`) that does not exist on `JsonLdArticle`.
+
+  Hand-written branch tests then covered what properties could not reach: the compare-and-set
+  write path and SCAN pagination in `cache.ts`, the CLI exit codes (a maintenance run that wrote
+  nothing must not exit 0), `withSpan`'s credential redaction, the NATS publish hooks, the
+  profile/tier-skip config paths in `domains.ts`, and the version-varying SearXNG meta shapes.
+
+  Coverage is stable run-to-run despite the random seeds — four consecutive full runs at exactly
+  1661/1952 branches. Checked, because random input would otherwise be a real source of a flaky
+  gate. The gate itself was proven by raising the branch floor to 86 and confirming a non-zero
+  exit, then restoring it.
+
+### Security
+
+- **CodeQL and OSSF Scorecard workflows added (vikunja#705)**, both SHA-pinned. CodeQL scans
+  `javascript-typescript` **and** `actions` — the repo has five workflows holding a GHCR token, an
+  npm publish token and `packages: write`, and adding CI surface without scanning CI surface is
+  how an injection into a `run:` block goes unnoticed.
+
+- **Top-level `permissions: contents: read` added to `ci.yml`, `release.yml` and
+  `docker-publish.yml`.** Scorecard's Token-Permissions check scored the repo **0/10** naming all
+  three (measured 2026-09-07, scorecard v5.3.0): with no top-level block, every job without its
+  own `permissions:` ran with the repository default, which is broader than any of them needs.
+  Affected jobs are `ci.yml`'s three and `release.yml`'s `build` — all of which only check out,
+  build, test and upload an artifact. Jobs that already declared their own permissions are
+  unchanged, since a job-level block replaces the top-level one outright rather than merging.
+
+- **`docker/reranker/Dockerfile` base image pinned by digest** —
+  `python:3.12-slim@sha256:78387bc…e184ea`, the repo's one unpinned container image per
+  Scorecard's Pinned-Dependencies check (9/10). Digest verified independently with
+  `docker buildx imagetools inspect`, and the image rebuilt to confirm. The pip versions in that
+  file were already pinned; `--require-hashes` was not adopted, because a fully hash-pinned
+  requirements set including transitive dependencies is disproportionate here and would rot
+  faster than it protects.
+
+### Fixed
+
+- **`CACHE_URL=""` and `RERANKER_URL=""` now actually disable the call, instead of only changing
+  the startup capability line.** Both variables have non-empty defaults (`redis://localhost:6381`
+  and `http://localhost:8787`) and no kill switch, so an empty string is the only way to turn
+  either off — which is what a minimal deployment must do. It set the line to `cache=off` and
+  `reranker=off` while the process kept calling: `new Valkey("")` fell through to ioredis's own
+  default of `127.0.0.1:6379`, an address that appears in no configuration anywhere, and the
+  reranker issued `fetch("/v1/rerank")` — a relative URL that throws on every search.
+
+  Both failed soft, so results stayed correct and nothing looked broken. Found by running
+  `examples/compose.minimal.yml`, which sets both to empty precisely to get a clean run, and
+  reading the container log:
+
+  ```
+  cache client error — serving live until it recovers: connect ECONNREFUSED 127.0.0.1:6379
+  reranker unavailable — using SearXNG result order: Failed to parse URL from /v1/rerank
+  ```
+
+  Same class as #695: a status field describing intent rather than observation. The new tests in
+  `tests/disable-switches.test.ts` assert the ABSENCE of a call, so each carries a positive
+  control proving the call still happens when the URL is set.
+
+- **`FIRECRAWL_API_VERSION` documentation corrected.** The README and the retired
+  `docker-compose.full.yml` both stated the default was `v2`. `src/config.ts` returns `v1`, and
+  has since the version axis was introduced — `docs/configuration.md` had it right. This matters
+  beyond a typo: the playwright adblock sidecar only applies on `v2`, so a stack that wired it
+  and relied on the documented default got no tier-1 adblocking at all, silently.
+  `examples/compose.full.yml` now sets `FIRECRAWL_API_VERSION: v2` explicitly and says why.
+
+- **`tests/compose-namespace.test.ts` scans `compose*.yml`, not just `docker-compose*.yml`.**
+  The guard that prevents a repeat of the 4.5h production reranker removal (#694) matched only
+  the legacy filename, so the four new ladder files were outside the set it checks. It went red
+  on the file count when the two old files were deleted; bumping the count alone would have
+  restored green while leaving every new file unguarded.
+
+### Changed
+
+- **`CONTRIBUTING.md` rewritten for what it omitted (vikunja#711).** Its age was not the
+  defect — Node 20+, pnpm 10.30.3+, and the build/test/lint commands were all still correct.
+  What was missing: the coverage floor a contributor must not drop below and the provenance
+  convention attached to it, that `pnpm test` runs `--typecheck` so type errors fail the suite,
+  that `CHANGELOG.md` is expected to be updated per PR, and any answer at all to "what should I
+  work on".
+
+  On that last point it now says plainly that planning is tracked outside GitHub and directs
+  proposals and questions to **GitHub Discussions** (newly enabled), with bug reports staying in
+  Issues. An unexplained empty Issues tab reads as abandonment; an explained one does not.
+
+  It also drops a broken instruction: `docker run -d -p 8081:8080 searxng/searxng` was offered as
+  the quick local setup, and a stock SearXNG serves HTML only. Every searxng-mcp call requests
+  `format=json` and gets a 403, which looks like an auth failure rather than a missing output
+  format. It now points at the compose ladder, whose `examples/searxng/settings.yml` enables it.
+
+  The commit-convention section no longer claims uniform history. Measured: of the last 100
+  non-merge, non-squash commits 95 conform, and the 5 that do not are all pre-v3.4 — while
+  squash-merge commits on `main` carry the PR title by construction.
+
+- **Community health files added (vikunja#709)** — `CODE_OF_CONDUCT.md` (Contributor Covenant
+  2.1), `.github/PULL_REQUEST_TEMPLATE.md`, `.github/CODEOWNERS` and `.github/dependabot.yml`
+  (npm + github-actions, weekly, dev deps grouped, semver-major ignored). Repo settings: GitHub
+  Discussions enabled, Wiki and Projects disabled (both were on and empty), homepage set to the
+  npm package page.
+
+  The community-profile API's `issue_template: MISSING` is a **false positive** for
+  directory-based templates and was deliberately not "fixed" — the same field reports MISSING for
+  two repositories sitting at 100% health.
+
+- **README Quick Start leads with the ladder**, as a four-row table, and quotes the capability
+  line the minimal command actually prints. The previous text claimed "everything but `tier3` and
+  `wayback` reports `off`" — measurement says `wayback` is `off` (it is a feature flag, default
+  false) and `cache` and `reranker` report `unverified`, not `off`, unless explicitly emptied.
+
 ## [3.27.0] - 2026-09-06
 
 ### Fixed

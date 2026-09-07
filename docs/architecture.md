@@ -102,7 +102,7 @@ searxng-mcp ships two adblocking sidecars, but only one of them applies to every
 | Sidecar | Tier | Mechanism | Applies when |
 |---------|------|-----------|--------------|
 | `docker/adblock-proxy/` | Tier 3 (raw fetch) only | HTTP forward proxy — filters plain-HTTP ad domains | `ADBLOCK_PROXY_URL` is set |
-| `docker/puppeteer-adblock/` | Tier 1 (Firecrawl) | CDP-level interception in the browser service | **Only** on a `v1` firecrawl-simple stack built from `docker-compose.full.yml` |
+| `docker/puppeteer-adblock/` | Tier 1 (Firecrawl) | CDP-level interception in the browser service | **Only** on a `v1` firecrawl-simple stack. `examples/compose.full.yml` is v2, so this does nothing there |
 
 ### Tier 1 — Puppeteer adblock (v1 stacks only)
 
@@ -110,7 +110,7 @@ searxng-mcp ships two adblocking sidecars, but only one of them applies to every
 
 **It is not automatic, and it does not apply under `FIRECRAWL_API_VERSION=v2`:**
 
-- It reaches a deployment only if that deployment builds it. `docker-compose.full.yml` in this repo does; a Firecrawl stack brought up from upstream's own compose, or any stack pointing `PLAYWRIGHT_MICROSERVICE_URL` at a stock `trieve/puppeteer-service-ts` image, does not — tier 1 then has no adblocking, silently.
+- It reaches a deployment only if that deployment builds it. `examples/compose.full.yml` in this repo does; a Firecrawl stack brought up from upstream's own compose, or any stack pointing `PLAYWRIGHT_MICROSERVICE_URL` at a stock `trieve/puppeteer-service-ts` image, does not — tier 1 then has no adblocking, silently.
 - It is Puppeteer-specific. Upstream Firecrawl 2.x replaced the Puppeteer service with `apps/playwright-service-ts`, so on a `v2` backend this image is not part of the stack at all. Porting it would mean rewriting against `@ghostery/adblocker-playwright`, not rebuilding.
 
 To check rather than assume, confirm the browser container carries the hook:
@@ -130,7 +130,7 @@ Env vars, read by that image only:
 The base image is pinned by SHA256 digest. To rebuild and restart it:
 
 ```bash
-docker compose -f docker-compose.full.yml up -d --build firecrawl-puppeteer
+docker compose -f examples/compose.full.yml up -d --build firecrawl-puppeteer
 ```
 
 **Per-domain bypass:** `domains.json` reserves an `adblock_skip` slot for future operator overrides. Wiring isn't implemented — it would require Firecrawl to forward a custom header through to the browser service, which isn't part of its API. Tracked as scope-creep item I.
@@ -143,7 +143,7 @@ Set `ADBLOCK_PROXY_URL` (e.g. `http://adblock-proxy:8118`) to route raw Node fet
 
 As of v3.19.0, the proxy validates the **resolved** address — not just the requested hostname string — on both its CONNECT and plain-HTTP paths before connecting, closing a DNS-rebinding gap (audit finding SSRF-10).
 
-See [`docker/adblock-proxy/`](../docker/adblock-proxy/) for the service definition, configuration options, and deployment instructions (included in `docker-compose.full.yml`).
+See [`docker/adblock-proxy/`](../docker/adblock-proxy/) for the service definition, configuration options, and deployment instructions (included in `examples/compose.full.yml`, rung 4).
 
 ## Data-driven tier routing
 

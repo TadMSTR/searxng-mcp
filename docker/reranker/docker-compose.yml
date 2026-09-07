@@ -6,7 +6,7 @@
 # "clone and up" is the acceptance criterion, not an incidental convenience.
 #
 # To integrate with a full searxng-mcp stack instead, see the reranker service
-# in ../../docker-compose.full.yml, which pulls the published image rather
+# in ../../examples/compose.full.yml, which pulls the published image rather
 # than building.
 #
 # Compose derives the project name from this directory's basename — "reranker"
@@ -47,7 +47,7 @@ services:
       - "127.0.0.1:${RERANKER_HOST_PORT:-8787}:8787"
     restart: unless-stopped
     # SECURITY[deferred]: this is the only compose file in the repo carrying the
-    # hardening below — docker-compose.full.yml, docker-compose.example.yml and
+    # hardening below — examples/compose.full.yml, examples/compose.crawl4ai.yml and
     # docker/adblock-proxy/ have none, so the repo now models good practice in
     # one place and not the others. Retrofitting the rest is vikunja#693 (id
     # 776). Note `read_only` is NOT a blanket addition there: several of those

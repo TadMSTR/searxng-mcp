@@ -87,6 +87,21 @@ export async function rerankWithFallback(
       "rerank.min_score": minScore,
     },
     async () => {
+      // An empty RERANKER_URL means "no reranker", and must actually mean it.
+      //
+      // Same shape as the CACHE_URL guard in cache.ts, for the same reason:
+      // RERANKER_URL defaults to http://localhost:8787 and has no kill switch,
+      // so "" is the only way off — and `fetch("" + "/v1/rerank")` is a
+      // relative URL, which throws `Failed to parse URL from /v1/rerank` on
+      // every single search. It fell through to the fallback below, so results
+      // were correct, but each search paid a throw and logged a degradation
+      // notice for a service the operator had deliberately not deployed.
+      //
+      // Returning here rather than throwing keeps "I turned it off" distinct
+      // from "it broke" in the log, which is the whole point of the tri-state
+      // capability line (vikunja#695).
+      if (RERANKER_URL === "") return results.slice(0, topN);
+
       const applyRecency = !timeRange; // skip when caller already filtered by date
       try {
         return await rerank(query, results, topN, applyRecency, minScore);

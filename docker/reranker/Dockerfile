@@ -1,4 +1,10 @@
-FROM python:3.12-slim
+# Pinned by digest, not just tag. `python:3.12-slim` is a moving target — the
+# same reasoning already applied to the pip versions below, and to the main
+# Dockerfile's node image. Digest verified with `docker buildx imagetools
+# inspect python:3.12-slim` on 2026-09-07; OSSF Scorecard's
+# Pinned-Dependencies check flagged this as the repo's one unpinned
+# container image.
+FROM python:3.12-slim@sha256:78387bc3881b8273120a12ebe6c1ab22b018ccc2c9adf565ae1ac9b536e184ea
 
 # Versions pinned to what the four-week-running deployment resolved to on
 # 2026-09-06. The original was unpinned, which is fine for a compose file you

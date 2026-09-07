@@ -1,0 +1,164 @@
+# ── RUNG 1 of 4 — minimal ─────────────────────────────────────────────────────
+#
+# THE LEAST YOU CAN RUN. SearXNG plus searxng-mcp, nothing else.
+#
+#   Containers   2
+#   RAM          ~600 MB total
+#   GPU          none
+#   Disk         ~500 MB of images
+#
+# WHAT WORKS HERE
+#   `search`                  yes — ranked results, in SearXNG's own order
+#   `fetch_url`               yes — tier 3 (in-process raw fetch + Readability)
+#   `search_and_fetch`        yes — same tier-3 extraction
+#   `crawl_site`              sitemap / BFS fallback only (no Firecrawl crawl)
+#   `clear_cache`             no-op — there is no cache to purge
+#   `domain_stats`            yes, but the DB is in-memory and dies with the
+#                             container (no cache backend to persist it)
+#   `search_and_summarize`    NO — needs an LLM. Returns fetched pages led by an
+#                             explicit `summarization unavailable` marker.
+#
+# THE CAPABILITY LINE THIS RUNG PRINTS — measured 2026-09-07, not predicted:
+#
+#   capabilities on=tier3 unverified=none \
+#     off=tier1,tier2,cache,reranker,llm,kiwix,hister,solver,wayback,otel,nats
+#
+# `unverified=none` is the point of the two empty-string env vars below, and is
+# what makes this a CLEAN minimal run rather than a merely working one. Read on.
+#
+# MOVING UP A RUNG
+#   Set CRAWL4AI_URL and add a cache → examples/compose.crawl4ai.yml (rung 2).
+
+# Project name is pinned rather than derived from the directory, because compose
+# project names are global to the Docker host: a directory-derived name silently
+# shares a namespace with any other stack of the same name, and `down` in one
+# removes the other's containers (vikunja#694).
+#
+# All four rungs deliberately share this name. Moving up a rung is
+# `docker compose -f examples/compose.<next>.yml up -d` — compose reconciles
+# against the same project, so you get the new services without a second copy of
+# the ones you already had. That is the ladder working as intended, not a
+# collision.
+name: searxng-mcp
+
+services:
+  # ── SearXNG — the only hard requirement ─────────────────────────────────────
+  searxng:
+    image: docker.io/searxng/searxng:latest # SECURITY[accepted]: latest tag — example file; pin a digest for production
+    restart: unless-stopped
+    # Loopback only. SearXNG here has `limiter: false` (see settings.yml) because
+    # nothing untrusted should be able to reach it; binding it to 0.0.0.0 would
+    # make that an open, unrate-limited search proxy on your network.
+    ports:
+      - "127.0.0.1:8081:8080"
+    volumes:
+      # Read-only: SearXNG has no reason to write its own configuration, and a
+      # writable mount here is how a compromised container persists.
+      - ./searxng:/etc/searxng:ro
+    environment:
+      SEARXNG_BASE_URL: http://localhost:8081/
+      # Generate with: openssl rand -hex 32
+      # Unset is not fatal at this rung, but SearXNG will warn.
+      SEARXNG_SECRET: "${SEARXNG_SECRET:-}"
+    # NO cap_add. Measured 2026-09-07 against a green no-hardening baseline:
+    # this image runs fine on `cap_drop: [ALL]` alone — container `running`,
+    # `GET /` 200, and `?format=json` 200.
+    #
+    # An earlier draft of this file granted SETUID and SETGID here, reasoning by
+    # analogy from `cache` and `firecrawl-redis` (whose entrypoints DO drop
+    # privileges with setpriv and do need them). SearXNG's does not, and the
+    # comment asserted a verification that had never been run. Two capabilities
+    # were being handed to an adopter's container for no reason.
+    #
+    # The first attempt to check it was also wrong and is worth recording:
+    # both arms failed identically with `"/etc/searxng/settings.yml" is not a
+    # valid file` because no config was mounted. A comparison whose control is
+    # already failing tells you nothing — mount ./searxng before re-testing.
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    mem_limit: 1g
+    cpus: 2.0
+
+  # ── searxng-mcp ─────────────────────────────────────────────────────────────
+  searxng-mcp:
+    image: ghcr.io/tadmstr/searxng-mcp:latest # SECURITY[accepted]: latest tag — example file; pin a version for production
+    restart: unless-stopped
+    depends_on:
+      - searxng
+    ports:
+      # Loopback only. The image runs in HTTP transport mode bound to 0.0.0.0
+      # inside the container (it has to be, to be reachable by container name),
+      # so the ONLY thing keeping this off your network is this `127.0.0.1:`
+      # prefix. If you remove it, SEARXNG_MCP_AUTH_TOKEN stops being optional.
+      - "127.0.0.1:3001:3001"
+    environment:
+      SEARXNG_URL: http://searxng:8080
+
+      # Bearer token for the HTTP transport. Left empty here because the port is
+      # loopback-only; the server logs a loud startup warning either way, and
+      # that warning is correct — set this the moment you publish the port
+      # anywhere other than 127.0.0.1. See README "HTTP transport authentication".
+      SEARXNG_MCP_AUTH_TOKEN: "${SEARXNG_MCP_AUTH_TOKEN:-}"
+
+      # ── The three switches that make this rung CLEAN ────────────────────────
+      #
+      # All three env vars below have NON-EMPTY DEFAULTS in src/config.ts. Left
+      # alone, searxng-mcp would spend this entire rung talking to services that
+      # are not deployed:
+      #
+      #   FIRECRAWL_URL   defaults to http://localhost:3002
+      #   CACHE_URL       defaults to redis://localhost:6381
+      #   RERANKER_URL    defaults to http://localhost:8787
+      #
+      # A default URL is indistinguishable from a deliberate one, so without
+      # these the server reports `unverified=cache,reranker` and tier 1 is
+      # attempted-and-failed on every fetch — booking each failure into the
+      # domain capability database, which then routes around a tier that was
+      # never broken, only absent.
+      #
+      # FIRECRAWL_ENABLED is a real kill switch. cache and reranker have none,
+      # so the lever is an EMPTY STRING: config.ts uses `??`, which falls back
+      # only on undefined — an explicit "" survives and reads as "off".
+      # Verified both ways 2026-09-07.
+      FIRECRAWL_ENABLED: "false"
+      CACHE_URL: ""
+      RERANKER_URL: ""
+    healthcheck:
+      # Overridden from the image's own healthcheck ON PURPOSE.
+      #
+      # The built-in check calls /health, which returns 503 when the cache
+      # backend is unreachable — and at this rung there is deliberately no cache
+      # at all, so the stock check would mark a perfectly working container
+      # `unhealthy` forever. Accepting 200 OR 503 asserts what is actually
+      # knowable here: the route answers.
+      #
+      # This mirrors the repo's own published-image smoke test, which says
+      # "503 is expected — there is no cache backend here" and accepts 200|503
+      # for the same reason (.github/workflows/docker-publish.yml).
+      #
+      # At rung 2 and above a cache IS deployed, so those files drop this
+      # override and a 503 becomes a real signal again.
+      test:
+        - CMD-SHELL
+        - 'c=$$(wget -qS -O /dev/null http://127.0.0.1:3001/health 2>&1 | awk "/HTTP\//{print \$$2}" | tail -1); [ "$$c" = 200 ] || [ "$$c" = 503 ]'
+      interval: 30s
+      timeout: 5s
+      start_period: 15s
+      retries: 3
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    read_only: true
+    mem_limit: 512m
+    cpus: 2.0
+
+# ── MCP client configuration ──────────────────────────────────────────────────
+#
+# Point your MCP client at http://localhost:3001/mcp (streamable HTTP).
+# If you set SEARXNG_MCP_AUTH_TOKEN above, send it as `Authorization: Bearer <token>`.
+#
+# To run searxng-mcp on the host instead of in a container, drop the
+# searxng-mcp service and use:
+#
+#   SEARXNG_URL=http://localhost:8081 \
+#     FIRECRAWL_ENABLED=false CACHE_URL= RERANKER_URL= \
+#     npx @tadmstr/searxng-mcp

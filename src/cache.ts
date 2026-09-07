@@ -65,6 +65,20 @@ let valkey: Valkey | null = null;
 
 export async function getValkey(): Promise<Valkey | null> {
   if (valkey !== null) return valkey;
+  // An empty CACHE_URL means "no cache", and must actually mean it.
+  //
+  // CACHE_URL has a non-empty default (redis://localhost:6381) and no kill
+  // switch, so the only way to turn the cache off is to set it to "". That
+  // already reads as `cache=off` on the startup capability line — but without
+  // this guard `new Valkey("")` falls back to ioredis's OWN default of
+  // 127.0.0.1:6379 and connects anyway. The line said off while the process
+  // was dialling a third address that appears in no configuration at all.
+  //
+  // Found by running examples/compose.minimal.yml, which sets CACHE_URL=""
+  // precisely to get a clean run, and watching it log
+  // `connect ECONNREFUSED 127.0.0.1:6379` (2026-09-07). Same class as
+  // vikunja#695: a status field describing intent rather than observation.
+  if (CACHE_URL === "") return null;
   try {
     const client = new Valkey(CACHE_URL, {
       lazyConnect: true,

@@ -1,0 +1,7 @@
+# Every path in this repo is owned by @TadMSTR, who is automatically requested
+# for review on any pull request.
+#
+# This file is also an OSSF Scorecard check (Code-Review): Scorecard treats a
+# present CODEOWNERS as evidence that changes have a defined reviewer, so the
+# single line below is doing more work than it looks like.
+* @TadMSTR

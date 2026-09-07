@@ -1,38 +1,100 @@
-# searxng-mcp full stack
+# ── RUNG 4 of 4 — full ────────────────────────────────────────────────────────
 #
-# Wires all optional services: cache, Firecrawl + adblock sidecar, Crawl4AI,
-# adblock-proxy (tiers 2+3), Ollama, Kiwix, and NATS. Requires SearXNG running
-# externally (see SEARXNG_URL).
+# EVERYTHING. Rung 3 plus Firecrawl (with its own Redis and an adblocking
+# renderer), an adblock proxy for tiers 2-3, Ollama, Kiwix and NATS.
+#
+#   Containers   12
+#   RAM          ~24 GB total — Ollama alone is capped at 8g and wants more
+#   GPU          optional, but you want one for Ollama (see the deploy: block)
+#   Disk         ~20 GB of images, plus models and any ZIM corpus you download
+#
+# THIS RUNG IS NOT A RECOMMENDATION. It is the reference topology — the one that
+# proves every tier and fast path works together. Most adopters should stop at
+# rung 2 or 3. Run this if you want PDFs, LLM summarisation, offline Wikipedia,
+# or you are developing against the fetch cascade itself.
+#
+# WHAT CHANGES FROM RUNG 3
+#   `search_and_summarize`   now works — Ollama synthesises a cited summary.
+#                            Below rung 4 it returns fetched pages behind an
+#                            explicit `summarization unavailable` marker.
+#   PDFs                     now fetchable — Firecrawl v2 serves them; no other
+#                            tier does
+#   `crawl_site`             now uses Firecrawl's real crawl, not the sitemap/BFS
+#                            fallback
+#   Wikipedia / Stack Overflow / Arch Wiki
+#                            served locally from Kiwix, before the cascade runs
+#   ad and tracker filtering both on tier 1 (in-renderer) and tiers 2-3 (proxy)
+#   Wayback                  tier-4 archived-snapshot fallback, enabled here
+#   NATS                     a JetStream event per search and fetch
+#
+# THE CAPABILITY LINE THIS RUNG PRINTS — measured 2026-09-07:
+#
+#   capabilities on=tier3,wayback unverified=tier1,tier2,cache,reranker,llm,kiwix,nats \
+#     off=hister,solver,otel
+#
+# `hister` and `solver` are off because both are separate services this file does
+# not ship (see the notes at the bottom). `otel` is off because there is no
+# collector here — set OTEL_EXPORTER_OTLP_ENDPOINT if you run one.
+#
+# PREREQUISITES — this rung does NOT work straight out of `up -d`:
+#   - Ollama models. Pull them after first start, or search_and_summarize fails:
+#       docker compose -f examples/compose.full.yml exec ollama ollama pull qwen3:4b
+#       docker compose -f examples/compose.full.yml exec ollama ollama pull qwen3:14b
+#   - Kiwix ZIM files in ./kiwix-data/ — https://download.kiwix.org/
+#     Recommended: wikipedia_en_all_maxi, stackoverflow_en_all, archlinux_en_all.
+#     kiwix-serve will not start against an empty directory.
+#
+# Container hardening (vikunja#693). Every setting below was verified by RUNNING
+# the service, not by reading the diff — each row of the matrix was probed
+# against a green no-hardening baseline first, because a comparison whose control
+# is already failing tells you nothing. Two findings a diff read would have
+# missed are recorded at their services: `cache` needs two capabilities back (or
+# a uid), and three services need a writable /tmp.
 #
 # Network isolation (NE-02):
-#   fetch-net    — adblock-proxy + crawl4ai only; proxy unreachable from unrelated services
-#   firecrawl-net — firecrawl-api + firecrawl-redis + firecrawl-playwright
-#   (default)    — cache, ollama, reranker, kiwix, nats; isolated from proxy
+#   fetch-net      adblock-proxy + crawl4ai + searxng-mcp — the proxy is an open
+#                  forward proxy with no auth, and must not be reachable from
+#                  anything that does not need it
+#   firecrawl-net  firecrawl-api + firecrawl-redis + firecrawl-playwright + searxng-mcp
+#   (default)      searxng, cache, ollama, reranker, kiwix, nats, searxng-mcp
 #
-# Prerequisites:
-#   - Kiwix: download ZIM files to ./kiwix-data/ before starting kiwix service.
-#     See https://download.kiwix.org/ — recommended: wikipedia_en_all_maxi,
-#     stackoverflow_en_all, archlinux_en_all
-#   - Ollama: pull required models after first start:
-#       docker exec ollama ollama pull qwen3:4b
-#       docker exec ollama ollama pull qwen3:14b
-#   - NATS: update NATS_CREDS path if using credential-based auth.
+# searxng-mcp is the only service on all three, because it is the only one that
+# has to talk to every tier.
 
-# Pinned so the project name comes from this file rather than from whatever
-# the clone directory happens to be called. Compose project names are global to
-# the Docker host, and a directory-derived one silently shares a namespace with
-# any other stack of the same name — `down` in one removes the other's
-# containers. vikunja#694.
-# Container hardening (vikunja#693). Every setting below was verified by
-# RUNNING the service, not by reading the diff — each row of the matrix was
-# probed against a green no-hardening baseline first, because a comparison
-# whose control is already failing tells you nothing. Two findings a diff read
-# would have missed are recorded at their services: `cache` needs two
-# capabilities back, and three services need a writable /tmp.
-
+# See rung 1's note: shared project name is deliberate (vikunja#694).
 name: searxng-mcp
 
 services:
+  # ── SearXNG — the only hard requirement ─────────────────────────────────────
+  searxng:
+    image: docker.io/searxng/searxng:latest # SECURITY[accepted]: latest tag — example file; pin a digest for production
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8081:8080"
+    volumes:
+      - ./searxng:/etc/searxng:ro
+    environment:
+      SEARXNG_BASE_URL: http://localhost:8081/
+      SEARXNG_SECRET: "${SEARXNG_SECRET:-}"
+    # NO cap_add. Measured 2026-09-07 against a green no-hardening baseline:
+    # this image runs fine on `cap_drop: [ALL]` alone — container `running`,
+    # `GET /` 200, and `?format=json` 200.
+    #
+    # An earlier draft of this file granted SETUID and SETGID here, reasoning by
+    # analogy from `cache` and `firecrawl-redis` (whose entrypoints DO drop
+    # privileges with setpriv and do need them). SearXNG's does not, and the
+    # comment asserted a verification that had never been run. Two capabilities
+    # were being handed to an adopter's container for no reason.
+    #
+    # The first attempt to check it was also wrong and is worth recording:
+    # both arms failed identically with `"/etc/searxng/settings.yml" is not a
+    # valid file` because no config was mounted. A comparison whose control is
+    # already failing tells you nothing — mount ./searxng before re-testing.
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    mem_limit: 1g
+    cpus: 2.0
+
   # ── Cache backend (Redis-compatible) ────────────────────────────────────────
   cache:
     image: docker.dragonflydb.io/dragonflydb/dragonfly:latest # SECURITY[accepted]: latest tag — example file; pin for production
@@ -131,7 +193,7 @@ services:
     #
     # NOTE: the port is 3003, not 3000 — the two renderers differ.
     build:
-      context: ./docker/playwright-adblock
+      context: ../docker/playwright-adblock
     restart: unless-stopped
     # No `user:`: the base image already runs as `node` (non-root). Overriding
     # it with a guessed uid risks breaking file ownership inside the image.
@@ -160,7 +222,7 @@ services:
     image: ghcr.io/tadmstr/searxng-mcp-adblock-proxy:latest # SECURITY[accepted]: latest tag — example file; pin for production
     # To build from source instead of pulling:
     # build:
-    #   context: ./docker/adblock-proxy
+    #   context: ../docker/adblock-proxy
     restart: unless-stopped
     # No `user:`: the image's Dockerfile already sets `USER proxy` (non-root).
     cap_drop: [ALL]
@@ -209,7 +271,10 @@ services:
     ports:
       - "127.0.0.1:11235:11235"
     environment:
-      CRAWL4AI_API_TOKEN: ""  # Set to protect your instance
+      # REQUIRED on crawl4ai 0.9.x — the server refuses unauthenticated
+      # requests there, and searxng-mcp surfaces that as a tier-2 failure
+      # rather than a config error. Must match searxng-mcp's copy below.
+      CRAWL4AI_API_TOKEN: "${CRAWL4AI_API_TOKEN:-}"
     shm_size: "1gb"
     networks:
       - fetch-net
@@ -253,7 +318,7 @@ services:
   reranker:
     image: ghcr.io/tadmstr/searxng-mcp-reranker:latest # SECURITY[accepted]: latest tag — example file; pin for production
     # To build from source instead of pulling:
-    # build: ./docker/reranker
+    # build: ../docker/reranker
     restart: unless-stopped
     # Matches docker/reranker/docker-compose.yml, which pins the same uid: the
     # image already runs as 10001, and naming it here means a `docker run` that
@@ -324,6 +389,78 @@ services:
   # already rendered by the browser extension. Leave unset to disable (zero
   # overhead). See README "Hister (optional)".
 
+  # ── searxng-mcp ─────────────────────────────────────────────────────────────
+  searxng-mcp:
+    image: ghcr.io/tadmstr/searxng-mcp:latest # SECURITY[accepted]: latest tag — example file; pin a version for production
+    restart: unless-stopped
+    depends_on:
+      - searxng
+      - cache
+      - crawl4ai
+      - reranker
+      - firecrawl-api
+      - ollama
+    ports:
+      # Loopback only — see rung 1. Remove the 127.0.0.1 prefix and
+      # SEARXNG_MCP_AUTH_TOKEN stops being optional. At this rung the server can
+      # reach Ollama, Firecrawl and an open forward proxy, so an unauthenticated
+      # port here is worth considerably more to an attacker than at rung 1.
+      - "127.0.0.1:3001:3001"
+    # The only service on all three networks: it is the only one that has to
+    # reach every tier. See the isolation note in the header.
+    networks:
+      - default
+      - fetch-net
+      - firecrawl-net
+    environment:
+      SEARXNG_URL: http://searxng:8080
+      SEARXNG_MCP_AUTH_TOKEN: "${SEARXNG_MCP_AUTH_TOKEN:-}"
+
+      CACHE_URL: redis://cache:6379
+      RERANKER_URL: http://reranker:8787
+      CRAWL4AI_URL: http://crawl4ai:11235
+      CRAWL4AI_API_TOKEN: "${CRAWL4AI_API_TOKEN:-}"
+
+      # ── Firecrawl — tier 1 ─────────────────────────────────────────────────
+      FIRECRAWL_URL: http://firecrawl-api:3002
+      FIRECRAWL_API_KEY: "${FIRECRAWL_API_KEY:-placeholder-local}"
+      # SET EXPLICITLY, and it matters. FIRECRAWL_API_VERSION defaults to `v1`
+      # in src/config.ts — deliberately, so an upgrade never silently changes
+      # the live fetch path. But the renderer wired into this file is
+      # firecrawl-playwright, which is the *v2* renderer, and the adblocking it
+      # provides applies only on v2 (vikunja#696).
+      #
+      # Leave this unset and you get the v1 client talking to a v2 topology:
+      # tier-1 adblocking silently does nothing, and PDFs (a v2-only capability)
+      # do not work. The file must state the version it is actually built for
+      # rather than relying on a default that points the other way.
+      FIRECRAWL_API_VERSION: v2
+
+      # ── Adblock proxy — tiers 2 and 3 ──────────────────────────────────────
+      ADBLOCK_PROXY_URL: http://adblock-proxy:8118
+
+      # ── LLM — query expansion and summarisation ────────────────────────────
+      OLLAMA_URL: http://ollama:11434
+      OLLAMA_EXPAND_MODEL: qwen3:4b
+      OLLAMA_SUMMARIZE_MODEL: qwen3:14b
+      # Off by default: expansion costs an LLM round trip on EVERY search, and
+      # it is a quality trade, not a free win. Turn it on and measure.
+      EXPAND_QUERIES: "false"
+
+      # ── Fast paths and fallbacks ───────────────────────────────────────────
+      KIWIX_URL: http://kiwix:8080
+      # Tier 4. Off everywhere below this rung; on here because the full stack
+      # is the one that should exhaust every option before giving up.
+      WAYBACK_ENABLED: "true"
+
+      # ── Events ─────────────────────────────────────────────────────────────
+      NATS_URL: nats://nats:4222
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    read_only: true
+    mem_limit: 512m
+    cpus: 2.0
+
 networks:
   fetch-net:
   firecrawl-net:
@@ -331,26 +468,52 @@ networks:
 volumes:
   ollama-data:
 
+# ── Orthogonal extras, deliberately NOT rungs ─────────────────────────────────
+#
+# These are not on the ladder because they are not "more of the same stack" —
+# each is an independent axis you either need or do not.
+#
+# SOLVER (Byparr / FlareSolverr) — challenge-solving tier.
+#   Buys you: pages behind Cloudflare-style interstitials, on the domains that
+#   serve them. Only ever reached when a tier reports `challenge_detected`.
+#   Costs you: another browser container, and a solver is a fetch path that
+#   deliberately bypasses the public-address guard on its own address.
+#   Enable: run one, then set SOLVER_URL and SOLVER_ENABLED=true on searxng-mcp.
+#
+# HISTER — browsing-history fast path.
+#   A separate service (a browser-extension-fed history index), not shipped in
+#   this repo. When HISTER_URL and HISTER_TOKEN are both set, fetch_url queries
+#   it BEFORE the tier cascade and serves login-walled or JS-heavy pages already
+#   rendered by the extension. Leave unset to disable, at zero overhead.
+#
+# OTEL — traces and metrics.
+#   Set OTEL_EXPORTER_OTLP_ENDPOINT on searxng-mcp and point it at a collector.
+#   No container here, because which collector you run is entirely your choice.
+#
 # ── MCP client configuration ──────────────────────────────────────────────────
 #
-# Full env block for your MCP client config (all services wired):
+# Point your MCP client at http://localhost:3001/mcp (streamable HTTP), sending
+# SEARXNG_MCP_AUTH_TOKEN as `Authorization: Bearer <token>` if you set one.
+#
+# To run searxng-mcp on the host instead, drop the searxng-mcp service and use
+# the loopback-published ports:
 #
 #   SEARXNG_URL             http://localhost:8081
 #   CACHE_URL               redis://localhost:6381
 #   FIRECRAWL_URL           http://localhost:3002
+#   FIRECRAWL_API_VERSION   v2
 #   FIRECRAWL_API_KEY       placeholder-local
 #   CRAWL4AI_URL            http://localhost:11235
+#   CRAWL4AI_API_TOKEN      <same value as above>
 #   RERANKER_URL            http://localhost:8787
 #   OLLAMA_URL              http://localhost:11434
 #   OLLAMA_EXPAND_MODEL     qwen3:4b
 #   OLLAMA_SUMMARIZE_MODEL  qwen3:14b
 #   EXPAND_QUERIES          false
 #   KIWIX_URL               http://localhost:8292
-#   WAYBACK_ENABLED         false
+#   WAYBACK_ENABLED         true
 #   ADBLOCK_PROXY_URL       http://localhost:8118
 #   NATS_URL                nats://localhost:4222
-#   HISTER_URL              http://localhost:4434   # optional — browsing-history fast path
-#   HISTER_TOKEN            <bearer token>          # optional — required when HISTER_URL is set
 #   CACHE_TTL_SECONDS       3600
 #   FETCH_CACHE_TTL_SECONDS 86400
 #   RERANK_RECENCY_WEIGHT   0.15
