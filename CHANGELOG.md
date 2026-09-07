@@ -61,6 +61,36 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **`CONTRIBUTING.md` rewritten for what it omitted (vikunja#711).** Its age was not the
+  defect — Node 20+, pnpm 10.30.3+, and the build/test/lint commands were all still correct.
+  What was missing: the coverage floor a contributor must not drop below and the provenance
+  convention attached to it, that `pnpm test` runs `--typecheck` so type errors fail the suite,
+  that `CHANGELOG.md` is expected to be updated per PR, and any answer at all to "what should I
+  work on".
+
+  On that last point it now says plainly that planning is tracked outside GitHub and directs
+  proposals and questions to **GitHub Discussions** (newly enabled), with bug reports staying in
+  Issues. An unexplained empty Issues tab reads as abandonment; an explained one does not.
+
+  It also drops a broken instruction: `docker run -d -p 8081:8080 searxng/searxng` was offered as
+  the quick local setup, and a stock SearXNG serves HTML only. Every searxng-mcp call requests
+  `format=json` and gets a 403, which looks like an auth failure rather than a missing output
+  format. It now points at the compose ladder, whose `examples/searxng/settings.yml` enables it.
+
+  The commit-convention section no longer claims uniform history. Measured: of the last 100
+  non-merge, non-squash commits 95 conform, and the 5 that do not are all pre-v3.4 — while
+  squash-merge commits on `main` carry the PR title by construction.
+
+- **Community health files added (vikunja#709)** — `CODE_OF_CONDUCT.md` (Contributor Covenant
+  2.1), `.github/PULL_REQUEST_TEMPLATE.md`, `.github/CODEOWNERS` and `.github/dependabot.yml`
+  (npm + github-actions, weekly, dev deps grouped, semver-major ignored). Repo settings: GitHub
+  Discussions enabled, Wiki and Projects disabled (both were on and empty), homepage set to the
+  npm package page.
+
+  The community-profile API's `issue_template: MISSING` is a **false positive** for
+  directory-based templates and was deliberately not "fixed" — the same field reports MISSING for
+  two repositories sitting at 100% health.
+
 - **README Quick Start leads with the ladder**, as a four-row table, and quotes the capability
   line the minimal command actually prints. The previous text claimed "everything but `tier3` and
   `wayback` reports `off`" — measurement says `wayback` is `off` (it is a feature flag, default
