@@ -62,9 +62,17 @@ for (const url of URLS) {
     console.error(`FAIL ${url} -> only ${bytes} bytes, refusing to vendor it`);
     process.exit(1);
   }
-  await writeFile(join(OUT, name), text, "utf8");
-  entries.push({ name, bytes, hash: sha256(text) });
-  console.log(`fetched ${name}: ${bytes} bytes, ${sha256(text)}`);
+  const dest = join(OUT, name);
+  await writeFile(dest, text, "utf8");
+  // Hash what is ON DISK, not the string we meant to write. SHA256SUMS is the
+  // build's integrity assertion, so it has to attest to the bytes the Dockerfile
+  // will actually COPY — a short write here would otherwise be recorded as the
+  // checksum of the intended content. (The build would still fail closed on the
+  // mismatch, which is the right direction, but it would fail describing the
+  // wrong thing.)
+  const written = await readFile(dest, "utf8");
+  entries.push({ name, bytes: Buffer.byteLength(written, "utf8"), hash: sha256(written) });
+  console.log(`fetched ${name}: ${bytes} bytes, ${sha256(written)}`);
 }
 
 const body = entries.map((e) => `${e.hash}  ${e.name}`).join("\n");

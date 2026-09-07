@@ -50,7 +50,9 @@ jobs:
       # only when a hash actually moved, so a re-run inside one upstream
       # regeneration window is a no-op rather than a date-only commit.
       - name: Re-fetch upstream lists
-        run: node docker/playwright-adblock/fetch-lists.mjs
+        run: |
+          set -euo pipefail
+          node docker/playwright-adblock/fetch-lists.mjs
 
       - name: Detect change
         id: diff
@@ -122,8 +124,20 @@ jobs:
 
           # The upstream revision each list came from, so the PR body says which
           # EasyList commit this is rather than only that something changed.
+          # The `! Commit:` header is THIRD-PARTY TEXT — easylist.to writes it and
+          # it lands in a git commit message and a PR body. Shell expansion does
+          # not re-parse an expanded value, so this is not a command-injection
+          # path, but "not exploitable today" is not a reason to interpolate
+          # unvalidated remote content into a commit. Accept only a hex sha; on
+          # anything else report unknown rather than echoing what was served.
           rev() {
-            sed -n 's/^! Commit: //p' "docker/playwright-adblock/lists/$1" | head -1
+            local raw
+            raw="$(sed -n 's/^! Commit: //p' "docker/playwright-adblock/lists/$1" | head -1)"
+            if printf '%s' "$raw" | grep -qE '^[0-9a-f]{7,40}$'; then
+              printf '%s' "$raw"
+            else
+              printf 'unknown'
+            fi
           }
           EL_REV="$(rev easylist.txt)"
           EP_REV="$(rev easyprivacy.txt)"
