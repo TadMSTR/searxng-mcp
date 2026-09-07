@@ -20,7 +20,11 @@ import { fetchPage } from "./fetch.js";
 import type { FetchTuning } from "./fetch-utils.js";
 import { redactUrlCredentialsInText } from "./log.js";
 import { incCounter, recordHistogram, withSpan } from "./observability.js";
-import { formatSummaryResult, summarizePages } from "./ollama.js";
+import {
+  formatSummaryFallbackNotice,
+  formatSummaryResult,
+  summarizePages,
+} from "./ollama.js";
 import { rerankWithFallback } from "./reranker.js";
 import { searxSearch } from "./search.js";
 import {
@@ -486,7 +490,10 @@ export async function handleSearchAndSummarize({
             content: [
               {
                 type: "text" as const,
-                text: withMeta(meta, searchText + fetchedSections),
+                text: withMeta(
+                  meta,
+                  `${formatSummaryFallbackNotice(summaryResult.failure)}\n\n${searchText}${fetchedSections}`,
+                ),
               },
             ],
           },
@@ -979,7 +986,7 @@ export function registerTools(server: McpServer): void {
 
   server.tool(
     "search_and_summarize",
-    "Search, rerank, fetch top results, then synthesize a summary with citations using a local LLM (qwen3:14b). Returns a structured answer with source attribution. Falls back to raw fetched content if Ollama is unavailable. Best for deep research where you want pre-digested synthesis rather than raw pages.",
+    "Search, rerank, fetch top results, then synthesize a summary with citations using a local LLM (`OLLAMA_SUMMARIZE_MODEL`). Returns a structured answer with source attribution. If the LLM is unavailable it falls back to raw fetched content, and that fallback is always announced by a leading '--- summarization unavailable (<kind>: <detail>) --- ' marker: if you do not see that marker, what you received is a real synthesis. Best for deep research where you want pre-digested synthesis rather than raw pages.",
     {
       query: z.string().describe("Research query to search for and summarize"),
       fetch_count: z.coerce

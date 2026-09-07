@@ -18,6 +18,7 @@ const CONFIG_ENV = [
   "FIRECRAWL_ENABLED",
   "CRAWL4AI_ENABLED",
   "CRAWL4AI_URL",
+  "OLLAMA_SUMMARIZE_TIMEOUT_MS",
 ];
 
 function clearConfigEnv() {
@@ -333,5 +334,35 @@ describe("tierConfigured", () => {
     process.env.CRAWL4AI_ENABLED = "false";
     const { tierConfigured } = await import("../src/config.js");
     expect(tierConfigured().tier3).toBe(true);
+  });
+});
+
+// vikunja#703 Phase 3 — the summarize budget was the one *_TIMEOUT_MS in the
+// codebase that was not env-configurable, hardcoded at 45000 in ollama.ts. It
+// has to cover a cold model load, so an operator must be able to raise it
+// without a rebuild.
+describe("OLLAMA_SUMMARIZE_TIMEOUT_MS", () => {
+  it("defaults to 120000 when unset", async () => {
+    const { OLLAMA_SUMMARIZE_TIMEOUT_MS } = await import("../src/config.js");
+    expect(OLLAMA_SUMMARIZE_TIMEOUT_MS).toBe(120000);
+  });
+
+  it("parses a valid custom value", async () => {
+    process.env.OLLAMA_SUMMARIZE_TIMEOUT_MS = "180000";
+    const { OLLAMA_SUMMARIZE_TIMEOUT_MS } = await import("../src/config.js");
+    expect(OLLAMA_SUMMARIZE_TIMEOUT_MS).toBe(180000);
+  });
+
+  it("falls back to the default on a non-numeric value (never NaN)", async () => {
+    process.env.OLLAMA_SUMMARIZE_TIMEOUT_MS = "two minutes";
+    const { OLLAMA_SUMMARIZE_TIMEOUT_MS } = await import("../src/config.js");
+    expect(OLLAMA_SUMMARIZE_TIMEOUT_MS).toBe(120000);
+    expect(Number.isNaN(OLLAMA_SUMMARIZE_TIMEOUT_MS)).toBe(false);
+  });
+
+  it("falls back to the default on a non-positive value", async () => {
+    process.env.OLLAMA_SUMMARIZE_TIMEOUT_MS = "0";
+    const { OLLAMA_SUMMARIZE_TIMEOUT_MS } = await import("../src/config.js");
+    expect(OLLAMA_SUMMARIZE_TIMEOUT_MS).toBe(120000);
   });
 });
