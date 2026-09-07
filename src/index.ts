@@ -14,6 +14,7 @@ import { initEvents, shutdownEvents } from "./events.js";
 import { createHttpRequestListener } from "./http-transport.js";
 import { logError, logWarn } from "./log.js";
 import { initObservability, shutdownObservability } from "./observability.js";
+import { registerResources } from "./resources.js";
 import { registerTools } from "./tools.js";
 import { VERSION } from "./version.js";
 
@@ -57,6 +58,9 @@ const createSearxngServer = () => {
     version: VERSION,
   });
   registerTools(server);
+  // Additive: the seven tools are unchanged. Note these are NOT visible through
+  // scoped-mcp, which proxies tools only — see the header of resources.ts.
+  registerResources(server);
   return server;
 };
 

@@ -25,6 +25,37 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **Two MCP Resources (vikunja#707)** — `config://searxng-mcp` and `stats://domains`. Additive:
+  all seven tools are unchanged, and `resources/list` was verified live alongside a `tools/list`
+  still returning 7.
+
+  `config://searxng-mcp` is built from an **allowlist**, deliberately. Assembling it by dumping
+  config and stripping known secrets would leak the next credential someone adds, and there are
+  already seven in `config.ts`. Secrets are reported as a boolean — configured or not — and every
+  emitted URL goes through `redactUrlCredentials`, since Basic Auth in `SEARXNG_URL` and an inline
+  password in `CACHE_URL` are both supported. `credentials_configured` reads the environment
+  directly rather than the config exports, so `FIRECRAWL_API_KEY`'s `placeholder-local` default
+  cannot report a credential the operator never set.
+
+  Verified on the live wire, not just in unit tests: a server started with credentialed
+  `SEARXNG_URL`/`CACHE_URL` and four sentinel secrets returned a payload containing **none** of
+  them. The guarantee is mutation-tested — four deliberate leaks were introduced (disable URL
+  redaction, emit the raw auth token, add a new field carrying an API key, aggregate despite an
+  unavailable database) and all four were caught. The "new field" case is why the test scans the
+  whole serialised payload for each sentinel rather than checking named fields.
+
+  `stats://domains` mirrors the aggregate projection of the `domain_stats` tool, including its
+  `unavailable` branch: a database that could not be read reports `available: false` with the
+  reason, never a count. Confirmed live — with no cache backend it returns
+  `"domain database not configured (no cache backend)"` rather than zero domains (vikunja#688).
+
+  **Not reachable through scoped-mcp.** Established before building, per the plan. scoped_mcp
+  1.14.0's `mcp_proxy.py` touches exactly `client.list_tools()` and `client.call_tool()` — a tool
+  re-registration model, not a JSON-RPC passthrough — and `grep -rln "list_resources\|read_resource"`
+  over its tree returns zero files. So these ship value to Claude Desktop and LibreChat but not to
+  agents behind that proxy. Recorded in `src/resources.ts` and the README rather than left for the
+  next reader to rediscover.
+
 - **Property-based testing with `fast-check`, and the coverage gate raised to 90 lines /
   85 branches (vikunja#706)** — matching the gate `ihor-sokoliuk/mcp-searxng` runs.
 

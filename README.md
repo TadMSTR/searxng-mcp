@@ -119,6 +119,27 @@ For a full local topology including Firecrawl, Crawl4AI, Ollama, Kiwix, the adbl
 
 Full parameter reference: [`docs/tools.md`](docs/tools.md).
 
+## Resources
+
+Two read-only MCP Resources, additive to the tools above.
+
+| URI | What it returns |
+|-----|-----------------|
+| `config://searxng-mcp` | Effective configuration and capability state — which backing services are wired, the three-state capability line, behaviour switches and tunables, and which credentials are configured. |
+| `stats://domains` | Aggregate view of the domain capability database, mirroring the aggregate mode of `domain_stats`. Reports `available: false` with a reason when the database cannot be read, which is **not** the same as it being empty. |
+
+`config://searxng-mcp` never includes a credential value. Secrets are reported as a
+boolean — configured or not — and every URL is stripped of inline userinfo before it is
+emitted, because Basic Auth in `SEARXNG_URL` and an inline password in `CACHE_URL` are both
+supported. The payload is built from an allowlist rather than by dumping config and removing
+known secrets, so a newly-added field cannot leak by default.
+
+**These are not visible through `scoped-mcp`.** Verified against scoped_mcp 1.14.0: its
+`mcp_proxy` calls only `list_tools()` and `call_tool()` and re-registers upstream tools on its
+own server — there is no generic forwarding path, and no `resources/*` handling anywhere in its
+tree. So Resources reach direct MCP clients (Claude Desktop, LibreChat) and **not** agents behind
+that proxy. The tools are unaffected.
+
 ## Why searxng-mcp?
 
 There are a number of SearXNG MCP servers. Most wrap the search endpoint and stop there. The
