@@ -68,7 +68,7 @@ import {
   enumerateDomains,
   formatDomainAggregate,
 } from "./domain-stats.js";
-import { redactUrlCredentials } from "./log.js";
+import { redactUrlCredentials, redactUrlCredentialsInText } from "./log.js";
 import { VERSION } from "./version.js";
 
 export const CONFIG_RESOURCE_URI = "config://searxng-mcp";
@@ -159,7 +159,18 @@ export async function buildDomainStatsResource() {
   if (unavailable) {
     return {
       available: false as const,
-      unavailable,
+      // Scrubbed on the way out. `unavailable` comes from
+      // describeTransportFailure, which interpolates the raw `err.message` —
+      // and an ioredis/undici failure can carry the connection URL, which for
+      // a cache backend means an inline password. The tool path returns the
+      // same string, but a Resource is readable without the model choosing to
+      // call anything, so the sink is wider here.
+      //
+      // Redacted at the sink rather than at the throw site, which is the
+      // convention log.ts already documents: error text can originate from any
+      // library, and this class of leak has been introduced before by guarding
+      // one path and missing the others.
+      unavailable: redactUrlCredentialsInText(unavailable),
       note:
         "This is NOT a report that the database is empty — no count was " +
         "obtained. Check the cache backend is reachable and its credentials " +

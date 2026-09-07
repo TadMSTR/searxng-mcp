@@ -60,14 +60,21 @@ services:
       # Generate with: openssl rand -hex 32
       # Unset is not fatal at this rung, but SearXNG will warn.
       SEARXNG_SECRET: "${SEARXNG_SECRET:-}"
+    # NO cap_add. Measured 2026-09-07 against a green no-hardening baseline:
+    # this image runs fine on `cap_drop: [ALL]` alone — container `running`,
+    # `GET /` 200, and `?format=json` 200.
+    #
+    # An earlier draft of this file granted SETUID and SETGID here, reasoning by
+    # analogy from `cache` and `firecrawl-redis` (whose entrypoints DO drop
+    # privileges with setpriv and do need them). SearXNG's does not, and the
+    # comment asserted a verification that had never been run. Two capabilities
+    # were being handed to an adopter's container for no reason.
+    #
+    # The first attempt to check it was also wrong and is worth recording:
+    # both arms failed identically with `"/etc/searxng/settings.yml" is not a
+    # valid file` because no config was mounted. A comparison whose control is
+    # already failing tells you nothing — mount ./searxng before re-testing.
     cap_drop: [ALL]
-    cap_add:
-      # SearXNG's entrypoint drops privileges to the `searxng` user. Without
-      # these two it exits at startup on a setpriv/su-exec failure — the same
-      # finding recorded against `cache` and `firecrawl-redis` in rung 4, which
-      # was found by RUNNING the container, not by reading the diff (vikunja#693).
-      - SETUID
-      - SETGID
     security_opt: [no-new-privileges:true]
     mem_limit: 1g
     cpus: 2.0

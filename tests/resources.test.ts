@@ -219,6 +219,30 @@ describe("stats://domains", () => {
     expect(r.note).toContain("NOT a report that the database is empty");
   });
 
+  it("redacts credentials out of the unavailable reason", async () => {
+    // describeTransportFailure interpolates the raw err.message, and an ioredis
+    // failure can carry the connection URL — inline password and all. This
+    // resource is readable by every connected client.
+    vi.resetModules();
+    vi.doMock("../src/domain-stats.js", () => ({
+      enumerateDomains: async () => ({
+        records: [],
+        truncated: false,
+        unavailable:
+          "domain database unreachable: ECONNREFUSED (connect to redis://:hunter2@cache.internal:6379 failed)",
+        staleKeys: [],
+      }),
+      aggregateDomainStats: () => ({}),
+      formatDomainAggregate: () => "",
+    }));
+    const { buildDomainStatsResource } = await import("../src/resources.js");
+    const r = await buildDomainStatsResource();
+    expect(JSON.stringify(r)).not.toContain("hunter2");
+    // The diagnosis must survive — a wholly redacted reason answers nothing.
+    expect(r.unavailable).toContain("ECONNREFUSED");
+    expect(r.unavailable).toContain("cache.internal");
+  });
+
   it("returns the aggregate when the database is readable", async () => {
     vi.resetModules();
     const fakeAggregate = {
