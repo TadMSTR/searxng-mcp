@@ -1,0 +1,70 @@
+# OSSF Scorecard — supply chain risk scoring.
+#
+# TREAT THE SCORE AS A MEASUREMENT, NOT A TARGET. Several checks assess things
+# this repository deliberately does not do (signed releases, branch protection
+# on a single-maintainer project), and chasing the number would mean adopting
+# process for the sake of a metric. The first result is recorded verbatim in the
+# PR that added this workflow, as a baseline — the same discipline the coverage
+# floor in vitest.config.ts is under (vikunja#680): record what was measured,
+# with a date, so a later reader can tell a deliberate value from a stale one.
+#
+# What it is genuinely good at is catching regressions in things we DO care
+# about: an unpinned action appearing in a workflow, a dependency update path
+# going stale, a token gaining more scope than it needs.
+name: Scorecard
+
+on:
+  branch_protection_rule:
+  push:
+    branches: [main]
+  schedule:
+    # Weekly, offset from codeql.yml so the two do not contend.
+    - cron: "41 5 * * 0"
+
+permissions: read-all
+
+jobs:
+  analysis:
+    name: Scorecard analysis
+    runs-on: ubuntu-latest
+    permissions:
+      # Upload the SARIF result to the Security tab.
+      security-events: write
+      # Needed by publish_results below: the action exchanges this for an OIDC
+      # token so the public API can attest the result came from this repository
+      # rather than being self-reported.
+      id-token: write
+      contents: read
+      actions: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Run analysis
+        uses: ossf/scorecard-action@2d1146689b8cda280b9bc96326124645441f03bc # v2.4.4
+        with:
+          results_file: results.sarif
+          results_format: sarif
+          # Publishes to the public OpenSSF API, which is what makes the score
+          # visible to anyone evaluating this project without having to run
+          # Scorecard themselves. That is the entire point of enabling it here —
+          # a private score answers a question nobody asked.
+          publish_results: true
+
+      # Retained separately from the SARIF upload because the Security tab keeps
+      # only the latest result, and comparing two runs is how you tell a real
+      # regression from a check whose scoring changed upstream.
+      - name: Upload artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: SARIF file
+          path: results.sarif
+          retention-days: 5
+
+      - name: Upload to code-scanning
+        uses: github/codeql-action/upload-sarif@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4.37.9
+        with:
+          sarif_file: results.sarif
