@@ -5,6 +5,16 @@ on:
     tags:
       - "v*"
 
+# Least privilege by default. Without a top-level `permissions:` block GitHub
+# hands the job whatever the repository default is, which is broader than any
+# job here needs — OSSF Scorecard's Token-Permissions check scored this repo
+# 0/10 on exactly that, naming all three of ci.yml, release.yml and
+# docker-publish.yml (measured 2026-09-07, scorecard v5.3.0). Jobs that need
+# more declare it themselves at the job level, where it is visible next to the
+# step that uses it.
+permissions:
+  contents: read
+
 jobs:
   build:
     name: Build

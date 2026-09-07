@@ -23,6 +23,29 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   ladder was ported forward from them — both predated #690, #694 and #697, and each service block
   was re-derived against current reality.
 
+### Security
+
+- **CodeQL and OSSF Scorecard workflows added (vikunja#705)**, both SHA-pinned. CodeQL scans
+  `javascript-typescript` **and** `actions` — the repo has five workflows holding a GHCR token, an
+  npm publish token and `packages: write`, and adding CI surface without scanning CI surface is
+  how an injection into a `run:` block goes unnoticed.
+
+- **Top-level `permissions: contents: read` added to `ci.yml`, `release.yml` and
+  `docker-publish.yml`.** Scorecard's Token-Permissions check scored the repo **0/10** naming all
+  three (measured 2026-09-07, scorecard v5.3.0): with no top-level block, every job without its
+  own `permissions:` ran with the repository default, which is broader than any of them needs.
+  Affected jobs are `ci.yml`'s three and `release.yml`'s `build` — all of which only check out,
+  build, test and upload an artifact. Jobs that already declared their own permissions are
+  unchanged, since a job-level block replaces the top-level one outright rather than merging.
+
+- **`docker/reranker/Dockerfile` base image pinned by digest** —
+  `python:3.12-slim@sha256:78387bc…e184ea`, the repo's one unpinned container image per
+  Scorecard's Pinned-Dependencies check (9/10). Digest verified independently with
+  `docker buildx imagetools inspect`, and the image rebuilt to confirm. The pip versions in that
+  file were already pinned; `--require-hashes` was not adopted, because a fully hash-pinned
+  requirements set including transitive dependencies is disproportionate here and would rot
+  faster than it protects.
+
 ### Fixed
 
 - **`CACHE_URL=""` and `RERANKER_URL=""` now actually disable the call, instead of only changing
