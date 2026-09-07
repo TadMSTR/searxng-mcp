@@ -1,0 +1,44 @@
+# Dependabot configuration.
+#
+# Two ecosystems, both weekly. The shape deliberately mirrors what the wider MCP
+# server ecosystem converges on rather than inventing something local.
+#
+# Majors are ignored on purpose, for every dependency. A semver-major bump is a
+# reading task, not a merge task, and this repo has a concrete reason to believe
+# that: `fast-uri` carried an override floor written against a 3.x advisory, the
+# package moved into 4.x, and the vulnerable range [4.0.0, 4.1.3) lived on the
+# far side of that major — so tracking latest across the boundary walked us into
+# a *new* CVE rather than out of the old one (CHANGELOG.md, the "three stale
+# override floors raised" entry).
+#
+# Dependabot will still open minor and patch PRs, including security patches,
+# which is where the routine value is. To take a major, do it by hand and read
+# the upstream changelog first.
+version: 2
+
+updates:
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    # Dev dependencies get batched into one PR. There are a lot of them
+    # (vitest, biome, typescript, @types/*) and they update often; one PR per
+    # bump would drown the runtime-dependency PRs that actually need reading.
+    groups:
+      dev-dependencies:
+        dependency-type: "development"
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    # Actions are SHA-pinned in this repo (see .github/workflows/*.yml).
+    # Dependabot understands SHA pins and will bump the SHA while updating the
+    # trailing version comment, so pinning does not cost us update coverage.
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
