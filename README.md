@@ -28,7 +28,13 @@ What works in this configuration: `search` returns ranked results, and `fetch_ur
 `search_and_fetch` return extracted page content via tier 3 (raw HTTP fetch + Readability, wholly
 in-process). What does not: semantic reranking (results keep SearXNG's ordering), query expansion
 and `search_and_summarize` (no LLM), caching (every call is live), JS-heavy page rendering, and
-offline serving. The startup capability line tells you which of these are off.
+offline serving.
+
+The startup capability line reports three states per capability, not two:
+`on` (self-contained — nothing remote has to work for it to be true), `unverified` (configured,
+but this process has never contacted the backend), and `off` (not configured). Nothing probes at
+startup, so `unverified` is not a health failure — it's the honest absence of a health claim, not
+an error. In this minimal configuration, everything but `tier3` and `wayback` reports `off`.
 
 `FIRECRAWL_ENABLED=false` is what makes it a *clean* minimal run rather than merely a working one:
 `FIRECRAWL_URL` defaults to `http://localhost:3002`, so without the switch every fetch first
@@ -52,6 +58,18 @@ Tags, uid, and provenance verification: [Deployment](docs/deployment.md#containe
 
 The reranker ships in this repo — `cd docker/reranker && docker compose up`, or pull `ghcr.io/tadmstr/searxng-mcp-reranker`. It is CPU-only, needs no API key, and has the model baked in so there is no cold start. See [`docker/reranker/README.md`](docker/reranker/README.md).
 
+Two adblocking sidecars are also published as images, one per fetch-tier group:
+
+- `ghcr.io/tadmstr/searxng-mcp-adblock-proxy` — ad/tracker filtering for tiers 2 and 3. It is an
+  **open forward proxy with no authentication**, so loopback or a private network only — see
+  [`docker/adblock-proxy/README.md`](docker/adblock-proxy/README.md) for placement.
+- `ghcr.io/tadmstr/searxng-mcp-playwright-adblock` — EasyList/EasyPrivacy filtering for
+  Firecrawl v2's renderer (tier 1). This is an **upgrade** of upstream's existing
+  `AD_SERVING_DOMAINS` token list, not a new capability — that list still applies underneath. It
+  targets the **v2** renderer only; `docker/puppeteer-adblock/` covers v1 and does nothing on a
+  v2 deployment (the default, `FIRECRAWL_API_VERSION=v2`). See
+  [`docker/playwright-adblock/README.md`](docker/playwright-adblock/README.md).
+
 For a full local topology including Firecrawl, Crawl4AI, Ollama, Kiwix, the adblock proxy, and NATS, see [`docker-compose.full.yml`](docker-compose.full.yml).
 
 ## Tools
@@ -60,7 +78,7 @@ For a full local topology including Firecrawl, Crawl4AI, Ollama, Kiwix, the adbl
 |------|--------------|
 | `search` | Search via SearXNG with local ML reranking, plus SearXNG's own direct answers, infoboxes and suggestions. |
 | `search_and_fetch` | Search, rerank, then fetch full content of the top result(s) through the fetch cascade. |
-| `search_and_summarize` | Search, fetch, then synthesize a cited summary via Ollama. Falls back to raw content if Ollama is absent. |
+| `search_and_summarize` | Search, fetch, then synthesize a cited summary via Ollama. On failure, falls back to raw fetched content led by an explicit `summarization unavailable (<kind>: <detail>)` marker — no marker means a real synthesis. |
 | `fetch_url` | Fetch and extract readable markdown from any public URL, via fast paths or the fetch cascade. |
 | `crawl_site` | Crawl a site and return a URL/title/snippet manifest. Page content is cached, so follow-up `fetch_url` calls are free. |
 | `clear_cache` | Purge the search, fetch or crawl cache. |
@@ -87,7 +105,8 @@ differentiators here are in what happens *after* the search:
 
 **Only SearXNG is required.** Everything in the table above degrades gracefully: with nothing
 else deployed, `fetch_url` still returns extracted content from the in-process tier 3, and the
-startup capability line tells you exactly which features are off.
+startup capability line tells you exactly what's configured, what's configured but not yet
+verified, and what's off — see [Quick Start](#quick-start) above.
 
 ## Architecture
 
