@@ -120,6 +120,83 @@ jobs:
         if: always()
         run: docker logs sxng-ci || true
 
+  # ── playwright-adblock ──────────────────────────────────────────────────────
+  # A separate job, not a step in `docker` above, so a failure here reads as
+  # "the adblock sidecar broke" rather than "the image build broke". They are
+  # different images with different failure modes.
+  playwright-adblock:
+    name: playwright-adblock (reproducible build)
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      # The filter lists are vendored (vikunja#716), so NOTHING in this build may
+      # contact easylist.to.
+      #
+      # Asserting that with `--network none` would be the wrong test, and it is
+      # worth saying why: the `npm ci` step in this Dockerfile genuinely needs the
+      # npm registry, so an offline build fails for a reason that has nothing to
+      # do with the property under test — it would be red whether or not the
+      # vendoring worked. Blackholing exactly one host is the scoped assertion. It
+      # fails if anything reaches easylist.to and passes only because nothing
+      # does. Verified two-sided before it was committed: the pre-vendoring
+      # Dockerfile FAILS this build, this one passes.
+      #
+      # This gate is the reason the property stays true. The v3.28.0 release
+      # failed on the old build-time fetch and needed a re-run, and this image
+      # sits in front of a real security control (verify-ssrf-guard.sh) — a build
+      # that flakes for unrelated network reasons is how a genuine guard failure
+      # gets re-run past.
+      - name: Builds without reaching easylist.to
+        run: |
+          set -euo pipefail
+          docker build --add-host easylist.to:127.0.0.1 \
+            -t playwright-adblock:ci docker/playwright-adblock/
+
+      # A green build only proves the checksums matched. This asserts the lists
+      # are actually RULES — the failure this whole subsystem exists to prevent
+      # is an adblocker reporting success while blocking nothing, and a file that
+      # passes `sha256sum -c` can still be a list nobody can parse.
+      #
+      # The two `allowed` cases are the control. Without them a blocker that
+      # matched everything would look identical to one that works.
+      - name: Baked lists produce a working engine
+        run: |
+          set -euo pipefail
+          docker run --rm --entrypoint sh playwright-adblock:ci -c '
+            cd /usr/src/app/adblock && node -e "
+              const fs = require(\"node:fs\"), path = require(\"node:path\");
+              const { PlaywrightBlocker } = require(\"@ghostery/adblocker-playwright\");
+              const { Request } = require(\"@ghostery/adblocker\");
+              const d = \"/usr/src/app/adblock/lists\";
+              const files = fs.readdirSync(d).filter((f) => f.endsWith(\".txt\")).sort();
+              if (files.length === 0) throw new Error(\"no filter lists in the image\");
+              const text = files.map((f) => fs.readFileSync(path.join(d, f), \"utf8\")).join(\"\\n\");
+              const b = PlaywrightBlocker.parse(text);
+              // Both blocked URLs correspond to rules present in EasyPrivacy
+              // (||adservice.google. and ||google.com/gen_204?). If upstream ever
+              // drops them this goes red, which is the correct outcome: it means
+              // the assertion no longer describes the shipped lists.
+              const cases = [
+                [\"https://adservice.google.com/pagead.js\", true],
+                [\"https://www.google.com/gen_204?x=1\", true],
+                [\"https://example.com/app.js\", false],
+                [\"https://cdn.jsdelivr.net/npm/x.js\", false],
+              ];
+              let bad = 0;
+              for (const [url, want] of cases) {
+                const got = b.match(Request.fromRawDetails({
+                  type: \"script\", url, sourceUrl: \"https://news.example.org/\",
+                })).match;
+                console.log((got ? \"BLOCKED\" : \"allowed\") + \"  \" + url);
+                if (got !== want) { console.error(\"  ^ expected \" + (want ? \"BLOCKED\" : \"allowed\")); bad++; }
+              }
+              if (bad) throw new Error(bad + \" filter-list assertion(s) failed\");
+              console.log(\"engine OK: \" + files.length + \" list(s), \" + cases.length + \" assertions\");
+            "
+          '
+
   audit:
     name: Dependency audit
     runs-on: ubuntu-latest

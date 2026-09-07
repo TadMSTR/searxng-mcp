@@ -1,0 +1,16 @@
+# This directory is its own build context — the repository root .dockerignore
+# does not apply here. Every entry is deliberate.
+
+# Maintenance script, not a build step. It used to run inside the image
+# (`RUN node /tmp/fetch-lists.mjs`), which is exactly what vikunja#716 removed;
+# excluding it from the context means a future COPY cannot quietly restore that
+# coupling without also editing this file.
+fetch-lists.mjs
+
+# Acceptance test and docs — run and read from the repo, never shipped.
+verify-ssrf-guard.sh
+README.md
+.dockerignore
+
+# lists/ is NOT excluded. The Dockerfile copies it, and the build fails at
+# `sha256sum -c` if it is missing — loudly, which is the intended failure.

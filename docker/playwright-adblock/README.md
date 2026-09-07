@@ -71,10 +71,10 @@ Both return 200. Both render the page. Both block ads.
 | `ADBLOCK_FILTERS_URL` | **unset** | Opt in to fetching lists at runtime, comma-separated |
 | `ADBLOCK_REFRESH_HOURS` | `168` | Refresh interval — only applies when fetching |
 
-Filter lists are **baked into the image** at build time and parsed from disk, so
-startup needs no network. `ADBLOCK_FILTERS_URL` is deliberately not set as an
-image default: doing so would mean the baked lists were never used, with the
-opt-in switch defeated by its own default.
+Filter lists are **baked into the image** and parsed from disk, so startup needs
+no network. `ADBLOCK_FILTERS_URL` is deliberately not set as an image default:
+doing so would mean the baked lists were never used, with the opt-in switch
+defeated by its own default.
 
 Baking is not just an optimisation. Fetching the lists over TLS at startup
 crashed the service outright in testing — undici threw
@@ -83,6 +83,47 @@ asynchronous and so cannot be caught by the promise around the fetch. A
 published image that renders untrusted pages must not have a startup path that
 a third-party CDN hiccup can kill. Same reasoning as vendoring FlashRank's model
 into the reranker in v3.25.0.
+
+## Filter lists
+
+`lists/easylist.txt` and `lists/easyprivacy.txt` are **vendored** — committed to
+this repository, with `lists/SHA256SUMS` asserted by the Dockerfile. Nothing in
+the build downloads them.
+
+They used to be fetched by a `RUN node fetch-lists.mjs` step, which meant two
+builds of the same commit could produce different images and put easylist.to's
+uptime on the release path. The v3.28.0 release failed on exactly that step and
+needed a re-run (vikunja#716). The re-run is the part that mattered: this image
+fronts a real security control, and a build that flakes for unrelated network
+reasons is how a genuine `verify-ssrf-guard.sh` failure gets re-run past.
+
+**Refreshing them:**
+
+```bash
+node docker/playwright-adblock/fetch-lists.mjs   # rewrites lists/ and SHA256SUMS
+```
+
+`.github/workflows/adblock-lists-refresh.yml` does this weekly and opens a PR.
+Note that PR has **no CI checks** — GitHub does not trigger workflows for a PR
+opened with `GITHUB_TOKEN` — so the workflow runs the build and engine
+assertions itself before opening it. Read the workflow run, not the checks.
+
+Expect header-only churn: upstream regenerates `! Version` / `! Last modified` /
+`! Commit` roughly every ten minutes, so a diff is not by itself evidence that
+any rule changed. Each list's `! Commit:` line records the exact upstream
+revision it came from.
+
+**Cost, measured 2026-09-07:** 2.07 MB + 1.50 MB = **3.41 MB** in the working
+tree, about 1.1 MB per refresh in git history once zlib-compressed. (A figure of
+1.12 MB circulated during planning; that was the *gzipped wire size* — easylist.to
+serves these compressed, so `Content-Length` understates the file by ~2.9×.)
+
+**Why not fetch at container start.** That is what `ADBLOCK_FILTERS_URL` already
+offers as an opt-in, and making it the default would reintroduce the startup
+crash above. `docker/adblock-proxy` — the sibling image — takes that opposite
+approach and defaults the URL, so the two are independently non-reproducible in
+opposite directions. That asymmetry is deliberate for now, not an oversight:
+only this image sits in front of an SSRF guard. Tracked separately.
 
 ## Bumping the base image
 
