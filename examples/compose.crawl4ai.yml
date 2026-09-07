@@ -1,0 +1,186 @@
+# ── RUNG 2 of 4 — crawl4ai ────────────────────────────────────────────────────
+#
+# Rung 1 plus a cache and a real tier-2 fetcher. THIS IS THE RUNG TO START AT if
+# Firecrawl is more than you want to run — Crawl4AI renders JavaScript, needs no
+# API key, and costs one container instead of three.
+#
+#   Containers   4  (rung 1's two, plus cache and crawl4ai)
+#   RAM          ~6 GB total  (crawl4ai alone is capped at 4g below)
+#   GPU          none
+#   Disk         ~3 GB of images — crawl4ai ships a browser
+#
+# WHAT CHANGES FROM RUNG 1
+#   `fetch_url` on JS-heavy pages   now works — tier 2 renders; tier 3 could not
+#   caching                          now real — searches and fetched pages persist
+#                                    across restarts, and `clear_cache` does something
+#   `domain_stats`                   now durable — the capability DB survives a restart
+#   `crawl_site`                     still sitemap/BFS (the Firecrawl crawl is rung 4)
+#   `search_and_summarize`           still NO — needs an LLM, which is rung 4
+#   PDFs                             still NO — that is Firecrawl v2, rung 4
+#
+# THE CAPABILITY LINE THIS RUNG PRINTS — measured 2026-09-07:
+#
+#   capabilities on=tier3 unverified=tier2,cache \
+#     off=tier1,reranker,llm,kiwix,hister,solver,wayback,otel,nats
+#
+# READ `unverified` CORRECTLY. It means "configured, and this process has not
+# contacted it" — nothing probes at startup, so it is the honest absence of a
+# health claim, not a warning. See src/capabilities.ts.
+#
+# `reranker` reads `off` here only because this file sets RERANKER_URL="" below.
+# Leave that line out and it would read `unverified` with no reranker deployed
+# anywhere, because RERANKER_URL has a non-empty default and no kill switch —
+# the line cannot distinguish "deployed" from "defaulted". Setting it empty is
+# what makes rung 2 and rung 3 tell themselves apart at a glance.
+#
+# MOVING UP A RUNG
+#   Add the reranker container → examples/compose.reranker.yml (rung 3).
+
+# See rung 1's note: shared project name is deliberate, so moving up a rung
+# reconciles in place instead of starting a second copy (vikunja#694).
+name: searxng-mcp
+
+services:
+  # ── Unchanged from rung 1 ───────────────────────────────────────────────────
+  searxng:
+    image: docker.io/searxng/searxng:latest # SECURITY[accepted]: latest tag — example file; pin a digest for production
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8081:8080"
+    volumes:
+      - ./searxng:/etc/searxng:ro
+    environment:
+      SEARXNG_BASE_URL: http://localhost:8081/
+      SEARXNG_SECRET: "${SEARXNG_SECRET:-}"
+    cap_drop: [ALL]
+    cap_add: [SETUID, SETGID]   # entrypoint drops privileges; see rung 1
+    security_opt: [no-new-privileges:true]
+    mem_limit: 1g
+    cpus: 2.0
+
+  # ── NEW: cache backend ──────────────────────────────────────────────────────
+  # The single largest latency win in the whole stack, and the reason this rung
+  # exists rather than starting at Crawl4AI alone.
+  cache:
+    image: docker.dragonflydb.io/dragonflydb/dragonfly:latest # SECURITY[accepted]: latest tag — example file; pin for production
+    # Drop-in compatible alternatives, if you already run one:
+    #   image: redis:7-alpine
+    #   image: valkey/valkey:8-alpine
+    restart: unless-stopped
+    # Dragonfly's entrypoint drops privileges with setpriv, so with the image's
+    # default (root) user a bare `cap_drop: [ALL]` kills it at startup with
+    # "setpriv: setresuid failed: Operation not permitted" (exit 127).
+    # Running as uid 1000 removes the need entirely: the drop is not attempted,
+    # so SETUID/SETGID are never required. Verified both ways (vikunja#693).
+    user: "1000:1000"
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    read_only: true
+    tmpfs: [/tmp]
+    mem_limit: 2g
+    cpus: 2.0
+    # --proactor_threads is not optional on a large host: Dragonfly sizes its io
+    # threads to the core count and then refuses to start if maxmemory is below
+    # 256MiB per thread. On a 32-core machine the same command line without it
+    # exits with "There are 32 threads, so 8.00GiB are required", before any
+    # hardening is involved. Found by running it (vikunja#693).
+    command: ["--proactor_threads=4", "--maxmemory=2gb", "--save_schedule="]
+    ulimits:
+      memlock: -1
+    ports:
+      # Loopback publish so a host-run searxng-mcp (npx) can use this cache too.
+      # Container-to-container traffic goes over the compose network and does
+      # not need it. 6381 rather than 6379 to stay clear of a system Redis.
+      - "127.0.0.1:6381:6379"
+
+  # ── NEW: Crawl4AI — fetch tier 2 ────────────────────────────────────────────
+  crawl4ai:
+    image: unclecode/crawl4ai:latest # SECURITY[accepted]: latest tag — example file; pin for production
+    restart: unless-stopped
+    # No `user:`: the image already runs as `appuser` (non-root).
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    # NO `read_only`, and this is a measured decision, not an omission. Three
+    # configurations were run and none is fit for a file adopters copy:
+    #
+    #   read_only + tmpfs /tmp
+    #       gunicorn worker crash-loops to FATAL —
+    #       OSError: [Errno 30] Read-only file system: '/home/appuser/.crawl4ai'
+    #   read_only + tmpfs /tmp,/home/appuser/.crawl4ai
+    #       healthy and serving, but still logs a read-only error for
+    #       '/home/appuser/.gunicorn'
+    #   read_only + tmpfs /tmp,/home/appuser
+    #       no read-only errors at all — and unhealthy and unreachable, because
+    #       masking the home directory hides something it needs
+    #
+    # Chasing writable paths one exception at a time is how you get the third
+    # case: a container that logs clean and serves nothing.
+    #
+    # The first configuration reports `running` for ~30 seconds before gunicorn
+    # gives up retrying. An earlier pass recorded it as verified on a 12-second
+    # wait. "running" is not "working".
+    mem_limit: 4g
+    cpus: 4.0
+    # Loopback publish is for debugging only — searxng-mcp reaches it by
+    # container name over the compose network, not through the host.
+    ports:
+      - "127.0.0.1:11235:11235"
+    environment:
+      # REQUIRED on crawl4ai 0.9.x — the server refuses unauthenticated requests
+      # there, and searxng-mcp surfaces that as a tier-2 failure rather than a
+      # config error. Set it here AND as CRAWL4AI_API_TOKEN on searxng-mcp
+      # below; the two must match.
+      CRAWL4AI_API_TOKEN: "${CRAWL4AI_API_TOKEN:-}"
+    # Chromium needs more than the default 64 MB of shared memory or it will
+    # crash on content-heavy pages.
+    shm_size: "1gb"
+
+  # ── searxng-mcp ─────────────────────────────────────────────────────────────
+  searxng-mcp:
+    image: ghcr.io/tadmstr/searxng-mcp:latest # SECURITY[accepted]: latest tag — example file; pin a version for production
+    restart: unless-stopped
+    depends_on:
+      - searxng
+      - cache
+      - crawl4ai
+    ports:
+      # Loopback only — see rung 1. Remove the 127.0.0.1 prefix and
+      # SEARXNG_MCP_AUTH_TOKEN stops being optional.
+      - "127.0.0.1:3001:3001"
+    environment:
+      SEARXNG_URL: http://searxng:8080
+      SEARXNG_MCP_AUTH_TOKEN: "${SEARXNG_MCP_AUTH_TOKEN:-}"
+
+      # NEW at this rung.
+      CACHE_URL: redis://cache:6379
+      CRAWL4AI_URL: http://crawl4ai:11235
+      CRAWL4AI_API_TOKEN: "${CRAWL4AI_API_TOKEN:-}"
+
+      # Still off: no Firecrawl at this rung, and FIRECRAWL_URL defaults to
+      # http://localhost:3002, so without this every fetch attempts a dead tier 1
+      # first and books the failure into the domain capability database — which
+      # then routes around a tier that was never broken, only absent.
+      FIRECRAWL_ENABLED: "false"
+
+      # Still off: no reranker container until rung 3, and RERANKER_URL defaults
+      # to http://localhost:8787. Empty string is the only way off — there is no
+      # kill switch. Leaving it defaulted makes every search issue a doomed
+      # request to a port nothing is listening on.
+      RERANKER_URL: ""
+    # The image's own healthcheck is correct from this rung up: a cache IS
+    # deployed, so /health returning 503 means something is genuinely wrong.
+    # Rung 1 has to override it; this one deliberately does not.
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    read_only: true
+    mem_limit: 512m
+    cpus: 2.0
+
+# ── MCP client configuration ──────────────────────────────────────────────────
+#
+#   SEARXNG_URL          http://localhost:8081
+#   CACHE_URL            redis://localhost:6381    # if running searxng-mcp on the host
+#   CRAWL4AI_URL         http://localhost:11235
+#   CRAWL4AI_API_TOKEN   <same value as above>
+#   FIRECRAWL_ENABLED    false
+#   RERANKER_URL         <empty>

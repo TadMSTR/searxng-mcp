@@ -4,6 +4,68 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Added
+
+- **A four-rung compose ladder in `examples/` (vikunja#710).** `compose.minimal.yml`,
+  `compose.crawl4ai.yml`, `compose.reranker.yml` and `compose.full.yml`, each a strict superset
+  of the one above it (asserted in `tests/compose-namespace.test.ts`). The graceful degradation
+  the README describes was previously only visible by reading `src/config.ts`; each rung now
+  states in its header what works, what does not, what it costs in containers and RAM, and which
+  environment variable moves you up.
+
+  Every capability line quoted in a header was **measured against the built artefact on
+  2026-09-07**, not predicted. That mattered: rungs 2 and 3 originally printed an identical line,
+  because `reranker` reported `unverified` whether or not one was deployed.
+
+  `docker-compose.example.yml` and `docker-compose.full.yml` are **removed**. Nothing on the
+  ladder was ported forward from them — both predated #690, #694 and #697, and each service block
+  was re-derived against current reality.
+
+### Fixed
+
+- **`CACHE_URL=""` and `RERANKER_URL=""` now actually disable the call, instead of only changing
+  the startup capability line.** Both variables have non-empty defaults (`redis://localhost:6381`
+  and `http://localhost:8787`) and no kill switch, so an empty string is the only way to turn
+  either off — which is what a minimal deployment must do. It set the line to `cache=off` and
+  `reranker=off` while the process kept calling: `new Valkey("")` fell through to ioredis's own
+  default of `127.0.0.1:6379`, an address that appears in no configuration anywhere, and the
+  reranker issued `fetch("/v1/rerank")` — a relative URL that throws on every search.
+
+  Both failed soft, so results stayed correct and nothing looked broken. Found by running
+  `examples/compose.minimal.yml`, which sets both to empty precisely to get a clean run, and
+  reading the container log:
+
+  ```
+  cache client error — serving live until it recovers: connect ECONNREFUSED 127.0.0.1:6379
+  reranker unavailable — using SearXNG result order: Failed to parse URL from /v1/rerank
+  ```
+
+  Same class as #695: a status field describing intent rather than observation. The new tests in
+  `tests/disable-switches.test.ts` assert the ABSENCE of a call, so each carries a positive
+  control proving the call still happens when the URL is set.
+
+- **`FIRECRAWL_API_VERSION` documentation corrected.** The README and the retired
+  `docker-compose.full.yml` both stated the default was `v2`. `src/config.ts` returns `v1`, and
+  has since the version axis was introduced — `docs/configuration.md` had it right. This matters
+  beyond a typo: the playwright adblock sidecar only applies on `v2`, so a stack that wired it
+  and relied on the documented default got no tier-1 adblocking at all, silently.
+  `examples/compose.full.yml` now sets `FIRECRAWL_API_VERSION: v2` explicitly and says why.
+
+- **`tests/compose-namespace.test.ts` scans `compose*.yml`, not just `docker-compose*.yml`.**
+  The guard that prevents a repeat of the 4.5h production reranker removal (#694) matched only
+  the legacy filename, so the four new ladder files were outside the set it checks. It went red
+  on the file count when the two old files were deleted; bumping the count alone would have
+  restored green while leaving every new file unguarded.
+
+### Changed
+
+- **README Quick Start leads with the ladder**, as a four-row table, and quotes the capability
+  line the minimal command actually prints. The previous text claimed "everything but `tier3` and
+  `wayback` reports `off`" — measurement says `wayback` is `off` (it is a feature flag, default
+  false) and `cache` and `reranker` report `unverified`, not `off`, unless explicitly emptied.
+
 ## [3.27.0] - 2026-09-06
 
 ### Fixed

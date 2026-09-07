@@ -20,7 +20,7 @@ Everything else is optional and improves a specific dimension — see [Prerequis
 
 ```bash
 SEARXNG_URL=http://localhost:8081 \
-  FIRECRAWL_ENABLED=false \
+  FIRECRAWL_ENABLED=false CACHE_URL= RERANKER_URL= \
   npx @tadmstr/searxng-mcp
 ```
 
@@ -34,19 +34,50 @@ The startup capability line reports three states per capability, not two:
 `on` (self-contained — nothing remote has to work for it to be true), `unverified` (configured,
 but this process has never contacted the backend), and `off` (not configured). Nothing probes at
 startup, so `unverified` is not a health failure — it's the honest absence of a health claim, not
-an error. In this minimal configuration, everything but `tier3` and `wayback` reports `off`.
+an error. The command above prints exactly this:
 
-`FIRECRAWL_ENABLED=false` is what makes it a *clean* minimal run rather than merely a working one:
-`FIRECRAWL_URL` defaults to `http://localhost:3002`, so without the switch every fetch first
-attempts a connection to a Firecrawl that is not there, and books the failure into the domain
-capability database.
+```
+capabilities on=tier3 unverified=none off=tier1,tier2,cache,reranker,llm,kiwix,hister,solver,wayback,otel,nats
+```
 
-**Recommended minimum** — add a cache backend, which is the single largest latency win:
+`tier3` is the only thing `on`, because it is the only capability that is true without anything
+remote working. `wayback` is `off` until you set `WAYBACK_ENABLED=true` — it is a feature flag,
+not a default.
+
+The three overrides are what make it a *clean* minimal run rather than merely a working one.
+`FIRECRAWL_URL`, `CACHE_URL` and `RERANKER_URL` all have non-empty defaults, so left alone the
+server spends the whole run talking to services that were never deployed — every fetch first
+attempts a Firecrawl that is not there and books the failure into the domain capability
+database, which then routes around a tier that was never broken, only absent.
+
+`FIRECRAWL_ENABLED=false` is a real kill switch. `CACHE_URL` and `RERANKER_URL` have none, so
+the lever is an empty string.
+
+### The compose ladder
+
+Four compose files in [`examples/`](examples/), each a strict superset of the one above it. Start
+at the rung that matches what you are willing to run; every rung's header comment states what
+works, what does not, and which environment variable moves you up.
+
+| Rung | File | Adds | Containers | RAM | Unlocks |
+|---|---|---|---|---|---|
+| 1 | [`compose.minimal.yml`](examples/compose.minimal.yml) | SearXNG + searxng-mcp | 2 | ~600 MB | The least you can run |
+| 2 | [`compose.crawl4ai.yml`](examples/compose.crawl4ai.yml) | cache, Crawl4AI | 4 | ~6 GB | JS rendering, real caching |
+| 3 | [`compose.reranker.yml`](examples/compose.reranker.yml) | reranker | 5 | ~8 GB | Relevance reranking, `min_score` |
+| 4 | [`compose.full.yml`](examples/compose.full.yml) | Firecrawl, Ollama, Kiwix, NATS, adblock | 12 | ~24 GB | Summarisation, PDFs, offline corpora |
+
+**Rung 2 is the recommended starting point** — the cache is the single largest latency win, and
+Crawl4AI gets you JavaScript rendering for one container instead of Firecrawl's three.
 
 ```bash
-docker compose -f docker-compose.example.yml up -d
-SEARXNG_URL=http://localhost:8081 CACHE_URL=redis://localhost:6381 npx @tadmstr/searxng-mcp
+cd examples
+export SEARXNG_SECRET=$(openssl rand -hex 32)
+docker compose -f compose.crawl4ai.yml up -d
 ```
+
+Moving up a rung is `docker compose -f compose.<next>.yml up -d` — all four share a compose
+project name, so compose reconciles in place rather than starting a second copy of what you
+already had.
 
 **As a container** — published to GHCR on every release:
 
@@ -67,10 +98,12 @@ Two adblocking sidecars are also published as images, one per fetch-tier group:
   Firecrawl v2's renderer (tier 1). This is an **upgrade** of upstream's existing
   `AD_SERVING_DOMAINS` token list, not a new capability — that list still applies underneath. It
   targets the **v2** renderer only; `docker/puppeteer-adblock/` covers v1 and does nothing on a
-  v2 deployment (the default, `FIRECRAWL_API_VERSION=v2`). See
+  v2 deployment. Note `FIRECRAWL_API_VERSION` defaults to **`v1`** in `src/config.ts`, so a stack
+  wiring the playwright sidecar must set it to `v2` explicitly or tier-1 adblocking silently does
+  nothing — `examples/compose.full.yml` sets it and says why. See
   [`docker/playwright-adblock/README.md`](docker/playwright-adblock/README.md).
 
-For a full local topology including Firecrawl, Crawl4AI, Ollama, Kiwix, the adblock proxy, and NATS, see [`docker-compose.full.yml`](docker-compose.full.yml).
+For a full local topology including Firecrawl, Crawl4AI, Ollama, Kiwix, the adblock proxy, and NATS, see rung 4 of the ladder above — [`examples/compose.full.yml`](examples/compose.full.yml).
 
 ## Tools
 
