@@ -5,6 +5,7 @@ past that point lives here.
 
 | Document | What is in it |
 |----------|---------------|
+| [Examples](../examples/) | The four-rung Docker Compose ladder — `compose.minimal.yml` → `compose.crawl4ai.yml` → `compose.reranker.yml` → `compose.full.yml`, each a strict superset of the one above it. Start at the rung matching what you're willing to run. |
 | [Configuration](configuration.md) | Every environment variable, and the setup for each optional backing service (SearXNG, reranker, Firecrawl, Crawl4AI, Kiwix, Hister, Valkey, Ollama). |
 | [Tools](tools.md) | Full per-tool parameter reference for all seven MCP tools, plus GitHub URL handling. |
 | [Deployment](deployment.md) | Install from npm or source, stdio and HTTP transports, HTTP authentication, and MCP client recipes for Claude Code, Claude Desktop and LibreChat. |

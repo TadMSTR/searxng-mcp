@@ -93,17 +93,50 @@ Two adblocking sidecars are also published as images, one per fetch-tier group:
 
 - `ghcr.io/tadmstr/searxng-mcp-adblock-proxy` — ad/tracker filtering for tiers 2 and 3. It is an
   **open forward proxy with no authentication**, so loopback or a private network only — see
-  [`docker/adblock-proxy/README.md`](docker/adblock-proxy/README.md) for placement.
+  [`docker/adblock-proxy/README.md`](docker/adblock-proxy/README.md) for placement. Its filter
+  lists are fetched at **runtime**, from `ADBLOCK_FILTERS_URL` (defaulted to EasyList +
+  EasyPrivacy) and reloaded on a schedule — the opposite approach from the playwright sidecar
+  below, deliberately: only that image sits in front of an SSRF guard.
 - `ghcr.io/tadmstr/searxng-mcp-playwright-adblock` — EasyList/EasyPrivacy filtering for
   Firecrawl v2's renderer (tier 1). This is an **upgrade** of upstream's existing
   `AD_SERVING_DOMAINS` token list, not a new capability — that list still applies underneath. It
   targets the **v2** renderer only; `docker/puppeteer-adblock/` covers v1 and does nothing on a
   v2 deployment. Note `FIRECRAWL_API_VERSION` defaults to **`v1`** in `src/config.ts`, so a stack
   wiring the playwright sidecar must set it to `v2` explicitly or tier-1 adblocking silently does
-  nothing — `examples/compose.full.yml` sets it and says why. See
+  nothing — `examples/compose.full.yml` sets it and says why. Its filter lists are vendored
+  **at build time** (`docker/playwright-adblock/lists/`, checksum-verified against `SHA256SUMS`
+  during the build) rather than downloaded from `easylist.to`, so the build no longer depends on
+  that host being reachable. Refresh with `node docker/playwright-adblock/fetch-lists.mjs`, or
+  let the weekly `adblock-lists-refresh.yml` workflow do it — it opens a PR that carries **no CI
+  checks** (GitHub does not trigger workflows for a PR opened with `GITHUB_TOKEN`), so review the
+  workflow run itself rather than looking for a green check; it verifies the lists before opening
+  the PR. `ADBLOCK_FILTERS_URL` still exists on this image too, as an opt-in runtime override —
+  unset by default, so the vendored lists are what ships. See
   [`docker/playwright-adblock/README.md`](docker/playwright-adblock/README.md).
 
 For a full local topology including Firecrawl, Crawl4AI, Ollama, Kiwix, the adblock proxy, and NATS, see rung 4 of the ladder above — [`examples/compose.full.yml`](examples/compose.full.yml).
+
+## Why searxng-mcp?
+
+There are a number of SearXNG MCP servers. Most wrap the search endpoint and stop there. The
+differentiators here are in what happens *after* the search:
+
+| | searxng-mcp | Typical SearXNG MCP server |
+|---|---|---|
+| SearXNG search | yes | yes |
+| ML reranking of results | local cross-encoder, reorders by relevance — ships in [`docker/reranker/`](docker/reranker/) | SearXNG's own ordering |
+| Full-page content retrieval | three-tier cascade — Firecrawl, Crawl4AI, in-process raw fetch + Readability | none, or a single raw fetch |
+| Per-domain routing | domain capability database learns which tier works per domain and skips the ones that do not | none |
+| Summarisation | Ollama, with citations back to source URLs | none |
+| Site crawling | `crawl_site` — Firecrawl crawl, sitemap fallback, optional BFS | none |
+| Caching | persistent, shared across clients (Valkey/Redis) | in-process or none |
+| Challenge handling | detection-gated solver tier, plus a Wayback fallback | none |
+| Observability | OpenTelemetry traces and metrics, NATS events, structured logs | none |
+
+**Only SearXNG is required.** Everything in the table above degrades gracefully: with nothing
+else deployed, `fetch_url` still returns extracted content from the in-process tier 3, and the
+startup capability line tells you exactly what's configured, what's configured but not yet
+verified, and what's off — see [Quick Start](#quick-start) above.
 
 ## Tools
 
@@ -134,33 +167,12 @@ emitted, because Basic Auth in `SEARXNG_URL` and an inline password in `CACHE_UR
 supported. The payload is built from an allowlist rather than by dumping config and removing
 known secrets, so a newly-added field cannot leak by default.
 
-**These are not visible through `scoped-mcp`.** Verified against scoped_mcp 1.14.0: its
-`mcp_proxy` calls only `list_tools()` and `call_tool()` and re-registers upstream tools on its
-own server — there is no generic forwarding path, and no `resources/*` handling anywhere in its
-tree. So Resources reach direct MCP clients (Claude Desktop, LibreChat) and **not** agents behind
-that proxy. The tools are unaffected.
-
-## Why searxng-mcp?
-
-There are a number of SearXNG MCP servers. Most wrap the search endpoint and stop there. The
-differentiators here are in what happens *after* the search:
-
-| | searxng-mcp | Typical SearXNG MCP server |
-|---|---|---|
-| SearXNG search | yes | yes |
-| ML reranking of results | local cross-encoder, reorders by relevance — ships in [`docker/reranker/`](docker/reranker/) | SearXNG's own ordering |
-| Full-page content retrieval | three-tier cascade — Firecrawl, Crawl4AI, in-process raw fetch + Readability | none, or a single raw fetch |
-| Per-domain routing | domain capability database learns which tier works per domain and skips the ones that do not | none |
-| Summarisation | Ollama, with citations back to source URLs | none |
-| Site crawling | `crawl_site` — Firecrawl crawl, sitemap fallback, optional BFS | none |
-| Caching | persistent, shared across clients (Valkey/Redis) | in-process or none |
-| Challenge handling | detection-gated solver tier, plus a Wayback fallback | none |
-| Observability | OpenTelemetry traces and metrics, NATS events, structured logs | none |
-
-**Only SearXNG is required.** Everything in the table above degrades gracefully: with nothing
-else deployed, `fetch_url` still returns extracted content from the in-process tier 3, and the
-startup capability line tells you exactly what's configured, what's configured but not yet
-verified, and what's off — see [Quick Start](#quick-start) above.
+**If you're behind an MCP proxy rather than talking to this server directly, verify it forwards
+`resources/*`.** Many proxies re-register upstream tools on their own server instead of
+forwarding the wire protocol generically, and drop Resources silently as a result — the tools
+still work, only the Resources go missing. See
+[Deployment](docs/deployment.md#mcp-resources-through-a-proxy) for a worked example of checking
+this.
 
 ## Architecture
 

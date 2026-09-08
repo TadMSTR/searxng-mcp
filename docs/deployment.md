@@ -164,6 +164,26 @@ mcpServers:
       CRAWL4AI_URL: http://localhost:11235
 ```
 
+## MCP Resources through a proxy
+
+Resources (`config://searxng-mcp`, `stats://domains`) are a separate JSON-RPC surface from
+tools — `resources/list` / `resources/read`, not `tools/list` / `tools/call`. A proxy that
+re-registers upstream tools on its own server, rather than forwarding the wire protocol
+generically, carries the tools through fine and drops Resources without any error — there is
+nothing to catch, because the client that dropped them never advertised support in the first
+place.
+
+Verified against one such proxy, scoped_mcp 1.14.0: its `mcp_proxy` calls only `list_tools()`
+and `call_tool()` on the upstream client and re-registers the results on its own server — there
+is no generic forwarding path, and `grep -rln "list_resources\|read_resource"` over its tree
+returns zero files. Resources reach direct MCP clients (Claude Code, Claude Desktop, LibreChat)
+without issue; they do not reach a client sitting behind that proxy. The seven tools are
+unaffected either way.
+
+If you're deploying behind a different proxy, check whether it implements `resources/list` and
+`resources/read` before relying on either Resource — a tool-only proxy is a common shape to hit,
+not something specific to the proxy above.
+
 # Transport
 
 **stdio** (default) — compatible with Claude Code MCP plugin and LibreChat `stdio` config.
