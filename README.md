@@ -1,3 +1,5 @@
+[![MseeP.ai Security Assessment Badge](https://mseep.net/pr/tadmstr-searxng-mcp-badge.png)](https://mseep.ai/app/tadmstr-searxng-mcp)
+
 # searxng-mcp
 
 [![Built with Claude Code](https://img.shields.io/badge/Built_with-Claude_Code-6B57FF?logo=claude&logoColor=white)](https://claude.ai/code)
