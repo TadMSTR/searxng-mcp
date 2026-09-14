@@ -68,6 +68,6 @@ jobs:
       # `pnpm build` here would only add a way for the analysis to fail for
       # reasons unrelated to the code. ci.yml already gates the build.
       - name: Perform CodeQL analysis
-        uses: github/codeql-action/analyze@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4.37.9
+        uses: github/codeql-action/analyze@b96794f015dfd88f77b49b1c93e0fa7110f94c63 # v4.38.0
         with:
           category: /language:${{ matrix.language }}
