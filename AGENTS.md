@@ -109,7 +109,9 @@ pnpm test         # vitest run --typecheck
 
 ## URL safety
 
-All outbound fetches to caller-influenced or discovered URLs go through `safeFetch` (`fetch-utils.ts`): a string-level guard (`assertPublicUrl` — private/internal IP literals + non-HTTP) plus a DNS-validating undici dispatcher (`ssrf-guard.ts`) that rejects any hostname resolving to a private/reserved address at connect time, re-checked on every redirect hop (closes DNS-rebinding/TOCTOU). Configured internal services (Firecrawl/Crawl4AI/SearXNG/Ollama/Reranker) are intentionally not guarded. Do not remove these checks — they prevent SSRF against internal services.
+All outbound fetches to caller-influenced or discovered URLs go through `safeFetch` (`fetch-utils.ts`): a string-level guard (`assertPublicUrl` — private/internal IP literals + non-HTTP) plus a DNS-validating undici dispatcher (`ssrf-guard.ts`) that rejects any hostname resolving to a private/reserved address at connect time, re-checked on every redirect hop (closes DNS-rebinding/TOCTOU). Configured internal services are intentionally not guarded, because their base URL comes from the environment rather than from a caller: Firecrawl, Crawl4AI, SearXNG, Ollama, the reranker, **Kiwix, Hister and the solver**. The last three were missing from this list while using unguarded `fetch` exactly like the other five — so a reader auditing `hister.ts` or `kiwix.ts` against this paragraph found an undocumented unguarded fetch, which invites either a false finding or a "fix" that routes an internal service through a guard designed to reject internal addresses. Corrected 2026-09-20. The set is every module whose fetch target originates in the environment — directly from a `config.ts` constant, or via a helper that builds one (`firecrawlEndpoint()` reads `FIRECRAWL_URL`; `getSearxCandidates()` reads `SEARXNG_URLS`). Anything whose target derives from a *caller's* URL goes through `safeFetch`, which is why `llms-txt.ts`, `robots.ts`, `youtube.ts`, `reddit.ts`, `github.ts`, `raw.ts` and `wayback.ts` all use it.
+
+Do not remove these checks — they prevent SSRF against internal services.
 
 ## Git workflow
 

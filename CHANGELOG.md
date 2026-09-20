@@ -4,6 +4,117 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [3.30.0] - 2026-09-20
+
+### Fixed
+
+- **The `llms.txt` fast path could not hit, for any page on any Anthropic domain
+  (vikunja#640).** `llms-full.txt` moved to YAML front-matter, which writes the per-page key
+  lowercase; `URL_LINE_GLOBAL` was `/^URL:/`, case-sensitive. Measured against the live
+  document on 2026-09-20: `^URL:` matches **0** times, `^url:` matches **629** — exactly the
+  page count the file's own header advertises. The fallback extractor matched 0 as well,
+  because the document carries no `## [title](url)` construct at all. `extractSection`
+  therefore returned null for every possible input, after downloading 35 MB to do it.
+
+  The ticket and the build plan both put the cause at host mismatch — `docs.anthropic.com` is
+  allowlisted while content URLs point at `platform.claude.com`. That conclusion was right and
+  the mechanism was not, which matters because the fix that follows from it does not work:
+  running the real `extractSection` over the real document misses on `platform.claude.com`
+  URLs too. Adding that host to the allowlist would have changed nothing except which origin
+  downloads 35 MB before failing. `pathsMatch` already handled the cross-host prefix by suffix
+  match, so that half was never broken.
+
+  `domains.json` **replaces** `docs.anthropic.com` with `platform.claude.com` rather than
+  adding it: the old host now 302s to the new one and serves an identical document, and the L1
+  body cache is keyed by origin with a 64 MB total — two 35 MB bodies would thrash a cache
+  that comfortably holds one. Re-measured while here: **35.2 MB decoded, 3.85 MB on the wire**,
+  against the 40.3 MB the `MAX_SIZE_BYTES` comment recorded.
+
+- **The Hister fast path had never once run, and could not have (vikunja#643).** `hister.ts`
+  parsed the plain-text block Hister emitted before it moved to a prose security preamble
+  followed by JSON. The first thing it tested was `startsWith("Found")`, so on the current
+  format it returned null at the first step.
+
+  What was actually broken was the silence: a null was indistinguishable from "not in the
+  index", from "unconfigured", and from "cannot read the answer", and nothing recorded which.
+  Every miss now carries a reason on the OTel counter — `not-configured`, `not-indexed`,
+  `url-mismatch`, `empty-text`, `no-content`, `unparseable`, `schema-mismatch`, `rpc-error`,
+  `http-error`, `transport` — and the subset meaning "the integration is broken" rather than
+  "the page is not indexed" also writes one throttled stderr line. `schema_version` is gated,
+  so the next format change fails loudly instead of degrading to the same silence.
+
+  The exact-URL equality check is kept; only the field it reads moved, to
+  `untrusted_content[0].fields.url`. Only `title`, `url` and `text` are ever returned — the
+  `SECURITY NOTICE` preamble and `security.instruction` are Hister addressing the agent, not
+  page content, and letting either into a returned body would put imperative text inside
+  something a model reads as a fetched document.
+
+- **`hister` reported ON in the startup capability line with only `HISTER_URL` set**, while
+  every lookup 403'd. Now derived from URL **and** token, using the same predicate the fetch
+  path gates on, so the line and the behaviour cannot disagree.
+
+- **Two telemetry spans counted call-site traversals rather than work done.**
+  `withSpan("hister", …)` and `withSpan("llms_full_txt", …)` wrapped their calls while the
+  guard lived inside the callee, so SigNoz showed ~60 spans each over 15 days against ~105
+  total fetches — a pair of paths apparently in constant use, one of them entirely inert on a
+  container with no `HISTER_*` set at all. **Zero Hister lookups have ever happened; do not
+  read that span count as a baseline.** Both now open their span behind a call-site guard,
+  matching `github`, `kiwix`, `youtube` and `reddit`, which were always correct — those two
+  were the only fast paths without such a guard, and the only two that were wrong.
+
+### Added
+
+- **A CI gate asserting every action resolves to one SHA across all workflows.** Commit
+  `76c9969` added a workflow and a `ci.yml` job with action SHAs hand-copied from an older
+  revision, reverting three pins Dependabot had already bumped *after* those PRs merged. Per
+  file every pin looked correct; the defect existed only in the relationship between files.
+  `github/codeql-action/{init,analyze,upload-sarif}` are normalised into one family, because
+  CodeQL aborts a run whose init and analyze come from different versions. The checker carries
+  nine self-test fixtures — five that must go red, four that must stay green — run in CI before
+  the real check on every run.
+
+- **Secret scanning as an actual gate.** `.gitleaks.toml` had sat at the repo root for months
+  with nothing running it, so the repo looked covered and was not. `secret-scan.yml` runs a
+  pinned gitleaks release (verified by a digest recorded in-repo, not fetched alongside the
+  binary) on every push and PR, plus a scheduled full-history scan at `fetch-depth: 0` — a
+  credential in public history survives deletion of the commit that introduced it, so that one
+  is detection, not prevention.
+
+  Its self-test asserts **this repo's own rules**, not merely that a scanner ran: if `--config`
+  cannot be read gitleaks silently falls back to its bundled ruleset, and every homelab rule
+  stops running while the scan still passes green. Three traps were measured while building it
+  — `if gitleaks …; then` reads exit 127 as a detection; gitleaks exits 1 both for "leaks
+  found" and "bad config"; and a randomly generated fake token fires on only 13 of 40 trials
+  because the high-cardinality rules score entropy.
+
+- `.pre-commit-config.yaml`, deliberately a subset of CI and never a superset. The biome hook
+  is local and resolves from the lockfile rather than pinning a version, after a pinned one
+  went stale within the hour.
+
+### Changed
+
+- All `github-actions` bumps now arrive as one PR (`.github/dependabot.yml`), in **two** group
+  entries — a rule without `applies-to` covers version updates only, and Dependabot never
+  groups security updates with version ones, so one entry would leave the identical shatter on
+  the security channel.
+- The seven `pnpm.overrides` floors are bounded below their next major. `fast-uri` was written
+  `>=4.1.3` with no ceiling, despite a major-boundary CVE being the stated reason
+  `dependabot.yml` ignores majors at all. A no-op for today's tree by design — every package
+  already resolves inside its current major.
+- repo-conform: 28 pass / 4 fail → **32 pass / 0 fail** at tier `supported`.
+- `AGENTS.md`'s SSRF exempt list named five internal services and omitted three that use bare
+  `fetch` on identical grounds (Kiwix, Hister, the solver). Restated as a rule rather than a
+  list that falls stale.
+
+### Security
+
+- Relayed upstream text is bounded before reaching a log line or a caller.
+  `boundRelayedText()` moved from a private one-call-site helper in `fetch.ts` into
+  `fetch-utils.ts` and is now shared — a pattern with one call site and no shared home is one
+  the next module skips, which is exactly what happened.
+- The HTTP status is recorded on the Hister miss counter, so a 403 from a wrong bearer token
+  and a 502 from a service that is down are no longer the same point on the metric.
+
 ## [3.29.0] - 2026-09-07
 
 ### Changed

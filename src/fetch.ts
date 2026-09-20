@@ -17,10 +17,11 @@ import { events } from "./events.js";
 import { postExtract } from "./extractors/post-extract.js";
 import {
   assertPublicUrl,
+  boundRelayedText,
   type FetchTuning,
   type TierResult,
 } from "./fetch-utils.js";
-import { histerFetch } from "./hister.js";
+import { histerConfigured, histerFetch } from "./hister.js";
 import { isKiwixHost, kiwixFetch } from "./kiwix.js";
 import { isLlmsTxtDomain, tryLlmsTxtFetch } from "./llms-txt.js";
 import { incCounter, recordHistogram, withSpan } from "./observability.js";
@@ -135,17 +136,8 @@ interface TierOutcome {
 // Dropping the upstream string would claw back the diagnostic value this whole
 // change exists to add — "All fetch tiers failed" telling an investigator nothing
 // is what cost weeks on vikunja#682. Audit: 2026-09-06/searxng-mcp-fix-pass-2026-09,
-// finding OE-02 (Low). Decision: Ted, 2026-09-06.
-// SECURITY[control]: length bound below; content needs no filter because
-// SsrfBlockedError omits the resolved address and raw.ts's redirect throw omits
-// Location, both deliberately.
-const MAX_TIER_REASON_CHARS = 200;
-
-function boundReason(reason: string): string {
-  return reason.length > MAX_TIER_REASON_CHARS
-    ? `${reason.slice(0, MAX_TIER_REASON_CHARS)}…`
-    : reason;
-}
+// finding OE-02 (Low). Decision: Ted, 2026-09-06. The bound itself now lives in
+// fetch-utils.ts as boundRelayedText(), shared with hister.ts.
 
 async function runTier<T extends TierResult | null>(
   tier: TierName,
@@ -198,7 +190,7 @@ async function runTier<T extends TierResult | null>(
     recordHistogram("fetch", latency_ms / 1000, { tier, outcome: "error" });
     events.fetchTierMiss({ url, tier, reason, latency_ms });
     recordTierAttempt(url, tier, "error", reason).catch(() => {});
-    onOutcome?.({ tier, reason: boundReason(reason) });
+    onOutcome?.({ tier, reason: boundRelayedText(reason) });
     return null as T;
   }
 }
@@ -361,11 +353,32 @@ export async function fetchPage(
       // Hister fast path — check Ted's browsing-history index before the tier
       // cascade. Serves pages that are login-walled or JS-heavy (already rendered
       // by Firefox) and avoids re-fetching stable docs that are indexed here.
-      const hister = await withSpan("hister", { "fetch.url": url }, () =>
-        histerFetch(url, storeChars),
-      );
+      //
+      // GUARDED AT THE CALL SITE. The configuration test used to live inside
+      // histerFetch while the span wrapped the call unconditionally, and the
+      // running container has no HISTER_* set at all — so SigNoz showed ~60
+      // `hister` spans over 15 days and every single one was a no-op that returned
+      // at the first line. Zero Hister lookups have ever happened. Do not read
+      // that span count as a baseline for anything: the correct pre-fix number of
+      // real probes is zero (vikunja#643).
+      //
+      // The miss counter moved in here for the same reason. Outside the guard it
+      // counted every fetch that got this far as a Hister miss, so the metric
+      // agreed with the spans and the two corroborated each other into looking
+      // like evidence.
+      //
+      // Shape matches kiwix/youtube/reddit above, which were always correct.
+      const hister = histerConfigured()
+        ? await withSpan("hister", { "fetch.url": url }, () =>
+            histerFetch(url, storeChars),
+          )
+        : null;
       if (hister) {
-        incCounter("fetch", { tier: "hister", outcome: "hit" });
+        // No incCounter(hit) here either. histerFetch owns its own accounting on
+        // BOTH outcomes, and counting the hit in two places inflated it by exactly
+        // 2x — which, on a build whose whole subject is telemetry that
+        // misreports reality, is worth stating rather than quietly deleting.
+        // Caught by CodeRabbit on PR #65.
         const persisted = {
           title: hister.title,
           url: hister.url,
@@ -382,7 +395,12 @@ export async function fetchPage(
         });
         return { ...persisted, text: persisted.text.slice(0, maxChars) };
       }
-      incCounter("fetch", { tier: "hister", outcome: "miss" });
+      // No `incCounter(miss)` here. histerFetch records its own miss and, unlike
+      // this line, records WHY — "not-indexed" reads very differently from
+      // "schema-mismatch" or "http-error", and collapsing them into one
+      // reasonless miss is what made a totally broken parser look like an empty
+      // index for months (vikunja#643). A count here as well would double every
+      // miss and reintroduce the reasonless one.
 
       // YouTube transcript fast path — timedtext captions for known video URLs.
       // Robots-gated by default (see youtubeFetch); on miss, falls through so

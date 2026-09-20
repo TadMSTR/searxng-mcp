@@ -51,6 +51,11 @@ describe("capabilityLine", () => {
     process.env.CRAWL4AI_URL = "http://crawl4ai:11235";
     process.env.KIWIX_URL = "http://kiwix:8080";
     process.env.HISTER_URL = "http://hister:8080";
+    // HISTER_TOKEN is required for `hister` to report on, so it has to be set for
+    // this "everything on" case to mean everything. It was absent, and the test
+    // still expected off=none — because the capability was derived from the URL
+    // alone. The assertion encoded the defect (vikunja#643).
+    process.env.HISTER_TOKEN = "t";
     process.env.LLM_BASE_URL = "http://llm:8000/v1";
     process.env.SOLVER_URL = "http://byparr:8191";
     process.env.SOLVER_ENABLED = "true";
@@ -61,6 +66,29 @@ describe("capabilityLine", () => {
     const line = capabilityLine();
     expect(line).not.toContain("\n");
     expect(line).toContain("off=none");
+  });
+
+  // The same rule as the solver below, and the reason this one is separate: a
+  // Hister URL without a token gets a 403 on every lookup, so reporting it on
+  // from the URL alone describes a system that is not working as one that is.
+  // This is the case that shipped — capabilities.ts computed Boolean(HISTER_URL)
+  // (vikunja#643).
+  it("reports hister off when its URL is set but the token is not", async () => {
+    process.env.HISTER_URL = "http://hister:8080";
+    const { capabilityLine } = await import("../src/capabilities.js");
+    expect(capabilityLine()).toMatch(/off=.*hister/);
+  });
+
+  // The positive companion, NOT the regression guard — it is green against the old
+  // Boolean(HISTER_URL) derivation too, because that also reports on when both are
+  // set. The test directly above is the one that actually fails without the fix.
+  // Kept because the ON case is real documented behaviour worth asserting; labelled
+  // so it is not mistaken for protection it does not provide. (CodeRabbit, PR #65.)
+  it("reports hister on when URL and token are both set", async () => {
+    process.env.HISTER_URL = "http://hister:8080";
+    process.env.HISTER_TOKEN = "a-token";
+    const { capabilityLine } = await import("../src/capabilities.js");
+    expect(capabilityLine()).toMatch(/on=.*hister/);
   });
 
   // A configured solver still needs its switch, matching the cascade's own
