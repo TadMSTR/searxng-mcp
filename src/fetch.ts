@@ -20,7 +20,7 @@ import {
   type FetchTuning,
   type TierResult,
 } from "./fetch-utils.js";
-import { histerFetch } from "./hister.js";
+import { histerConfigured, histerFetch } from "./hister.js";
 import { isKiwixHost, kiwixFetch } from "./kiwix.js";
 import { isLlmsTxtDomain, tryLlmsTxtFetch } from "./llms-txt.js";
 import { incCounter, recordHistogram, withSpan } from "./observability.js";
@@ -361,9 +361,26 @@ export async function fetchPage(
       // Hister fast path — check Ted's browsing-history index before the tier
       // cascade. Serves pages that are login-walled or JS-heavy (already rendered
       // by Firefox) and avoids re-fetching stable docs that are indexed here.
-      const hister = await withSpan("hister", { "fetch.url": url }, () =>
-        histerFetch(url, storeChars),
-      );
+      //
+      // GUARDED AT THE CALL SITE. The configuration test used to live inside
+      // histerFetch while the span wrapped the call unconditionally, and the
+      // running container has no HISTER_* set at all — so SigNoz showed ~60
+      // `hister` spans over 15 days and every single one was a no-op that returned
+      // at the first line. Zero Hister lookups have ever happened. Do not read
+      // that span count as a baseline for anything: the correct pre-fix number of
+      // real probes is zero (vikunja#643).
+      //
+      // The miss counter moved in here for the same reason. Outside the guard it
+      // counted every fetch that got this far as a Hister miss, so the metric
+      // agreed with the spans and the two corroborated each other into looking
+      // like evidence.
+      //
+      // Shape matches kiwix/youtube/reddit above, which were always correct.
+      const hister = histerConfigured()
+        ? await withSpan("hister", { "fetch.url": url }, () =>
+            histerFetch(url, storeChars),
+          )
+        : null;
       if (hister) {
         incCounter("fetch", { tier: "hister", outcome: "hit" });
         const persisted = {
@@ -382,7 +399,12 @@ export async function fetchPage(
         });
         return { ...persisted, text: persisted.text.slice(0, maxChars) };
       }
-      incCounter("fetch", { tier: "hister", outcome: "miss" });
+      // No `incCounter(miss)` here. histerFetch records its own miss and, unlike
+      // this line, records WHY — "not-indexed" reads very differently from
+      // "schema-mismatch" or "http-error", and collapsing them into one
+      // reasonless miss is what made a totally broken parser look like an empty
+      // index for months (vikunja#643). A count here as well would double every
+      // miss and reintroduce the reasonless one.
 
       // YouTube transcript fast path — timedtext captions for known video URLs.
       // Robots-gated by default (see youtubeFetch); on miss, falls through so

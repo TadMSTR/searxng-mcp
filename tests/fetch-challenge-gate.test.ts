@@ -62,6 +62,11 @@ vi.mock("../src/robots.js", () => ({
 }));
 
 vi.mock("../src/hister.js", () => ({
+  // histerConfigured returns TRUE so these tests keep exercising the same path
+  // they did before the call-site guard was added: the guard passes, histerFetch
+  // is called, and it misses. Mocking it false would make the fast path vanish
+  // from every test in this file rather than miss in it.
+  histerConfigured: vi.fn().mockReturnValue(true),
   histerFetch: vi.fn().mockResolvedValue(null),
 }));
 

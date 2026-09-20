@@ -14,7 +14,6 @@
 
 import {
   CACHE_URL,
-  HISTER_URL,
   KIWIX_URL,
   LLM_BASE_URL,
   OLLAMA_URL,
@@ -24,6 +23,7 @@ import {
   tierConfigured,
   WAYBACK_ENABLED,
 } from "./config.js";
+import { histerConfigured } from "./hister.js";
 import { logInfo } from "./log.js";
 
 /**
@@ -47,7 +47,12 @@ export function capabilities(): Record<string, boolean> {
     reranker: Boolean(RERANKER_URL),
     llm: Boolean(LLM_BASE_URL || OLLAMA_URL),
     kiwix: Boolean(KIWIX_URL),
-    hister: Boolean(HISTER_URL),
+    // BOTH, not just the URL (vikunja#643). With only HISTER_URL set, the
+    // startup capability line reported `hister` in the ON list while every
+    // lookup returned 403 — a system stating it works and not working. Derived
+    // from the same predicate the fetch path gates on, so the line and the
+    // behaviour cannot disagree.
+    hister: histerConfigured(),
     solver: SOLVER_ENABLED && Boolean(SOLVER_URL),
     wayback: WAYBACK_ENABLED,
     otel: Boolean(process.env.OTEL_EXPORTER_OTLP_ENDPOINT),

@@ -10,7 +10,7 @@ vi.mock("../src/config.js", () => ({
 const mockFetch = vi.fn();
 vi.stubGlobal("fetch", mockFetch);
 
-import { histerFetch } from "../src/hister.js";
+import { histerConfigured, histerFetch } from "../src/hister.js";
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -18,8 +18,15 @@ beforeEach(() => {
 
 describe("histerFetch — gated when unconfigured", () => {
   it("returns null and never calls fetch when HISTER_URL/HISTER_TOKEN are unset", async () => {
-    const result = await histerFetch("https://example.com/page");
-    expect(result).toBeNull();
+    expect(await histerFetch("https://example.com/page")).toBeNull();
     expect(mockFetch).not.toHaveBeenCalled();
+  });
+
+  it("histerConfigured() is false, which is what gates the span at the call site", () => {
+    // Exported so fetch.ts can test this BEFORE opening a span. With the check
+    // only inside histerFetch, the span wrapped the call unconditionally and the
+    // running container — which has no HISTER_* at all — produced ~60 `hister`
+    // spans over 15 days, none of them a real lookup (vikunja#643).
+    expect(histerConfigured()).toBe(false);
   });
 });
