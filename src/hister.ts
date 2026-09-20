@@ -1,5 +1,5 @@
 import { HISTER_TOKEN, HISTER_URL } from "./config.js";
-import type { TierResult } from "./fetch-utils.js";
+import { boundRelayedText, type TierResult } from "./fetch-utils.js";
 import { incCounter } from "./observability.js";
 import { warnDependencyFailure } from "./transport-failure.js";
 
@@ -78,8 +78,16 @@ const LOUD_REASONS: ReadonlySet<HisterMissReason> = new Set([
 const WARN_INTERVAL_MS = 60_000;
 const lastWarned = new Map<HisterMissReason, number>();
 
-function recordMiss(reason: HisterMissReason, detail?: string): null {
-  incCounter("fetch", { tier: "hister", outcome: "miss", reason });
+function recordMiss(
+  reason: HisterMissReason,
+  detail?: string,
+  attrs?: Record<string, string | number>,
+): null {
+  // `attrs` exists for one reason: an `http-error` from a wrong bearer token and
+  // one from a Hister that is down were indistinguishable ON THE COUNTER. Only
+  // the stderr detail carried the status, and stderr is not what you query when
+  // you want to know why the tier is missing. Caught by CodeRabbit on PR #65.
+  incCounter("fetch", { tier: "hister", outcome: "miss", reason, ...attrs });
   if (LOUD_REASONS.has(reason)) {
     const now = Date.now();
     const prev = lastWarned.get(reason) ?? 0;
@@ -185,7 +193,20 @@ export function parseHisterResponse(
     return {
       ok: false,
       reason: "schema-mismatch",
-      detail: `expected schema_version ${HISTER_SCHEMA_VERSION}, got ${JSON.stringify(payload.schema_version)}`,
+      // BOUNDED. `payload.schema_version` is read straight off Hister's response and
+      // reaches a log line; every other detail here is a static string or a numeric
+      // status. Audit finding F-01 — the repo already had this pattern for relayed
+      // upstream text and this was the one place that skipped it.
+      // `?? "undefined"` is load-bearing, not defensive noise. JSON.stringify is
+      // TYPED as returning string but returns the value `undefined` for undefined,
+      // functions and symbols — so the absent-schema_version case (a real Hister
+      // response shape, and the one this gate exists for) reached boundRelayedText
+      // as undefined and threw on .length. The compiler did not catch it because
+      // lib.es5.d.ts declares the wrong return type; the existing
+      // "schema_version is absent entirely" test did, immediately.
+      detail: `expected schema_version ${HISTER_SCHEMA_VERSION}, got ${boundRelayedText(
+        JSON.stringify(payload.schema_version) ?? "undefined",
+      )}`,
     };
   }
 
@@ -258,12 +279,19 @@ export async function histerFetch(
       signal: AbortSignal.timeout(5000),
     });
 
-    // 403 here means the bearer token is absent or wrong. Named as its own reason
-    // rather than folded into a generic miss: a permission problem and an unindexed
-    // page need completely different responses, and the old code could not tell
-    // them apart.
+    // A permission problem and an unindexed page need completely different
+    // responses, and the old code could not tell them apart at all.
+    //
+    // The STATUS goes on the counter, not only into the stderr detail. An earlier
+    // version of this comment claimed "http-error names the 403 case specifically",
+    // which was true of the log line and false of the metric — every `http-error`
+    // looked identical on the counter whether it was a wrong token or a 502. A
+    // comment asserting a distinction the telemetry does not make is worse than no
+    // comment, on this module above all.
     if (!resp.ok) {
-      return recordMiss("http-error", `HTTP ${resp.status}`);
+      return recordMiss("http-error", `HTTP ${resp.status}`, {
+        status: resp.status,
+      });
     }
 
     const data = (await resp.json()) as {
@@ -312,9 +340,9 @@ export async function histerFetch(
     if (!expectedTimeout) {
       warnDependencyFailure(err, "hister");
       console.error(
-        `[searxng-mcp] hister fetch error url=${url}: ${
-          err instanceof Error ? err.message : String(err)
-        }`,
+        `[searxng-mcp] hister fetch error url=${url}: ${boundRelayedText(
+          err instanceof Error ? err.message : String(err),
+        )}`,
       );
     }
     return recordMiss("transport");

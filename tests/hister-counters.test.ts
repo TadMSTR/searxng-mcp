@@ -103,6 +103,25 @@ describe("hister metric accounting", () => {
     expect(outcomes).toEqual(["miss"]);
   });
 
+  it("puts the HTTP status on the counter, not only in the stderr detail", async () => {
+    // CR-01. A 403 (wrong/absent bearer) and a 502 (Hister down) both record
+    // reason=http-error; without the status attribute they are the same point on
+    // the metric, and stderr is not what you query when a tier stops serving.
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    for (const status of [403, 502]) {
+      incCounter.mockClear();
+      mockFetch.mockResolvedValueOnce({ ok: false, status });
+      expect(await histerFetch(URL)).toBeNull();
+      const calls = histerCalls();
+      expect(calls).toHaveLength(1);
+      expect(calls[0][1], `status ${status}`).toMatchObject({
+        outcome: "miss",
+        reason: "http-error",
+        status,
+      });
+    }
+  });
+
   it("gives each distinct failure its own reason rather than one generic miss", async () => {
     const cases: Array<[unknown, string]> = [
       [ok(payload([entry(URL)], "9.9")), "schema-mismatch"],

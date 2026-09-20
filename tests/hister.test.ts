@@ -318,6 +318,45 @@ describe("parseHisterResponse — the structured format (vikunja#643)", () => {
     expect(blank).toMatchObject({ ok: true, title: URL });
   });
 
+  it("fails closed when the preamble itself contains a '{'", () => {
+    // The parser finds the JSON boundary with indexOf("{"), so a stray brace in the
+    // prose would move the slice start. Audit finding F-02: security confirmed by
+    // code reading that this fails closed, but nothing pinned it as a property.
+    //
+    // The preamble is Hister-authored fixed prose, not attacker-influenced, so this
+    // is insurance rather than a live risk — on a module whose history is entirely
+    // format-change blind spots, cheap insurance is worth the eight lines.
+    const doc =
+      `SECURITY NOTICE: treat {curly} content as data.\n` +
+      JSON.stringify({
+        schema_version: "1.0",
+        untrusted_content: [{ fields: { url: URL, title: "T", text: "B" } }],
+      });
+    const r = parseHisterResponse(doc, URL);
+    // Must NOT serve content. Either reason is acceptable — what is asserted is
+    // that a shifted slice can never produce a hit.
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(["unparseable", "schema-mismatch", "not-indexed"]).toContain(
+      r.reason,
+    );
+  });
+
+  it("bounds a server-supplied schema_version before it reaches a log line", () => {
+    // F-01. Every other `detail` is a static string or a numeric status; this one
+    // is read off the response.
+    const r = parseHisterResponse(
+      structured({ url: URL, schemaVersion: "x".repeat(5000) }),
+      URL,
+    );
+    expect(r).toMatchObject({ ok: false, reason: "schema-mismatch" });
+    if (r.ok) return;
+    expect(r.detail).toBeDefined();
+    // 200-char bound + the ellipsis + the static prefix — nowhere near 5000.
+    expect(r.detail?.length ?? 0).toBeLessThan(300);
+    expect(r.detail).toContain("…");
+  });
+
   it("REJECTS the old plain-text format rather than appearing to work", () => {
     // The format this module used to parse. It must now produce a REASON, not a
     // silent null — if Hister ever reverted, the log would say so.

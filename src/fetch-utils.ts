@@ -64,6 +64,27 @@ export function assertPublicUrl(url: string): void {
 // Optional CSS-selector tuning passed through fetch_url to the tiers that can
 // honor it. Tiers that cannot (fast paths, raw HTTP wait_for) ignore the
 // fields rather than erroring.
+// Bound on any text relayed from an upstream service into a log line or a value
+// returned to a caller.
+//
+// SECURITY[control]: length bound only; content needs no filter because
+// SsrfBlockedError omits the resolved address and raw.ts's redirect throw omits
+// Location, both deliberately. Audit finding OE-02 (Low), Ted 2026-09-06.
+//
+// Lives here rather than in fetch.ts because fetch.ts imports hister.ts, so a
+// hister.ts -> fetch.ts import would be circular. It was a private helper in
+// fetch.ts with one call site; hister.ts's structured-payload port then relayed
+// upstream text without it (audit 2026-09-20/searxng-mcp-hygiene-probes-2026-09,
+// finding F-01). A pattern with one call site and no shared home is one the next
+// module will skip too, so it moved rather than being copied.
+export const MAX_RELAYED_TEXT_CHARS = 200;
+
+export function boundRelayedText(text: string): string {
+  return text.length > MAX_RELAYED_TEXT_CHARS
+    ? `${text.slice(0, MAX_RELAYED_TEXT_CHARS)}…`
+    : text;
+}
+
 export interface FetchTuning {
   targetSelector?: string;
   waitForSelector?: string;

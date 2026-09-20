@@ -17,6 +17,7 @@ import { events } from "./events.js";
 import { postExtract } from "./extractors/post-extract.js";
 import {
   assertPublicUrl,
+  boundRelayedText,
   type FetchTuning,
   type TierResult,
 } from "./fetch-utils.js";
@@ -135,17 +136,8 @@ interface TierOutcome {
 // Dropping the upstream string would claw back the diagnostic value this whole
 // change exists to add — "All fetch tiers failed" telling an investigator nothing
 // is what cost weeks on vikunja#682. Audit: 2026-09-06/searxng-mcp-fix-pass-2026-09,
-// finding OE-02 (Low). Decision: Ted, 2026-09-06.
-// SECURITY[control]: length bound below; content needs no filter because
-// SsrfBlockedError omits the resolved address and raw.ts's redirect throw omits
-// Location, both deliberately.
-const MAX_TIER_REASON_CHARS = 200;
-
-function boundReason(reason: string): string {
-  return reason.length > MAX_TIER_REASON_CHARS
-    ? `${reason.slice(0, MAX_TIER_REASON_CHARS)}…`
-    : reason;
-}
+// finding OE-02 (Low). Decision: Ted, 2026-09-06. The bound itself now lives in
+// fetch-utils.ts as boundRelayedText(), shared with hister.ts.
 
 async function runTier<T extends TierResult | null>(
   tier: TierName,
@@ -198,7 +190,7 @@ async function runTier<T extends TierResult | null>(
     recordHistogram("fetch", latency_ms / 1000, { tier, outcome: "error" });
     events.fetchTierMiss({ url, tier, reason, latency_ms });
     recordTierAttempt(url, tier, "error", reason).catch(() => {});
-    onOutcome?.({ tier, reason: boundReason(reason) });
+    onOutcome?.({ tier, reason: boundRelayedText(reason) });
     return null as T;
   }
 }
