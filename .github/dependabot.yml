@@ -39,6 +39,38 @@ updates:
     # Actions are SHA-pinned in this repo (see .github/workflows/*.yml).
     # Dependabot understands SHA pins and will bump the SHA while updating the
     # trailing version comment, so pinning does not cost us update coverage.
+    #
+    # ONE PR FOR ALL ACTION BUMPS. Without this group Dependabot files one PR per
+    # action *reference*, and for an action used at several distinct paths that
+    # produces a set of PRs none of which can merge alone.
+    #
+    # That is not hypothetical — it is vikunja#920. `github/codeql-action/init`,
+    # `/analyze` and `/upload-sarif` all moved to v4.38.0 at the same SHA, and
+    # arrived as #53, #56 and #57. CodeQL aborts a run whose init and analyze
+    # steps come from different versions:
+    #
+    #     ##[error]Loaded a configuration file for version '4.38.0',
+    #              but running version '4.37.9'
+    #
+    # So #53 and #56 were each permanently red, each waiting on the other, and no
+    # amount of re-running would have fixed either. #57 passed only because
+    # upload-sarif sits in scorecard.yml with no pairing constraint. Grouping is
+    # what makes the bump atomic, which is the only state in which it is valid.
+    #
+    # A second effect worth naming: the default open-pull-requests-limit is 5, and
+    # those three plus #51 and #58 were exactly 5. An ecosystem whose PRs shatter
+    # can therefore fill its own quota and suppress the next real bump entirely.
+    #
+    # TWO ENTRIES, not one. A `groups` rule without `applies-to` covers version
+    # updates only, and Dependabot never groups security updates together with
+    # version ones. Omitting the second entry would leave the exact same shatter
+    # on the security channel — the channel where an un-mergeable PR matters most.
+    groups:
+      github-actions:
+        patterns: ["*"]
+      github-actions-security:
+        applies-to: security-updates
+        patterns: ["*"]
     ignore:
       - dependency-name: "*"
         update-types: ["version-update:semver-major"]

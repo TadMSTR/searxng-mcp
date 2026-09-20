@@ -197,6 +197,50 @@ jobs:
             "
           '
 
+  # ── workflow-pins ───────────────────────────────────────────────────────────
+  # A separate job, and it deliberately installs nothing. It needs neither the
+  # lockfile nor the toolchain, so it still reports when either is what broke —
+  # and it is the fastest signal in the workflow, which matters for a gate whose
+  # whole job is to catch a copy-paste.
+  workflow-pins:
+    name: Action pins resolve to one SHA
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+
+      # Runs the checker's own fixtures FIRST, and fails the job if any of them
+      # misbehaves. Five must go red and four must stay green.
+      #
+      # This is not ceremony. The gate below exists to go red, and a gate only
+      # ever observed green proves nothing about its ability to do so — the same
+      # reasoning as the two `allowed` control cases in playwright-adblock. The
+      # difference here is that running the negative case in CI re-proves it on
+      # every run, rather than once, by hand, by whoever wrote it.
+      #
+      # It runs before the real check on purpose: if the checker is broken, its
+      # verdict on the real workflows is worthless, and a broken checker that
+      # passes everything is indistinguishable from clean workflows.
+      - name: Self-test the checker
+        run: node .github/scripts/action-sha-uniqueness.mjs --self-test
+
+      # The gate proper (vikunja#920). An action used in more than one workflow
+      # must resolve to the same ref in every one of them.
+      #
+      # This is the check that would have caught 76c9969, which added a workflow
+      # and a ci.yml job with action SHAs hand-copied from an older revision —
+      # reverting three pins that Dependabot had already bumped, after those PRs
+      # had merged. Per file every pin looked correct; the defect existed only in
+      # the relationship between files, so no reviewer and no linter saw it, and
+      # Dependabot re-filed the same two bumps as #51 and #58.
+      #
+      # Verified two-sided before it was committed: run against main at 81d5571
+      # this step FAILS, naming actions/checkout at two SHAs and
+      # actions/setup-node at two SHAs, and pointing at exactly the three lines
+      # 76c9969 introduced. It passes only once those are reconciled.
+      - name: Every action resolves to one SHA
+        run: node .github/scripts/action-sha-uniqueness.mjs
+
   audit:
     name: Dependency audit
     runs-on: ubuntu-latest
