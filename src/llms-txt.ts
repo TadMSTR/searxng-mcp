@@ -18,6 +18,12 @@ const MIN_SIZE_BYTES = 1_024;
 // document on the fast path with room to grow. Note this is a capability
 // boundary, not just a memory one: raising or lowering it changes which
 // documents the fast path accepts.
+//
+// RE-MEASURED 2026-09-20 (vikunja#640): that origin is now platform.claude.com
+// and the document is 35.2 MB decoded — 3.85 MB on the wire, since it is served
+// gzipped. Still comfortably inside 64 MB. The allowlist entry moved with it;
+// see domains.json. Do not read the 40.3 MB figure above as current — it is kept
+// because it is the number the 64 MB ceiling was chosen against.
 const MAX_SIZE_BYTES = 64 * 1024 * 1024;
 
 // Cap across all domains for the in-process L1 body cache, deliberately tied
@@ -206,7 +212,28 @@ interface LlmsTxtMatch {
   text: string;
 }
 
-const URL_LINE_GLOBAL = /^URL:\s*(\S+)/gm;
+// The per-page delimiter, matched CASE-INSENSITIVELY.
+//
+// This was `/^URL:/` — uppercase only — and that single detail made the whole
+// fast path inert for every Anthropic page (vikunja#640). The document moved to
+// YAML front-matter, which writes the key lowercase:
+//
+//     ---
+//     title: Documentation
+//     url: https://platform.claude.com/docs/en/home
+//     ---
+//
+// Measured against the live document on 2026-09-20: `^URL:` matches 0 times,
+// `^url:` matches 629 — exactly the page count the file's own header advertises.
+// extractByHeadingLink, the fallback, matches 0 as well, because the document
+// carries no `## [title](url)` construct at all. So extractSection returned null
+// for every possible input, after downloading 35 MB to do it.
+//
+// Case-insensitivity rather than a second literal: `url:`/`URL:` is a spelling
+// difference in a generated file, and the next generator is as likely to pick
+// either. This does NOT loosen which page matches a request — that is
+// pathsMatch's job and it is unchanged.
+const URL_LINE_GLOBAL = /^url:\s*(\S+)/gim;
 const HEADING_LINK = /^(#{1,6})\s+\[([^\]]+)\]\(([^)]+)\)/gm;
 
 function extractByUrlLine(
