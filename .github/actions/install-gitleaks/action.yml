@@ -1,0 +1,44 @@
+# Install a pinned gitleaks release.
+#
+# A local composite action, so the two jobs in secret-scan.yml install the same
+# build from one definition. A local action needs no SHA pin — it is this
+# repository's own content at the commit under test.
+#
+# NOT the distro package and NOT gitleaks-action:
+#
+#   The runner's gitleaks, where one exists, is a different build reporting
+#   "version is set by build process". Debian trixie ships one so old it has no
+#   `dir` subcommand at all, so a scan written against a current release silently
+#   becomes a scan of nothing. Pinning the release is what makes the local and the
+#   CI verdict the same verdict.
+#
+#   gitleaks-action would be a third-party action to pin and audit, for the single
+#   job of putting one binary on PATH — the same reasoning that keeps ci.yml on
+#   plain `docker build` rather than docker/build-push-action.
+name: Install gitleaks
+description: Download and verify a pinned gitleaks release, and put it on PATH.
+
+runs:
+  using: composite
+  steps:
+    # Pinned by version AND by digest, for the same reason every action above is
+    # pinned by SHA. The digest is recorded HERE rather than read from the
+    # release's own checksums.txt: a checksum fetched from the same origin as the
+    # artefact it describes is not a control, because whatever could replace one
+    # could replace the other.
+    #
+    # To bump: change both values together and re-run. They are not independent.
+    - shell: bash
+      env:
+        GITLEAKS_VERSION: 8.30.1
+        GITLEAKS_SHA256: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
+      run: |
+        set -euo pipefail
+        asset="gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+        cd "$RUNNER_TEMP"
+        curl -sSfL --retry 3 -o "$asset" \
+          "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/${asset}"
+        echo "${GITLEAKS_SHA256}  ${asset}" | sha256sum -c -
+        tar xzf "$asset" gitleaks
+        install -m 0755 gitleaks /usr/local/bin/gitleaks
+        gitleaks version

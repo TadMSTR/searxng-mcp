@@ -5,6 +5,10 @@ core.*
 *.core
 .env
 *.env
+# Private keys, by extension. Nothing in this repo should ever hold one — the
+# transport takes its bearer from the environment and there is no TLS
+# termination here — so this is a guard against an accident, not a workflow.
+*.key
 run.sh
 package-lock.json
 # ...except the two docker/ sub-projects, which are NOT pnpm workspaces. They

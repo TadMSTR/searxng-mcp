@@ -2,8 +2,8 @@
 
 [![Built with Claude Code](https://img.shields.io/badge/Built_with-Claude_Code-6B57FF?logo=claude&logoColor=white)](https://claude.ai/code)
 [![CI](https://github.com/TadMSTR/searxng-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/TadMSTR/searxng-mcp/actions/workflows/ci.yml)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![npm](https://img.shields.io/npm/v/@tadmstr/searxng-mcp)](https://www.npmjs.com/package/@tadmstr/searxng-mcp)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 An MCP server for private web search via a self-hosted [SearXNG](https://github.com/searxng/searxng) instance. SearXNG is the only requirement; everything else is optional and layers on top — a local ML model reranks results, a three-tier cascade (Firecrawl, Crawl4AI, in-process raw fetch) retrieves full-page content, and an Ollama instance provides query expansion and LLM-synthesized summaries.
 

@@ -1,0 +1,62 @@
+# Local pre-commit hooks, deliberately a SUBSET of CI and never a superset.
+#
+# The rule this file follows: a hook belongs here only if CI already enforces the
+# same thing, with the same tool, at the same version. A local check CI does not
+# run teaches people that green locally means nothing; a local check that
+# disagrees with CI teaches them to pass --no-verify. Both end in the hook being
+# bypassed, which is worse than not having it.
+#
+# So there is no tsc hook and no vitest hook. CI runs both (`pnpm exec tsc
+# --noEmit`, `pnpm test`) and they are too slow to sit in front of every commit.
+# This file covers the two fast ones.
+#
+# Install with:  pre-commit install
+# It is opt-in — nothing in CI requires it, and CI remains the authority.
+repos:
+  # Mirrors ci.yml's `Lint` step, which runs `pnpm lint` -> `biome check src/ tests/`.
+  #
+  # A LOCAL hook running the repo's OWN biome, not biomejs/pre-commit with a
+  # pinned version. The pinned form was written first and was wrong within the
+  # hour: it named @biomejs/biome 2.5.12 to match package.json, and Dependabot
+  # bumped the lockfile to 2.5.14 (#67) while package.json still read ^2.5.12.
+  # The pin would have gone stale silently, and a formatter disagreeing with CI
+  # by a patch version is exactly the failure this file's whole premise is meant
+  # to exclude.
+  #
+  # `pnpm exec biome` resolves from node_modules, so the version is the LOCKFILE's
+  # version by construction. There is no second place to update, so there is
+  # nothing to drift — better than a pin plus a gate asserting the pin is right.
+  #
+  # `biome ci` rather than `biome check`: the latter passes --write and rewrites
+  # files, so it can "pass" by changing your commit under you. CI cannot rewrite
+  # anything, so the read-only variant is the one whose verdict matches.
+  #
+  # Scope comes from biome.json's own `files.includes` (src/**/*.ts, tests/**/*.ts),
+  # not from this file, so the hook and CI cannot drift apart on coverage either.
+  - repo: local
+    hooks:
+      - id: biome-ci
+        name: biome ci
+        entry: pnpm exec biome ci --files-ignore-unknown=true --no-errors-on-unmatched
+        language: system
+        types: [text]
+        files: "\\.(m?[jt]sx?|jsonc?)$"
+        require_serial: true
+
+  # Mirrors the `secret-scan.yml` gate. Same tool, same version: CI installs the
+  # pinned v8.30.1 release by digest, and this rev is that same tag.
+  #
+  # These two ARE two literals that must move together — unlike biome above,
+  # there is no lockfile to resolve from. When bumping gitleaks, change all three
+  # in one commit: this rev, and the GITLEAKS_VERSION / GITLEAKS_SHA256 pair in
+  # .github/actions/install-gitleaks/action.yml.
+  #
+  # The hook runs `gitleaks git --pre-commit --redact --staged`, reading the
+  # staged diff; CI runs `gitleaks dir .` over the whole tree. Different scopes on
+  # purpose — locally you want what you are about to commit, in CI you want
+  # everything that is there — and neither can pass something the other would
+  # reject, because both load the same .gitleaks.toml from the repo root.
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.30.1
+    hooks:
+      - id: gitleaks
