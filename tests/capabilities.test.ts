@@ -79,7 +79,12 @@ describe("capabilityLine", () => {
     expect(capabilityLine()).toMatch(/off=.*hister/);
   });
 
-  it("reports hister on only when URL and token are both set", async () => {
+  // The positive companion, NOT the regression guard — it is green against the old
+  // Boolean(HISTER_URL) derivation too, because that also reports on when both are
+  // set. The test directly above is the one that actually fails without the fix.
+  // Kept because the ON case is real documented behaviour worth asserting; labelled
+  // so it is not mistaken for protection it does not provide. (CodeRabbit, PR #65.)
+  it("reports hister on when URL and token are both set", async () => {
     process.env.HISTER_URL = "http://hister:8080";
     process.env.HISTER_TOKEN = "a-token";
     const { capabilityLine } = await import("../src/capabilities.js");

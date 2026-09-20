@@ -286,12 +286,35 @@ export async function histerFetch(
       text: parsed.text.slice(0, maxChars),
     };
   } catch (err) {
-    // AbortError = the expected 5s timeout. Anything else is a token misconfig or
-    // Hister being down, and belongs in stderr rather than silently degrading.
-    warnDependencyFailure(err, "hister");
-    if (err instanceof Error && !err.message.includes("AbortError")) {
+    // The expected 5s timeout is silent; anything else is a token misconfig or
+    // Hister being down, and belongs in stderr rather than degrading quietly.
+    //
+    // CLASSIFIED BY `name`, NOT BY MESSAGE TEXT. This read
+    // `!err.message.includes("AbortError")`, and a real AbortSignal.timeout
+    // rejection does not contain that string anywhere — measured on node 22:
+    //
+    //     constructor  DOMException
+    //     name         "TimeoutError"
+    //     message      "The operation was aborted due to timeout"
+    //
+    // So the guard was false on every genuine timeout and the "expected, stay
+    // quiet" path never once ran: a Hister that is merely slow logged a line per
+    // fetch. The test that asserted the silence passed because its fixture was
+    // `new Error("The operation was aborted (AbortError)")` — a shape node never
+    // produces. Same defect class as the two other fixtures this build corrected:
+    // a property proven against an input the runtime cannot emit.
+    //
+    // Both names are accepted. `AbortSignal.timeout` gives TimeoutError; an
+    // explicit `controller.abort()` gives AbortError, and if this call ever gains
+    // a caller-driven cancel path that is also expected rather than noteworthy.
+    const name = err instanceof Error ? err.name : "";
+    const expectedTimeout = name === "TimeoutError" || name === "AbortError";
+    if (!expectedTimeout) {
+      warnDependencyFailure(err, "hister");
       console.error(
-        `[searxng-mcp] hister fetch error url=${url}: ${err.message}`,
+        `[searxng-mcp] hister fetch error url=${url}: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
       );
     }
     return recordMiss("transport");

@@ -382,7 +382,11 @@ export async function fetchPage(
           )
         : null;
       if (hister) {
-        incCounter("fetch", { tier: "hister", outcome: "hit" });
+        // No incCounter(hit) here either. histerFetch owns its own accounting on
+        // BOTH outcomes, and counting the hit in two places inflated it by exactly
+        // 2x — which, on a build whose whole subject is telemetry that
+        // misreports reality, is worth stating rather than quietly deleting.
+        // Caught by CodeRabbit on PR #65.
         const persisted = {
           title: hister.title,
           url: hister.url,

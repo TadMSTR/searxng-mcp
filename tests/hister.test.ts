@@ -170,13 +170,38 @@ describe("histerFetch — query/response handling", () => {
     );
   });
 
-  it("returns null silently (no stderr log) on an AbortError timeout", async () => {
+  // Real shapes, not hand-written ones. This case previously rejected with
+  // `new Error("The operation was aborted (AbortError)")` and passed — while the
+  // code under test matched on `message.includes("AbortError")`, which is false
+  // for every rejection node actually produces. The test and the bug agreed with
+  // each other and neither agreed with the runtime.
+  //
+  //   AbortSignal.timeout()      -> DOMException, name "TimeoutError",
+  //                                 message "The operation was aborted due to timeout"
+  //   controller.abort()         -> DOMException, name "AbortError"
+  //
+  // Measured on node 22 against a blackholed address.
+  it.each([
+    ["TimeoutError", "The operation was aborted due to timeout"],
+    ["AbortError", "This operation was aborted"],
+  ])("returns null silently on a %s (no stderr log)", async (name, message) => {
     const stderrSpy = vi.spyOn(console, "error").mockImplementation(() => {});
-    mockFetch.mockRejectedValueOnce(
-      new Error("The operation was aborted (AbortError)"),
-    );
+    mockFetch.mockRejectedValueOnce(new DOMException(message, name));
     expect(await histerFetch(URL)).toBeNull();
     expect(stderrSpy).not.toHaveBeenCalled();
+  });
+
+  it("DOES log for a transport error that is not a timeout", async () => {
+    // The control for the two cases above. Without it, a guard that swallowed
+    // every error would look identical to one that swallows only timeouts.
+    const stderrSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    mockFetch.mockRejectedValueOnce(
+      Object.assign(new TypeError("fetch failed"), { name: "TypeError" }),
+    );
+    expect(await histerFetch(URL)).toBeNull();
+    expect(stderrSpy).toHaveBeenCalledWith(
+      expect.stringContaining("hister fetch error"),
+    );
   });
 });
 
