@@ -22,7 +22,7 @@ import {
 } from "./fetch-utils.js";
 import { histerFetch } from "./hister.js";
 import { isKiwixHost, kiwixFetch } from "./kiwix.js";
-import { tryLlmsTxtFetch } from "./llms-txt.js";
+import { isLlmsTxtDomain, tryLlmsTxtFetch } from "./llms-txt.js";
 import { incCounter, recordHistogram, withSpan } from "./observability.js";
 import { isRedditHost, redditFetch } from "./reddit.js";
 import { checkRobots } from "./robots.js";
@@ -288,9 +288,25 @@ export async function fetchPage(
     } else {
       // llms.txt fast path — for whitelisted docs domains, try fetching the
       // section from a pre-cached llms-full.txt before invoking any tier.
-      const llms = await withSpan("llms_full_txt", { "fetch.url": url }, () =>
-        tryLlmsTxtFetch(url, storeChars),
-      );
+      //
+      // The allowlist test is HERE rather than only inside tryLlmsTxtFetch, so
+      // the span wraps work performed instead of a call site traversed. It was
+      // the other way round, and the cost was not a tidiness one: SigNoz showed
+      // ~60 `llms_full_txt` spans over 15 days against ~105 total fetches, which
+      // reads as a path under constant use. Six domains are allowlisted, so the
+      // large majority of those spans were no-ops that never touched an
+      // llms-full.txt. A span that counts traversals makes a dead path and a busy
+      // path look identical — vikunja#640 is exactly that failure, and this is
+      // the instrumentation half of it.
+      //
+      // Shape deliberately matches the kiwix/youtube/reddit fast paths below,
+      // which guard at the call site and were always correct. The two paths that
+      // were wrong, this one and hister, were the only two that did not.
+      const llms = isLlmsTxtDomain(url)
+        ? await withSpan("llms_full_txt", { "fetch.url": url }, () =>
+            tryLlmsTxtFetch(url, storeChars),
+          )
+        : null;
       if (llms) {
         incCounter("fetch", { tier: "llms_full_txt", outcome: "hit" });
         const persisted = {

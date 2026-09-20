@@ -74,6 +74,12 @@ vi.mock("../src/kiwix.js", () => ({
 }));
 
 vi.mock("../src/llms-txt.js", () => ({
+  // isLlmsTxtDomain returns TRUE so these tests keep exercising the same path
+  // they did before the call-site guard was added: the guard passes,
+  // tryLlmsTxtFetch is called, and it misses. Mocking it false would make the
+  // fast path vanish from every test in this file rather than miss in it, which
+  // is a quieter kind of green.
+  isLlmsTxtDomain: vi.fn().mockReturnValue(true),
   tryLlmsTxtFetch: vi.fn().mockResolvedValue(null),
 }));
 

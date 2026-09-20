@@ -86,15 +86,109 @@ describe("extractSection — URL: line strategy", () => {
     // Anthropic serves docs.anthropic.com/<path> while its llms-full.txt lists
     // platform.claude.com/docs/<path>. A host-equality check would miss every
     // page on such a site.
+    //
+    // The delimiter here is LOWERCASE, and that is the point. This fixture used
+    // to write "URL:" — describing the real Anthropic document accurately in
+    // prose while using a spelling that document has never emitted. It passed,
+    // and the cross-host logic it exercises was genuinely correct, so nothing
+    // looked wrong; meanwhile the case-sensitive regex meant the path was dead
+    // in production for every Anthropic page (vikunja#640). A fixture that
+    // disagrees with the source it stands in for tests the matcher against a
+    // world that does not exist.
     const doc = [
       "---",
-      "URL: https://platform.claude.com/docs/build/agents",
+      "url: https://platform.claude.com/docs/build/agents",
       "# Agents",
       "Body.",
     ].join("\n");
     expect(
       extractSection(doc, "https://docs.anthropic.com/build/agents")?.title,
     ).toBe("Agents");
+  });
+
+  it("accepts the page delimiter in either case", () => {
+    // `url:` is what the YAML front-matter in a generated llms-full.txt writes;
+    // `URL:` is what older documents wrote. Both must resolve, and neither
+    // spelling may change WHICH page is returned.
+    for (const key of ["url", "URL", "Url"]) {
+      const doc = [
+        "---",
+        `${key}: https://docs.example.com/alpha`,
+        "# Alpha",
+        "Alpha body.",
+        "",
+        "---",
+        `${key}: https://docs.example.com/beta`,
+        "# Beta",
+        "Beta body.",
+      ].join("\n");
+      const s = extractSection(doc, "https://docs.example.com/beta");
+      expect(s?.title, `delimiter spelled ${key}:`).toBe("Beta");
+      expect(s?.text).toContain("Beta body.");
+      expect(s?.text).not.toContain("Alpha body.");
+    }
+  });
+
+  it("extracts from the real front-matter shape the Anthropic document uses", () => {
+    // Reduced from the live platform.claude.com/llms-full.txt, 2026-09-20 — a
+    // `## <title>` heading, then a `---` fenced block carrying title/url/
+    // description, then the body. Measured there: 629 `url:` lines, 0 `URL:`
+    // lines, and 0 `## [title](url)` heading links, so BOTH extractors returned
+    // null for every input and the fast path could not hit.
+    const doc = [
+      "# Anthropic Developer Documentation - Full Content",
+      "",
+      "## Docs home",
+      "",
+      "---",
+      "title: Documentation",
+      "url: https://platform.claude.com/docs/en/home",
+      "description: Claude API Documentation",
+      "---",
+      "",
+      "Home body.",
+      "",
+      "## Messages",
+      "",
+      "---",
+      "title: Messages",
+      "url: https://platform.claude.com/docs/en/api/messages",
+      "description: Send a message",
+      "---",
+      "",
+      "Messages body.",
+    ].join("\n");
+
+    const home = extractSection(
+      doc,
+      "https://platform.claude.com/docs/en/home",
+    );
+    expect(home?.text).toContain("Home body.");
+    expect(home?.text).not.toContain("Messages body.");
+
+    // And the same document reached via the legacy host, which 302s to
+    // platform.claude.com but whose path lacks the /docs prefix.
+    const legacy = extractSection(
+      doc,
+      "https://docs.anthropic.com/en/api/messages",
+    );
+    expect(legacy?.text).toContain("Messages body.");
+    expect(legacy?.text).not.toContain("Home body.");
+  });
+
+  it("still returns null for a page the document does not contain", () => {
+    // The control for the three cases above. Without it, a delimiter change that
+    // made everything match would look identical to one that made the right
+    // thing match.
+    const doc = [
+      "---",
+      "url: https://platform.claude.com/docs/en/home",
+      "# Home",
+      "Home body.",
+    ].join("\n");
+    expect(
+      extractSection(doc, "https://platform.claude.com/docs/en/no-such-page"),
+    ).toBeNull();
   });
 
   it("returns null when no URL: line matches the requested path", () => {
