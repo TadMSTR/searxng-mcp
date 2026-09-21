@@ -178,6 +178,10 @@ this.
 
 The fetch cascade, in full. Each stage is optional and skipped cleanly when unconfigured.
 
+The `llms.txt` fast path (`llms` → `llms_fetch` below) matches against the host currently
+allowlisted in `domains.json` — `platform.claude.com` — and extracts each page's section from
+the document's `url:` front-matter (lowercase, YAML-style).
+
 ```mermaid
 flowchart TD
     entry["fetchPage(url)"]
