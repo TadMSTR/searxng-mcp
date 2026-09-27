@@ -7,6 +7,22 @@
 # Add a key only when a default has actually cost a build something.
 
 reviews:
+  auto_review:
+    # Off. Every review of this repo is an explicit `@coderabbitai full review`.
+    #
+    # forge's build flow asks for a review at a fixed point: after the PR is open and
+    # before the security audit is dispatched. That review's findings go to the audit to be
+    # verified, so it has to be finished and bound to the head the audit reads. A review
+    # that starts by itself on every push races that sequence, and each push after the
+    # first spends a review from an hourly allowance that every forge agent shares under
+    # one account.
+    #
+    # This key is set here, not only in the organization settings, because a repository
+    # file outranks the organization settings and nothing here says `inheritance: true`.
+    # This repo is also over the star count that makes review automatic after the trial.
+    # Without this key it would be the one repo still reviewed on every push.
+    enabled: false
+
   pre_merge_checks:
     docstrings:
       # Disabled, not lowered.
