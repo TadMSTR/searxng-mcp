@@ -4,6 +4,19 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Security
+- **@modelcontextprotocol/sdk 1.30.0 → 1.31.0** (Dependabot #75, folded in). Its resolution
+  also moves proxy-addr 2.0.7 → 2.0.8 (critical) and ip-address 10.1.0 → 10.7.3 through
+  express and express-rate-limit. proxy-addr was not reachable here: nothing in `src/`
+  imports express, and a startup trace of the HTTP transport never resolved express or
+  proxy-addr. It shipped in the image and failed the audit gate, so it is fixed anyway.
+- **Lock refresh within existing ranges:** @grpc/grpc-js 1.14.4 → 1.14.5, source-map-js
+  → 1.2.2, fast-uri 4.1.4 → 4.2.1. `pnpm audit --prod` and `--dev` report nothing.
+- **`pnpm.overrides` floors raised** to the current fixes: fast-uri `>=4.1.5`, ip-address
+  `>=10.7.1` (vikunja#1031).
+
 ## [3.30.0] - 2026-09-20
 
 ### Fixed
