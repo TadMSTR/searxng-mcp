@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [3.30.1] - 2026-10-06
+
+Dependency release. No application code changed.
+
+### Changed
+- **undici 7.29.1 → 7.30.0** (#73) and **fast-xml-parser 5.11.1 → 5.11.2** (#74), both lock
+  refreshes within existing ranges.
+- **Dev only:** @biomejs/biome 2.5.15, @types/node 22.20.5, fast-check 4.10.2, vite 8.3.2
+  (#76). **CI:** codeql-action 4.38.0 → 4.38.2, all three subpaths on one SHA (#69).
+
 ### Security
 - **@modelcontextprotocol/sdk 1.30.0 → 1.31.0** (Dependabot #75, folded in). Its resolution
   also moves proxy-addr 2.0.7 → 2.0.8 (critical) and ip-address 10.1.0 → 10.7.3 through
