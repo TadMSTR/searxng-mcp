@@ -23,6 +23,12 @@ reviews:
     # Without this key it would be the one repo still reviewed on every push.
     enabled: false
 
+  # Off, like the organization setting this repo doesn't inherit (no `inheritance: true`).
+  # With automatic review off, every untriggered PR here got a "Review skipped" status
+  # comment that says nothing a reader needs. The org-wide setting silenced those on every
+  # other repo; this repo's own file outranks it, so it carries the key itself.
+  review_status: false
+
   pre_merge_checks:
     docstrings:
       # Disabled, not lowered.
