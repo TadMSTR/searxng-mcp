@@ -9,7 +9,11 @@ vi.mock("../../src/config.js", () => ({
 const mockFetch = vi.fn();
 vi.stubGlobal("fetch", mockFetch);
 
-import { githubFetch, isGithubUrl } from "../../src/tiers/github.js";
+import {
+  githubFetch,
+  isGithubFastPathUrl,
+  isGithubUrl,
+} from "../../src/tiers/github.js";
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -73,6 +77,43 @@ describe("isGithubUrl", () => {
 
   it("returns false for an unparseable URL instead of throwing", () => {
     expect(isGithubUrl("not-a-url")).toBe(false);
+  });
+});
+
+describe("isGithubFastPathUrl", () => {
+  it.each([
+    "https://github.com/valkey-io/valkey",
+    "https://github.com/valkey-io/valkey/",
+    "https://github.com/valkey-io/valkey/blob/unstable/valkey.conf",
+    "https://github.com/valkey-io/valkey/tree/unstable",
+    "https://github.com/valkey-io/valkey/tree/unstable/src/modules",
+    "https://raw.githubusercontent.com/valkey-io/valkey/unstable/valkey.conf",
+    "https://api.github.com/repos/valkey-io/valkey/releases",
+    "https://github.com/valkey-io/valkey/releases",
+    "https://github.com/valkey-io/valkey/releases/latest",
+    "https://github.com/valkey-io/valkey/releases/tag/9.1.2",
+  ])("serves %s", (url) => {
+    expect(isGithubFastPathUrl(url)).toBe(true);
+  });
+
+  // The regression: every one of these used to be answered with the
+  // repo-root README.
+  it.each([
+    "https://github.com/valkey-io/valkey/releases/download/9.1.2/x.tar.gz",
+    "https://github.com/valkey-io/valkey/issues/1234",
+    "https://github.com/valkey-io/valkey/pull/1234",
+    "https://github.com/valkey-io/valkey/commit/abc123",
+    "https://github.com/valkey-io/valkey/wiki",
+    "https://github.com/valkey-io/valkey/blob",
+    "https://github.com/valkey-io",
+    "https://github.com/",
+  ])("leaves %s to the normal cascade", (url) => {
+    expect(isGithubFastPathUrl(url)).toBe(false);
+  });
+
+  it("does not match unrelated hosts or unparseable input", () => {
+    expect(isGithubFastPathUrl("https://gitlab.com/a/b")).toBe(false);
+    expect(isGithubFastPathUrl("not a url")).toBe(false);
   });
 });
 
@@ -226,5 +267,147 @@ describe("githubFetch — github.com", () => {
     );
     expect(result.text).toBe("# searxng-mcp");
     expect(result.title).toBe("TadMSTR/searxng-mcp — README.md");
+  });
+
+  it("fetches the named directory's README for a tree URL, at that ref", async () => {
+    const content = Buffer.from("# modules").toString("base64");
+    mockFetch.mockResolvedValueOnce(
+      jsonResponse({
+        content,
+        name: "README.md",
+        html_url:
+          "https://github.com/valkey-io/valkey/blob/unstable/src/modules/README.md",
+      }),
+    );
+    const result = await githubFetch(
+      "https://github.com/valkey-io/valkey/tree/unstable/src/modules",
+    );
+    expect(mockFetch).toHaveBeenCalledWith(
+      "https://api.github.com/repos/valkey-io/valkey/readme/src/modules?ref=unstable",
+      expect.anything(),
+    );
+    expect(result.text).toBe("# modules");
+  });
+
+  it("fetches the root README at the given ref for a bare tree URL", async () => {
+    const content = Buffer.from("# valkey").toString("base64");
+    mockFetch.mockResolvedValueOnce(
+      jsonResponse({ content, name: "README.md", html_url: "x" }),
+    );
+    await githubFetch("https://github.com/valkey-io/valkey/tree/8.1");
+    expect(mockFetch).toHaveBeenCalledWith(
+      "https://api.github.com/repos/valkey-io/valkey/readme?ref=8.1",
+      expect.anything(),
+    );
+  });
+
+  it("refuses an issues URL instead of answering it with the README", async () => {
+    await expect(
+      githubFetch("https://github.com/valkey-io/valkey/issues/1234"),
+    ).rejects.toThrow("GitHub fast path does not handle this URL");
+    expect(mockFetch).not.toHaveBeenCalled();
+  });
+
+  it("lists a directory's files when it has no README", async () => {
+    mockFetch
+      .mockResolvedValueOnce(jsonResponse({}, { status: 404 }))
+      .mockResolvedValueOnce(
+        jsonResponse([
+          { name: "tools.md", type: "file" },
+          { name: "img", type: "dir" },
+        ]),
+      );
+    const result = await githubFetch(
+      "https://github.com/TadMSTR/searxng-mcp/tree/main/docs",
+    );
+    expect(mockFetch).toHaveBeenLastCalledWith(
+      "https://api.github.com/repos/TadMSTR/searxng-mcp/contents/docs?ref=main",
+      expect.anything(),
+    );
+    expect(result.text).toContain("No README in docs at main");
+    expect(result.text).toContain("- tools.md\n- img/");
+  });
+
+  it("rethrows a non-404 README error for a tree URL rather than listing", async () => {
+    mockFetch.mockResolvedValueOnce(jsonResponse({}, { status: 500 }));
+    await expect(
+      githubFetch("https://github.com/a/b/tree/main/docs"),
+    ).rejects.toThrow("GitHub API error: 500");
+    expect(mockFetch).toHaveBeenCalledOnce();
+  });
+});
+
+describe("githubFetch — github.com releases", () => {
+  const release = (tag: string, extra: Record<string, unknown> = {}) => ({
+    tag_name: tag,
+    name: tag,
+    body: `notes for ${tag}`,
+    html_url: `https://github.com/valkey-io/valkey/releases/tag/${tag}`,
+    published_at: "2026-09-01T12:00:00Z",
+    prerelease: false,
+    draft: false,
+    ...extra,
+  });
+
+  it("renders the release list from the API, newest first", async () => {
+    mockFetch.mockResolvedValueOnce(
+      jsonResponse([
+        release("9.2.0-rc1", { prerelease: true, name: "Valkey 9.2 RC1" }),
+        release("9.1.2"),
+      ]),
+    );
+    const result = await githubFetch(
+      "https://github.com/valkey-io/valkey/releases",
+    );
+    expect(mockFetch).toHaveBeenCalledWith(
+      "https://api.github.com/repos/valkey-io/valkey/releases?per_page=10",
+      expect.anything(),
+    );
+    expect(result.url).toBe("https://github.com/valkey-io/valkey/releases");
+    expect(result.text).toMatch(
+      /^## 9\.2\.0-rc1 — Valkey 9\.2 RC1\n2026-09-01 \(pre-release\)/,
+    );
+    expect(result.text).toContain("notes for 9.2.0-rc1");
+    expect(result.text).toContain("---\n\n## 9.1.2\n2026-09-01 · ");
+  });
+
+  it("fetches one tag", async () => {
+    mockFetch.mockResolvedValueOnce(jsonResponse(release("9.1.2")));
+    const result = await githubFetch(
+      "https://github.com/valkey-io/valkey/releases/tag/9.1.2",
+    );
+    expect(mockFetch).toHaveBeenCalledWith(
+      "https://api.github.com/repos/valkey-io/valkey/releases/tags/9.1.2",
+      expect.anything(),
+    );
+    expect(result.title).toBe("valkey-io/valkey — 9.1.2");
+    expect(result.text).toContain("notes for 9.1.2");
+  });
+
+  it("fetches the latest release", async () => {
+    mockFetch.mockResolvedValueOnce(
+      jsonResponse(release("9.1.2", { body: null, published_at: null })),
+    );
+    const result = await githubFetch(
+      "https://github.com/valkey-io/valkey/releases/latest",
+    );
+    expect(mockFetch).toHaveBeenCalledWith(
+      "https://api.github.com/repos/valkey-io/valkey/releases/latest",
+      expect.anything(),
+    );
+    expect(result.text).toContain("unpublished");
+  });
+
+  it("says so when a repo has no releases", async () => {
+    mockFetch.mockResolvedValueOnce(jsonResponse([]));
+    const result = await githubFetch("https://github.com/a/b/releases");
+    expect(result.text).toBe("This repository has no published releases.");
+  });
+
+  it("refuses a release asset download URL", async () => {
+    await expect(
+      githubFetch("https://github.com/a/b/releases/download/v1/x.tgz"),
+    ).rejects.toThrow("GitHub fast path does not handle this URL");
+    expect(mockFetch).not.toHaveBeenCalled();
   });
 });

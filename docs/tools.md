@@ -38,14 +38,18 @@
 
 # GitHub URLs
 
-GitHub URLs are handled natively without Firecrawl. `githubFetch` dispatches on hostname:
+GitHub URLs are handled natively without Firecrawl. `githubFetch` dispatches on hostname and, for `github.com`, on the URL's shape:
 
 - **Repo root** (`github.com/owner/repo`) — fetches the README via the GitHub API
 - **File blob** (`github.com/owner/repo/blob/branch/path/to/file`) — rewrites to and fetches raw content from `raw.githubusercontent.com`
+- **Directory** (`github.com/owner/repo/tree/branch/path`) — that directory's README at that ref; a file listing if it has none
+- **Releases** (`github.com/owner/repo/releases`, `…/releases/latest`, `…/releases/tag/<tag>`) — release notes from the releases API as markdown (the list is the 10 most recent, newest first)
 - **Raw file** (`raw.githubusercontent.com/...`) — fetched directly as-is
 - **API** (`api.github.com/...`) — response decoded (base64 `content` fields) or pretty-printed as JSON
 
 Direct `raw.githubusercontent.com` and `api.github.com` URLs previously matched only `github.com` and fell through to the HTML-scraping tier cascade, which cannot render a raw text file or bare JSON response — they failed 100% of the time. They now take the GitHub fast path.
+
+Any other `github.com` page — issues, pull requests, commits, wiki, owner pages, release asset downloads — is not handled here and takes the normal fetch cascade, which renders the page. Until 3.30.x those were claimed by the fast path too and answered with the **repo-root README**, with nothing in the result to say it was not the requested page.
 
 Unauthenticated requests are rate-limited to 60/hour. Set `GITHUB_TOKEN` to raise this to 5,000/hour.
 
