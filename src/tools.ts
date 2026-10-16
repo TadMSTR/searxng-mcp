@@ -1020,9 +1020,16 @@ export function registerTools(server: McpServer): void {
     "crawl_site",
     "Crawl a site and return a manifest of pages with titles and snippets. " +
       "Full page content is cached — call fetch_url on any page URL for the full text. " +
-      "Strategy: Firecrawl (JS rendering) → sitemap-first → BFS (if enabled).",
+      "Strategy: Firecrawl (JS rendering) → sitemap-first → BFS (if enabled). " +
+      "A start URL with a path (e.g. https://example.com/docs) limits the crawl to pages under that path " +
+      "unless include_path is given; include_path '/' crawls the whole site.",
     {
-      url: z.string().url().describe("Base URL to crawl"),
+      url: z
+        .string()
+        .url()
+        .describe(
+          "Base URL to crawl. Its path scopes the crawl when include_path is omitted",
+        ),
       max_pages: z.coerce
         .number()
         .min(1)
@@ -1036,7 +1043,9 @@ export function registerTools(server: McpServer): void {
       include_path: z
         .string()
         .optional()
-        .describe("Only include URLs matching this path prefix (e.g. '/docs')"),
+        .describe(
+          "Only include URLs matching this path prefix (e.g. '/docs'); replaces the start URL's default scope, '/' for the whole site",
+        ),
       exclude_path: z
         .string()
         .optional()

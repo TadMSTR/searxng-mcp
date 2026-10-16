@@ -290,17 +290,49 @@ export async function firecrawlMapUrls(url: string): Promise<string[] | null> {
   }
 }
 
+// ─── Default scope ───────────────────────────────────────────────────────────
+
+/**
+ * The path a crawl is confined to when the caller gives no `include_path`: the
+ * start URL's path, taken as a directory (`/docs/index.html` → `/docs`). None
+ * for a site root.
+ *
+ * Without it the sitemap and map strategies ignored the start URL's path
+ * entirely — `crawl_site("https://valkey.io/docs", max_pages: 5)` returned the
+ * home page and four author pages, the first five entries of the site-wide
+ * sitemap — and BFS wandered out of the section through its navigation links.
+ * Firecrawl's own crawl (phase 1) already limits itself to the start URL's
+ * subpaths by default; this makes the other strategies agree with it.
+ */
+export function defaultCrawlScope(url: string): string | undefined {
+  const segments = new URL(url).pathname.split("/").filter(Boolean);
+  if (segments.at(-1)?.includes(".")) segments.pop();
+  return segments.length > 0 ? `/${segments.join("/")}` : undefined;
+}
+
+/** Whether `url`'s path is `scope` or below it, on a segment boundary. */
+export function inCrawlScope(url: string, scope: string): boolean {
+  try {
+    const { pathname } = new URL(url);
+    return pathname === scope || pathname.startsWith(`${scope}/`);
+  } catch {
+    return false;
+  }
+}
+
 export async function mapCrawl(
   url: string,
   maxPages: number,
   includePath?: string,
   excludePath?: string,
+  scope?: string,
 ): Promise<CrawlManifest | null> {
   let urls = await firecrawlMapUrls(url);
   if (!urls || urls.length === 0) return null;
 
   if (includePath) urls = urls.filter((u) => u.includes(includePath));
   if (excludePath) urls = urls.filter((u) => !u.includes(excludePath));
+  if (scope) urls = urls.filter((u) => inCrawlScope(u, scope));
   if (urls.length === 0) return null;
 
   const pages = await batchFetch(urls, maxPages);
@@ -450,6 +482,7 @@ export async function sitemapCrawl(
   maxPages: number,
   includePath?: string,
   excludePath?: string,
+  scope?: string,
 ): Promise<CrawlManifest | null> {
   try {
     const origin = new URL(url).origin;
@@ -458,6 +491,7 @@ export async function sitemapCrawl(
 
     if (includePath) urls = urls.filter((u) => u.includes(includePath));
     if (excludePath) urls = urls.filter((u) => !u.includes(excludePath));
+    if (scope) urls = urls.filter((u) => inCrawlScope(u, scope));
     if (urls.length === 0) return null;
 
     const pages = await batchFetch(urls, maxPages);
@@ -486,6 +520,7 @@ export async function bfsCrawl(
   sameDomainOnly: boolean,
   includePath?: string,
   excludePath?: string,
+  scope?: string,
 ): Promise<CrawlManifest> {
   const startHost = new URL(startUrl).hostname;
   const visited = new Set<string>();
@@ -550,6 +585,7 @@ export async function bfsCrawl(
           if (sameDomainOnly && parsed.hostname !== startHost) continue;
           if (includePath && !parsed.pathname.includes(includePath)) continue;
           if (excludePath && parsed.pathname.includes(excludePath)) continue;
+          if (scope && !inCrawlScope(normalized, scope)) continue;
 
           queue.push({ url: normalized, depth: item.depth + 1 });
         }
@@ -610,9 +646,13 @@ export async function crawlSite(
     }
   }
 
+  // An explicit include_path — including "/" for the whole site — replaces the
+  // default scope rather than narrowing it.
+  const scope = includePath === undefined ? defaultCrawlScope(url) : undefined;
+
   let manifest: CrawlManifest | null = null;
 
-  // Phase 1: Firecrawl
+  // Phase 1: Firecrawl (scopes itself to the start URL's subpaths)
   if (FIRECRAWL_URL) {
     manifest = await firecrawlCrawl(url, maxPages, includePath, excludePath);
     if (manifest) {
@@ -625,7 +665,7 @@ export async function crawlSite(
   // absent, stale or split across nested indexes. Under v1 firecrawlMapUrls
   // short-circuits, so this costs a predicate and no request.
   if (!manifest && FIRECRAWL_URL && firecrawlSupportsMap()) {
-    manifest = await mapCrawl(url, maxPages, includePath, excludePath);
+    manifest = await mapCrawl(url, maxPages, includePath, excludePath, scope);
     if (manifest) {
       incCounter("crawl", { strategy: "map", outcome: "fallback_map" });
     }
@@ -633,7 +673,13 @@ export async function crawlSite(
 
   // Phase 2: Sitemap
   if (!manifest) {
-    manifest = await sitemapCrawl(url, maxPages, includePath, excludePath);
+    manifest = await sitemapCrawl(
+      url,
+      maxPages,
+      includePath,
+      excludePath,
+      scope,
+    );
     if (manifest) {
       incCounter("crawl", { strategy: "sitemap", outcome: "fallback_sitemap" });
     }
@@ -648,11 +694,16 @@ export async function crawlSite(
       sameDomainOnly,
       includePath,
       excludePath,
+      scope,
     );
     if (manifest) {
       incCounter("crawl", { strategy: "bfs", outcome: "fallback_bfs" });
     }
   }
+
+  const scopeNote = scope
+    ? `Limited to pages under ${scope}/ (the start URL's path); pass include_path "/" to crawl the whole site.`
+    : undefined;
 
   if (!manifest) {
     incCounter("crawl", { strategy: "none", outcome: "error" });
@@ -662,8 +713,16 @@ export async function crawlSite(
       page_count: 0,
       pages: [],
       cached: false,
-      note: "All crawl strategies failed. No sitemap found and BFS is disabled.",
+      note: scope
+        ? `All crawl strategies failed: no sitemap entries under ${scope}/${CRAWL_BFS_ENABLED ? "" : " and BFS is disabled"}. ${scopeNote}`
+        : "All crawl strategies failed. No sitemap found and BFS is disabled.",
     };
+  }
+
+  if (scopeNote && manifest.strategy !== "firecrawl") {
+    manifest.note = manifest.note
+      ? `${manifest.note}. ${scopeNote}`
+      : scopeNote;
   }
 
   // Cache the manifest
