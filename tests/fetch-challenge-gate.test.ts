@@ -120,7 +120,7 @@ vi.mock("../src/routing.js", () => ({
 vi.mock("../src/tiers/index.js", () => ({
   fetchRawHtmlForMetadata: vi.fn().mockResolvedValue(null),
   githubFetch: vi.fn(),
-  isGithubUrl: () => false,
+  isGithubFastPathUrl: () => false,
   rawFetch: vi.fn(),
   solverFetch: vi.fn().mockResolvedValue(null),
   tier2: { name: "tier2_crawl4ai", slot: "tier2", fetch: vi.fn() },

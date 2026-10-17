@@ -32,7 +32,7 @@ src/
     crawl4ai.ts   # Tier 2: Crawl4AI headless fetch + Readability comparison
     raw.ts        # Tier 3: raw HTTP + Readability; fetchRawHtmlForMetadata for post-extract
     wayback.ts    # Tier 4: Wayback Machine CDX lookup + rawFetch (opt-in, WAYBACK_ENABLED)
-    github.ts     # GitHub blob/README API fetch
+    github.ts     # GitHub fast path: README, blob, tree, releases (API); other github.com pages take the cascade
     index.ts      # Barrel re-export
   reranker.ts     # Jina-compatible reranker client + recency weighting
   ollama.ts       # Ollama client (query expansion + summarization)
