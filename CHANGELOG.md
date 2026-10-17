@@ -6,6 +6,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- **`crawl_site` now stays under the start URL's path.** The sitemap, `/map` and BFS strategies
+  ignored the path: `crawl_site("https://valkey.io/docs", max_pages: 5)` returned the home page
+  and four author pages — the first five entries of the site-wide sitemap — and no docs, and
+  BFS followed navigation links out of the section. A start URL with a path now confines every
+  strategy to that path and below, on a segment boundary (`/docs` matches `/docs/install`, not
+  `/docs-old` or `/blog/docs`), which is what Firecrawl's crawl, phase 1, already did. The
+  manifest note says when the scope applied.
+  - **Behaviour change:** a crawl that started at a subpath and relied on getting the whole
+    site now gets only that section. Pass `include_path: "/"` for the old result; any explicit
+    `include_path` replaces the default scope. A start URL at the site root is unaffected.
+  - An empty scope returns an error manifest whose note names the scope and the opt-out,
+    instead of pages from elsewhere on the site.
+- **`docs/tools.md` listed a `bfs` parameter on `crawl_site` that the tool has never taken**;
+  BFS is the server-side `CRAWL_BFS_ENABLED` switch. The row now lists the real parameters.
+
 ## [3.30.1] - 2026-10-06
 
 Dependency release. No application code changed.
