@@ -28,6 +28,14 @@ Two contributed fixes from @blakemartz (#89, #90), empty optional arguments acce
     instead of pages from elsewhere on the site.
   - Manifests are cached under a key that includes the default scope, so a site-wide manifest
     an earlier version cached for the same start URL is not served as the scoped result.
+  - A start path ending in `/` keeps its last segment even when it contains a dot, so
+    `https://example.com/v1.2/` is scoped to `/v1.2`. A dotted last segment without a trailing
+    slash (`/docs/index.html`) is still read as a file name.
+  - An explicit `include_path` now reaches past the start path in the Firecrawl phase too:
+    under `FIRECRAWL_API_VERSION=v2` the crawl request sends `crawlEntireDomain`. Before this,
+    Firecrawl stayed under the start URL's path, so `include_path: "/"` from a subpath returned
+    only that section. Under v1, where the option is not available, `crawl_site` skips the
+    Firecrawl phase when `include_path` is given.
 - **`docs/tools.md` listed a `bfs` parameter on `crawl_site` that the tool has never taken**;
   BFS is the server-side `CRAWL_BFS_ENABLED` switch. The row now lists the real parameters (#90).
 - **zod 3.25.76 → 4.6.7.** zod 3 has no fix for GHSA-mrhx-c7xc-m3w5. Tool behaviour is unchanged.
@@ -64,6 +72,12 @@ Two contributed fixes from @blakemartz (#89, #90), empty optional arguments acce
     (24 h by default); `clear_cache` with `target: "fetch"` drops them.
   - A `tree` URL's ref is sent to the API as one query value, so a ref containing `&` or `=`
     cannot add parameters to the request.
+  - A `tree` URL whose ref contains a slash (`…/tree/feature/topic/docs`) is resolved
+    against the repo's branches, then tags, instead of taking `feature` as the ref.
+  - A release URL with a query (`…/releases?page=2`) takes the normal fetch cascade. The API
+    call ignores the query, so page 2 was answered with page 1.
+- **The `search_and_fetch` and `fetch_url` descriptions said every GitHub URL is fetched via
+  the GitHub API.** They now name the repo, file, directory and release shapes that are.
 - **An empty or null optional argument failed the whole call** (#79). Some models send every
   field of a tool's schema and fill the ones they mean to omit with `""` or `null`. `time_range:
   ""` was not one of the enum values, and `num_results: ""` coerced to 0, below the minimum of 1,
