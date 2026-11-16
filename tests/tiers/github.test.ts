@@ -51,6 +51,14 @@ function textResponse(body: string, opts?: { status?: number }) {
   };
 }
 
+/** The two matching-refs lookups a multi-segment tree URL makes first
+ * (branches, then tags), answered with no match. */
+function noMatchingRefs() {
+  mockFetch
+    .mockResolvedValueOnce(jsonResponse([]))
+    .mockResolvedValueOnce(jsonResponse([]));
+}
+
 describe("isGithubUrl", () => {
   it("matches github.com", () => {
     expect(isGithubUrl("https://github.com/TadMSTR/searxng-mcp")).toBe(true);
@@ -107,6 +115,10 @@ describe("isGithubFastPathUrl", () => {
     "https://github.com/valkey-io/valkey/blob",
     "https://github.com/valkey-io",
     "https://github.com/",
+    // A query picks a different release page; the API call ignores it.
+    "https://github.com/valkey-io/valkey/releases?page=2",
+    "https://github.com/valkey-io/valkey/releases?q=9.1&expanded=true",
+    "https://github.com/valkey-io/valkey/releases/latest?x=1",
   ])("leaves %s to the normal cascade", (url) => {
     expect(isGithubFastPathUrl(url)).toBe(false);
   });
@@ -271,6 +283,7 @@ describe("githubFetch — github.com", () => {
 
   it("fetches the named directory's README for a tree URL, at that ref", async () => {
     const content = Buffer.from("# modules").toString("base64");
+    noMatchingRefs();
     mockFetch.mockResolvedValueOnce(
       jsonResponse({
         content,
@@ -302,17 +315,23 @@ describe("githubFetch — github.com", () => {
   });
 
   it("encodes a tree ref as one query value, so it cannot add parameters", async () => {
+    noMatchingRefs();
     mockFetch
       .mockResolvedValueOnce(jsonResponse({}, { status: 404 }))
       .mockResolvedValueOnce(jsonResponse([]));
     await githubFetch("https://github.com/a/b/tree/main&per_page=1/docs");
     expect(mockFetch).toHaveBeenNthCalledWith(
       1,
+      "https://api.github.com/repos/a/b/git/matching-refs/heads/main%26per_page%3D1",
+      expect.anything(),
+    );
+    expect(mockFetch).toHaveBeenNthCalledWith(
+      3,
       "https://api.github.com/repos/a/b/readme/docs?ref=main%26per_page%3D1",
       expect.anything(),
     );
     expect(mockFetch).toHaveBeenNthCalledWith(
-      2,
+      4,
       "https://api.github.com/repos/a/b/contents/docs?ref=main%26per_page%3D1",
       expect.anything(),
     );
@@ -343,6 +362,7 @@ describe("githubFetch — github.com", () => {
   });
 
   it("lists a directory's files when it has no README", async () => {
+    noMatchingRefs();
     mockFetch
       .mockResolvedValueOnce(jsonResponse({}, { status: 404 }))
       .mockResolvedValueOnce(
@@ -363,11 +383,96 @@ describe("githubFetch — github.com", () => {
   });
 
   it("rethrows a non-404 README error for a tree URL rather than listing", async () => {
+    noMatchingRefs();
     mockFetch.mockResolvedValueOnce(jsonResponse({}, { status: 500 }));
     await expect(
       githubFetch("https://github.com/a/b/tree/main/docs"),
     ).rejects.toThrow("GitHub API error: 500");
-    expect(mockFetch).toHaveBeenCalledOnce();
+    expect(mockFetch).toHaveBeenCalledTimes(3);
+  });
+
+  // A ref can contain slashes, and the URL has no boundary between ref and
+  // path. The first segment alone sent ref=feature for branch feature/topic.
+  it("resolves a slashed branch from the matching refs, longest first", async () => {
+    const content = Buffer.from("# api").toString("base64");
+    mockFetch
+      .mockResolvedValueOnce(
+        jsonResponse([
+          { ref: "refs/heads/feature-x" },
+          { ref: "refs/heads/feature/topic" },
+        ]),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse({ content, name: "README.md", html_url: "x" }),
+      );
+    const result = await githubFetch(
+      "https://github.com/a/b/tree/feature/topic/docs/api",
+    );
+    expect(mockFetch).toHaveBeenNthCalledWith(
+      1,
+      "https://api.github.com/repos/a/b/git/matching-refs/heads/feature",
+      expect.anything(),
+    );
+    expect(mockFetch).toHaveBeenLastCalledWith(
+      "https://api.github.com/repos/a/b/readme/docs/api?ref=feature%2Ftopic",
+      expect.anything(),
+    );
+    expect(mockFetch).toHaveBeenCalledTimes(2);
+    expect(result.text).toBe("# api");
+  });
+
+  it("resolves a slashed tag when no branch matches, and lists at that ref", async () => {
+    mockFetch
+      .mockResolvedValueOnce(jsonResponse([{ ref: "refs/heads/release" }]))
+      .mockResolvedValueOnce(
+        jsonResponse([{ ref: "refs/tags/release/3.31.0" }]),
+      )
+      .mockResolvedValueOnce(jsonResponse({}, { status: 404 }))
+      .mockResolvedValueOnce(jsonResponse([{ name: "a.md", type: "file" }]));
+    const result = await githubFetch(
+      "https://github.com/a/b/tree/release/3.31.0/docs",
+    );
+    expect(mockFetch).toHaveBeenNthCalledWith(
+      2,
+      "https://api.github.com/repos/a/b/git/matching-refs/tags/release",
+      expect.anything(),
+    );
+    expect(mockFetch).toHaveBeenLastCalledWith(
+      "https://api.github.com/repos/a/b/contents/docs?ref=release%2F3.31.0",
+      expect.anything(),
+    );
+    expect(result.text).toContain("No README in docs at release/3.31.0");
+  });
+
+  it("names the whole path as a slashed branch with no directory left", async () => {
+    const content = Buffer.from("# root").toString("base64");
+    mockFetch
+      .mockResolvedValueOnce(
+        jsonResponse([{ ref: "refs/heads/feature/topic" }]),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse({ content, name: "README.md", html_url: "x" }),
+      );
+    await githubFetch("https://github.com/a/b/tree/feature/topic");
+    expect(mockFetch).toHaveBeenLastCalledWith(
+      "https://api.github.com/repos/a/b/readme?ref=feature%2Ftopic",
+      expect.anything(),
+    );
+  });
+
+  it("falls back to the first segment when the ref lookup fails", async () => {
+    const content = Buffer.from("# docs").toString("base64");
+    mockFetch
+      .mockResolvedValueOnce(jsonResponse({}, { status: 403 }))
+      .mockResolvedValueOnce(
+        jsonResponse({ content, name: "README.md", html_url: "x" }),
+      );
+    await githubFetch("https://github.com/a/b/tree/main/docs");
+    expect(mockFetch).toHaveBeenLastCalledWith(
+      "https://api.github.com/repos/a/b/readme/docs?ref=main",
+      expect.anything(),
+    );
+    expect(mockFetch).toHaveBeenCalledTimes(2);
   });
 });
 

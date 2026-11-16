@@ -49,7 +49,11 @@ export function isGithubFastPathUrl(url: string): boolean {
   if (parsed.hostname !== "github.com") return true;
   const parts = parsed.pathname.split("/").filter(Boolean);
   if (parts.length === 2) return true;
-  if (parts[2] === "releases") return releasesApiPath(parts.slice(3)) !== null;
+  // A query changes which releases the page shows (`?page=2`, `?q=`), and the
+  // API call below takes none of it: `…/releases?page=2` was answered with
+  // page 1 and cached under the page-2 URL. Those go to the cascade.
+  if (parts[2] === "releases")
+    return parsed.search === "" && releasesApiPath(parts.slice(3)) !== null;
   return parts.length >= 4 && (parts[2] === "blob" || parts[2] === "tree");
 }
 
@@ -139,6 +143,61 @@ async function fetchDirectoryListing(
       maxChars,
     );
   return { title: `${owner}/${repo}/${dir} (${branch})`, url: pageUrl, text };
+}
+
+/**
+ * Split a `tree` URL's path after `tree/` into the ref and the directory.
+ *
+ * A ref can contain slashes (`feature/topic`, `release/3.31.0`), and the URL
+ * gives no boundary between ref and path. Taking the first segment as the ref
+ * sent `ref=feature` for a branch named `feature/topic`, so the request failed,
+ * or named another ref's directory when both existed. When there is more than
+ * one segment, ask the API which branches (then tags) start with the first one
+ * and take the longest that the path begins with on a segment boundary. Git
+ * refuses `feature` beside `feature/topic` among branches, so a branch match
+ * is unambiguous. Any lookup failure falls back to the first segment.
+ */
+async function splitTreeRef(
+  owner: string,
+  repo: string,
+  rest: string[],
+): Promise<{ ref: string; dirPath: string[] }> {
+  const fallback = { ref: rest[0] ?? "", dirPath: rest.slice(1) };
+  if (rest.length < 2) return fallback;
+  const decoded = rest.map((seg) => {
+    try {
+      return decodeURIComponent(seg);
+    } catch {
+      return seg;
+    }
+  });
+  for (const kind of ["heads", "tags"]) {
+    let names: string[];
+    try {
+      const res = await fetchWithRedirectGuard(
+        `https://api.github.com/repos/${owner}/${repo}/git/matching-refs/${kind}/${encodeURIComponent(decoded[0])}`,
+        apiHeaders(),
+        "GitHub API error",
+      );
+      const data: unknown = JSON.parse(await readBoundedText(res));
+      if (!Array.isArray(data)) continue;
+      const prefix = `refs/${kind}/`;
+      names = data
+        .map((r) => (r as { ref?: unknown })?.ref)
+        .filter(
+          (r): r is string => typeof r === "string" && r.startsWith(prefix),
+        )
+        .map((r) => r.slice(prefix.length));
+    } catch {
+      return fallback;
+    }
+    for (let k = rest.length; k >= 2; k--) {
+      if (names.includes(decoded.slice(0, k).join("/"))) {
+        return { ref: decoded.slice(0, k).join("/"), dirPath: rest.slice(k) };
+      }
+    }
+  }
+  return fallback;
 }
 
 /**
@@ -293,7 +352,11 @@ export async function githubFetch(
   // Repo root, or a tree directory — fetch that directory's README via the
   // GitHub API. A tree URL used to get the repo-root README whatever directory
   // it named.
-  const [owner, repo, , branch, ...dirPath] = parts;
+  const [owner, repo] = parts;
+  const { ref: branch, dirPath } =
+    parts[2] === "tree"
+      ? await splitTreeRef(owner, repo, parts.slice(3))
+      : { ref: "", dirPath: [] as string[] };
   let apiUrl = `https://api.github.com/repos/${owner}/${repo}/readme`;
   if (parts[2] === "tree") {
     if (dirPath.length > 0) apiUrl += `/${dirPath.join("/")}`;
