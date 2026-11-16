@@ -44,6 +44,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
     it is.
   - Results cached by earlier versions keep serving the README for up to the fetch TTL
     (24 h by default); `clear_cache` with `target: "fetch"` drops them.
+- **An empty or null optional argument failed the whole call** (#79). Some models send every
+  field of a tool's schema and fill the ones they mean to omit with `""` or `null`. `time_range:
+  ""` was not one of the enum values, and `num_results: ""` coerced to 0, below the minimum of 1,
+  so the call was rejected with `-32602` and every search from such a model failed. On all seven
+  tools, `""` and `null` in an optional argument now mean the argument was not given, and its
+  default applies. Required arguments (`query`, `url`) are unchanged, and a non-empty invalid
+  value is still an error. The published input schemas are unchanged.
+  - `crawl_site` with `include_path: ""` gets the default scope described under Changed, as if
+    `include_path` were omitted, rather than switching the scope off.
 
 ## [3.30.1] - 2026-10-06
 

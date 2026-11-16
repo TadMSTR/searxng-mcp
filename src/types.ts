@@ -159,10 +159,35 @@ export interface GitHubReadmeResponse {
   html_url: string;
 }
 
-export const CategorySchema = z
-  .enum(["general", "news", "it", "science"])
-  .default("general");
+function blankToUndefined(value: unknown): unknown {
+  return value === "" || value === null ? undefined : value;
+}
 
-export const TimeRangeSchema = z
-  .enum(["day", "week", "month", "year"])
-  .optional();
+/**
+ * An optional or defaulted tool argument for which `""` and `null` mean "not
+ * given": the argument is treated as absent, so its default applies.
+ *
+ * Some models fill every field of a tool's schema and send `""` or `null` for
+ * the ones they mean to leave out. Each of those failed validation and failed
+ * the whole call: `time_range: ""` is not one of the enum values, and
+ * `num_results: ""` coerced to 0, below `.min(1)` (#79). Every search from one
+ * such model failed this way.
+ *
+ * Wrap the complete argument schema, including its `.optional()` or
+ * `.default()`, and put `.describe()` on the result. zod 4 derives the
+ * published JSON Schema of a preprocess from its inner schema, so the enum
+ * values, default, bounds and description clients see are unchanged
+ * (tests/tools-list-schema.test.ts pins them). Required arguments are never
+ * wrapped, so a null `query` or `url` is still rejected.
+ */
+export function optionalArg<T extends z.ZodType>(schema: T) {
+  return z.preprocess(blankToUndefined, schema);
+}
+
+export const CategorySchema = optionalArg(
+  z.enum(["general", "news", "it", "science"]).default("general"),
+);
+
+export const TimeRangeSchema = optionalArg(
+  z.enum(["day", "week", "month", "year"]).optional(),
+);

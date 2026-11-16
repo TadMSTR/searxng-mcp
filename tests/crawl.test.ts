@@ -1,4 +1,7 @@
 import { createHash } from "node:crypto";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../src/cache.js", () => ({
@@ -254,7 +257,7 @@ describe("crawlSite manifest cache", () => {
 
 // ─── 6. clear_cache "crawl" ──────────────────────────────────────────────────
 
-import { handleClearCache } from "../src/tools.js";
+import { handleClearCache, registerTools } from "../src/tools.js";
 
 describe("handleClearCache crawl target", () => {
   it("calls cacheClear with crawl:* pattern for target='crawl'", async () => {
@@ -462,6 +465,41 @@ describe("crawlSite default scope", () => {
     mockSitemapSite(SCOPE_SITEMAP_LOCS);
     await crawlSite("https://example.com/", 20, true);
     expect(cacheGetMock.mock.calls[0][0]).toBe(rootKey);
+  });
+
+  it('applies the default scope when a client sends include_path: ""', async () => {
+    // #79: `""` in an optional argument means "not given". Without that,
+    // crawlSite saw includePath "" — not undefined — and dropped the default
+    // scope, so this crawl returned the whole site.
+    mockSitemapSite(SCOPE_SITEMAP_LOCS);
+    const server = new McpServer({ name: "searxng-mcp", version: "test" });
+    registerTools(server);
+    const [clientTransport, serverTransport] =
+      InMemoryTransport.createLinkedPair();
+    const client = new Client({ name: "crawl-scope", version: "test" });
+    await Promise.all([
+      server.connect(serverTransport),
+      client.connect(clientTransport),
+    ]);
+    try {
+      const result = await client.callTool({
+        name: "crawl_site",
+        arguments: {
+          url: "https://example.com/docs",
+          max_pages: 5,
+          include_path: "",
+          exclude_path: null,
+        },
+      });
+      expect(result.isError).toBeFalsy();
+      const text = (result.content as Array<{ text: string }>)[0].text;
+      expect(text).toContain("https://example.com/docs/install");
+      expect(text).toContain("Limited to pages under /docs/");
+      expect(text).not.toContain("https://example.com/authors/a");
+    } finally {
+      await client.close();
+      await server.close();
+    }
   });
 
   it("explains an empty scope instead of returning unrelated pages", async () => {

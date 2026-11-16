@@ -11,15 +11,15 @@
           "description": "Search query"
         },
         "num_results": {
-          "default": 5,
           "description": "Number of results to return (default 5, max 20)",
+          "default": 5,
           "type": "number",
           "minimum": 1,
           "maximum": 20
         },
         "category": {
-          "default": "general",
           "description": "Search category: general, news, it, or science (default general)",
+          "default": "general",
           "type": "string",
           "enum": [
             "general",
@@ -195,8 +195,8 @@
           "description": "Search query"
         },
         "category": {
-          "default": "general",
           "description": "Search category: general, news, it, or science (default general)",
+          "default": "general",
           "type": "string",
           "enum": [
             "general",
@@ -216,8 +216,8 @@
           ]
         },
         "fetch_count": {
-          "default": 1,
           "description": "Number of top results to fetch full content for (default 1, max 3)",
+          "default": 1,
           "type": "number",
           "minimum": 1,
           "maximum": 3
@@ -320,15 +320,15 @@
           "description": "Research query to search for and summarize"
         },
         "fetch_count": {
-          "default": 3,
           "description": "Number of top results to fetch and synthesize (default 3, max 5)",
+          "default": 3,
           "type": "number",
           "minimum": 1,
           "maximum": 5
         },
         "category": {
-          "default": "general",
           "description": "Search category: general, news, it, or science (default general)",
+          "default": "general",
           "type": "string",
           "enum": [
             "general",
@@ -405,15 +405,15 @@
           "description": "Base URL to crawl. Its path scopes the crawl when include_path is omitted"
         },
         "max_pages": {
-          "default": 20,
           "description": "Maximum pages to crawl (default 20, max 100)",
+          "default": 20,
           "type": "number",
           "minimum": 1,
           "maximum": 100
         },
         "same_domain_only": {
-          "default": true,
           "description": "Restrict crawl to the same domain (default true)",
+          "default": true,
           "type": "boolean"
         },
         "include_path": {
@@ -441,8 +441,8 @@
       "type": "object",
       "properties": {
         "target": {
-          "default": "all",
           "description": "Which cache to clear: search results, fetched pages, crawl manifests, or all (default all)",
+          "default": "all",
           "type": "string",
           "enum": [
             "search",
