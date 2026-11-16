@@ -32,7 +32,7 @@ import { assertResolvedPublic } from "./ssrf-guard.js";
 import {
   fetchRawHtmlForMetadata,
   githubFetch,
-  isGithubUrl,
+  isGithubFastPathUrl,
   rawFetch,
   solverFetch,
   waybackFetch,
@@ -258,12 +258,14 @@ export async function fetchPage(
 
     let result: TierResult;
     let tierServed = "github";
-    if (isGithubUrl(url)) {
-      // GitHub fast path — routed through runTier() so its hit/miss/error is
-      // recorded in the domain-db and OTel like any other tier (SXNG-10).
-      // githubFetch throws on failure; runTier catches it, records an error
-      // attempt, and returns null, so we translate that back into a throw for
-      // the caller.
+    if (isGithubFastPathUrl(url)) {
+      // GitHub fast path — only for URL shapes it can serve as the page they
+      // name (repo root, blob, tree, releases, raw, API); other github.com
+      // pages such as issues take the normal cascade below. Routed through
+      // runTier() so its hit/miss/error is recorded in the domain-db and OTel
+      // like any other tier (SXNG-10). githubFetch throws on failure; runTier
+      // catches it, records an error attempt, and returns null, so we
+      // translate that back into a throw for the caller.
       const gh = await runTier<TierResult | null>("github", url, () =>
         githubFetch(url, storeChars),
       );

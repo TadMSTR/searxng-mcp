@@ -22,6 +22,125 @@ export function isGithubUrl(url: string): boolean {
   }
 }
 
+/**
+ * Whether the fast path can serve this URL *as the page it names*. Every
+ * raw.githubusercontent.com and api.github.com URL qualifies. On github.com
+ * only these shapes do: a repo root (README), a `blob` file (raw content), a
+ * `tree` directory (that directory's README, else its file listing) and the
+ * release pages (`/releases`, `/releases/latest`, `/releases/tag/<tag>`, read
+ * from the releases API — the rendered page buries the notes under ~100 lines
+ * of site navigation, and GitHub's robots.txt points crawlers at the API).
+ *
+ * Every github.com URL used to be claimed, and every shape but `blob` was
+ * answered with the repo-root README: `…/valkey/releases` returned Valkey's
+ * README with nothing to say it was not the release notes, so an agent read it
+ * as the answer. Shapes not listed above — issues, pulls, commits, wiki, owner
+ * pages, release asset downloads — now fall through to the normal cascade,
+ * which renders the actual page.
+ */
+export function isGithubFastPathUrl(url: string): boolean {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return false;
+  }
+  if (!GITHUB_HOSTS.has(parsed.hostname)) return false;
+  if (parsed.hostname !== "github.com") return true;
+  const parts = parsed.pathname.split("/").filter(Boolean);
+  if (parts.length === 2) return true;
+  if (parts[2] === "releases") return releasesApiPath(parts.slice(3)) !== null;
+  return parts.length >= 4 && (parts[2] === "blob" || parts[2] === "tree");
+}
+
+/** API path suffix for a github.com release page, or null for shapes this tier
+ * does not serve (e.g. `/releases/download/...` asset links). */
+function releasesApiPath(rest: string[]): string | null {
+  if (rest.length === 0) return "/releases?per_page=10";
+  if (rest.length === 1 && rest[0] === "latest") return "/releases/latest";
+  if (rest.length >= 2 && rest[0] === "tag")
+    return `/releases/tags/${rest.slice(1).join("/")}`;
+  return null;
+}
+
+interface GitHubRelease {
+  tag_name: string;
+  name: string | null;
+  body: string | null;
+  html_url: string;
+  published_at: string | null;
+  prerelease: boolean;
+  draft: boolean;
+}
+
+function renderRelease(r: GitHubRelease): string {
+  const heading =
+    r.name && r.name !== r.tag_name ? `${r.tag_name} — ${r.name}` : r.tag_name;
+  const flags = [r.prerelease && "pre-release", r.draft && "draft"]
+    .filter(Boolean)
+    .join(", ");
+  const date = r.published_at?.slice(0, 10) ?? "unpublished";
+  return `## ${heading}\n${date}${flags ? ` (${flags})` : ""} · ${r.html_url}\n\n${(r.body ?? "").trim()}`;
+}
+
+/** Release notes as markdown, newest first — the list (10 most recent), the
+ * latest release, or one tag. */
+async function fetchReleases(
+  owner: string,
+  repo: string,
+  rest: string[],
+  pageUrl: string,
+  maxChars: number,
+): Promise<{ title: string; url: string; text: string }> {
+  const suffix = releasesApiPath(rest);
+  if (suffix === null) {
+    throw new Error(`GitHub fast path does not handle this URL: ${pageUrl}`);
+  }
+  const res = await fetchWithRedirectGuard(
+    `https://api.github.com/repos/${owner}/${repo}${suffix}`,
+    apiHeaders(),
+    "GitHub API error",
+  );
+  const data = JSON.parse(await readBoundedText(res)) as
+    | GitHubRelease
+    | GitHubRelease[];
+  const releases = Array.isArray(data) ? data : [data];
+  const text =
+    releases.length > 0
+      ? releases.map(renderRelease).join("\n\n---\n\n").slice(0, maxChars)
+      : "This repository has no published releases.";
+  const which = rest.length === 0 ? "releases" : (rest.at(-1) ?? "releases");
+  return { title: `${owner}/${repo} — ${which}`, url: pageUrl, text };
+}
+
+/** File listing for a tree directory that has no README. */
+async function fetchDirectoryListing(
+  owner: string,
+  repo: string,
+  branch: string,
+  dirPath: string[],
+  pageUrl: string,
+  maxChars: number,
+): Promise<{ title: string; url: string; text: string }> {
+  const dir = dirPath.join("/");
+  const res = await fetchWithRedirectGuard(
+    `https://api.github.com/repos/${owner}/${repo}/contents/${dir}?ref=${branch}`,
+    apiHeaders(),
+    "GitHub API error",
+  );
+  const entries = JSON.parse(await readBoundedText(res)) as Array<{
+    name: string;
+    type: string;
+  }>;
+  const lines = entries.map((e) => `- ${e.name}${e.type === "dir" ? "/" : ""}`);
+  const text =
+    `No README in ${dir || "/"} at ${branch}. Directory listing:\n\n${lines.join("\n")}`.slice(
+      0,
+      maxChars,
+    );
+  return { title: `${owner}/${repo}/${dir} (${branch})`, url: pageUrl, text };
+}
+
 function rawHeaders(): Record<string, string> {
   const headers: Record<string, string> = { "User-Agent": USER_AGENT };
   if (GITHUB_TOKEN) headers.Authorization = `Bearer ${GITHUB_TOKEN}`;
@@ -135,9 +254,18 @@ export async function githubFetch(
     return fetchApiUrl(url, maxChars);
   }
 
-  // github.com — blob URL rewrite or repo-root README fetch
+  // github.com — blob URL rewrite, release notes, or a repo-root / directory
+  // README fetch. Refuse any other shape rather than answer it with the root
+  // README (see isGithubFastPathUrl); fetchPage never routes one here.
+  if (!isGithubFastPathUrl(url)) {
+    throw new Error(`GitHub fast path does not handle this URL: ${url}`);
+  }
   const parts = parsed.pathname.split("/").filter(Boolean);
-  // parts: [owner, repo] or [owner, repo, "blob"|"tree", branch, ...path]
+  // parts: [owner, repo], [owner, repo, "blob"|"tree", branch, ...path] or
+  // [owner, repo, "releases", ...]
+  if (parts[2] === "releases") {
+    return fetchReleases(parts[0], parts[1], parts.slice(3), url, maxChars);
+  }
 
   if (parts.length >= 4 && parts[2] === "blob") {
     // Rewrite blob URL to raw content
@@ -146,14 +274,34 @@ export async function githubFetch(
     return fetchRawContent(rawUrl, maxChars);
   }
 
-  // Repo root or tree — fetch README via GitHub API
-  const [owner, repo] = parts;
-  const apiUrl = `https://api.github.com/repos/${owner}/${repo}/readme`;
-  const res = await fetchWithRedirectGuard(
-    apiUrl,
-    apiHeaders(),
-    "GitHub API error",
-  );
+  // Repo root, or a tree directory — fetch that directory's README via the
+  // GitHub API. A tree URL used to get the repo-root README whatever directory
+  // it named.
+  const [owner, repo, , branch, ...dirPath] = parts;
+  let apiUrl = `https://api.github.com/repos/${owner}/${repo}/readme`;
+  if (parts[2] === "tree") {
+    if (dirPath.length > 0) apiUrl += `/${dirPath.join("/")}`;
+    apiUrl += `?ref=${branch}`;
+  }
+  let res: Response;
+  try {
+    res = await fetchWithRedirectGuard(
+      apiUrl,
+      apiHeaders(),
+      "GitHub API error",
+    );
+  } catch (err) {
+    // A directory with no README: list its files instead. The rendered tree
+    // page is no fallback — robots.txt disallows /*/tree/ for crawlers.
+    if (
+      parts[2] === "tree" &&
+      err instanceof Error &&
+      err.message.startsWith("GitHub API error: 404")
+    ) {
+      return fetchDirectoryListing(owner, repo, branch, dirPath, url, maxChars);
+    }
+    throw err;
+  }
   // Bounded read before JSON.parse — see fetchApiUrl above.
   const data = JSON.parse(await readBoundedText(res)) as GitHubReadmeResponse;
   const text = Buffer.from(data.content, "base64")

@@ -93,17 +93,20 @@ vi.mock("../src/extractors/post-extract.js", () => ({
   })),
 }));
 
-vi.mock("../src/tiers/index.js", () => ({
+vi.mock("../src/tiers/index.js", async () => ({
+  // The real routing predicate: which github.com shapes take the fast path is
+  // exactly what this file tests, so a hand-copied stand-in would test itself.
+  isGithubFastPathUrl: (
+    await vi.importActual<typeof import("../src/tiers/github.js")>(
+      "../src/tiers/github.js",
+    )
+  ).isGithubFastPathUrl,
   fetchRawHtmlForMetadata: vi.fn().mockResolvedValue(null),
   githubFetch: vi.fn().mockResolvedValue({
     title: "github result",
     url: "https://raw.githubusercontent.com/a/b/main/f.txt",
     text: "file contents",
   }),
-  isGithubUrl: (url: string) =>
-    ["github.com", "raw.githubusercontent.com", "api.github.com"].includes(
-      new URL(url).hostname,
-    ),
   tier2: { name: "tier2_crawl4ai", slot: "tier2", fetch: vi.fn() },
   waybackFetch: vi.fn().mockResolvedValue(null),
 }));
@@ -184,6 +187,29 @@ describe("fetchPage — GitHub fast path", () => {
 
   it("routes github.com through githubFetch", async () => {
     await fetchPage("https://github.com/a/b");
+    expect(githubFetchMock).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    "https://github.com/valkey-io/valkey/issues/1234",
+    "https://github.com/valkey-io/valkey/pull/1234",
+    "https://github.com/valkey-io",
+  ])(
+    "sends %s down the normal cascade, not the README fast path",
+    async (url) => {
+      // Used to return the repo-root README as if it were this page.
+      await expect(fetchPage(url)).rejects.toThrow("All fetch tiers failed");
+      expect(githubFetchMock).not.toHaveBeenCalled();
+      expect(checkRobotsMock).toHaveBeenCalledOnce();
+    },
+  );
+
+  it.each([
+    "https://github.com/a/b/tree/main/docs",
+    "https://github.com/a/b/releases",
+    "https://github.com/a/b/releases/tag/v1.0",
+  ])("routes %s through githubFetch", async (url) => {
+    await fetchPage(url);
     expect(githubFetchMock).toHaveBeenCalledOnce();
   });
 

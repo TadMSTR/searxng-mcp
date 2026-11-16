@@ -6,6 +6,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **`fetch_url` answered most github.com pages with the repo's README.** The GitHub fast path
+  claimed every `github.com` URL but only knew two shapes, `blob` files and the repo root, so
+  `…/releases`, `…/releases/tag/<tag>`, `…/issues/<n>`, `…/pull/<n>`, `…/commit/<sha>`, wiki and
+  owner pages all came back as the root README — titled as the README, but returned for the
+  requested URL with no error. An agent asked for Valkey's latest release fetched
+  `github.com/valkey-io/valkey/releases`, got the README, and had to work out on its own that
+  the fetcher was wrong. A `tree` URL for a subdirectory got the root README too.
+  - Release pages (`/releases`, `/releases/latest`, `/releases/tag/<tag>`) now come from the
+    releases API as markdown: tag, name, date, pre-release flag, notes. The rendered page puts
+    roughly 100 lines of site navigation ahead of the notes, and GitHub's `robots.txt` points
+    crawlers at the API.
+  - `tree` URLs return that directory's README at that ref, or its file listing when it has
+    none (`robots.txt` disallows `/*/tree/`, so the cascade is no fallback there).
+  - Every other `github.com` page now takes the normal fetch cascade and is rendered as the page
+    it is.
+  - Results cached by earlier versions keep serving the README for up to the fetch TTL
+    (24 h by default); `clear_cache` with `target: "fetch"` drops them.
+
 ## [3.30.1] - 2026-10-06
 
 Dependency release. No application code changed.
