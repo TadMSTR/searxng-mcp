@@ -14,7 +14,11 @@ import {
 import { recordTierAttempt } from "./domain-db.js";
 import { assertPublicUrl, fetchPage } from "./fetch.js";
 import { readBoundedText, safeFetch } from "./fetch-utils.js";
-import { firecrawlEndpoint, firecrawlSupportsMap } from "./firecrawl-api.js";
+import {
+  firecrawlCapabilities,
+  firecrawlEndpoint,
+  firecrawlSupportsMap,
+} from "./firecrawl-api.js";
 import { logWarn } from "./log.js";
 import { incCounter, recordHistogram } from "./observability.js";
 import { checkRobots, getRobotsForOrigin } from "./robots.js";
@@ -142,7 +146,15 @@ export async function firecrawlCrawl(
       limit: maxPages,
       scrapeOptions: { formats: ["markdown"] },
     };
-    if (includePath) body.includePaths = [includePath];
+    if (includePath) {
+      body.includePaths = [includePath];
+      // Firecrawl follows only the start URL's subpaths by default, so without
+      // this an explicit include_path ("/" for the whole site, or a sibling
+      // section) could never widen the crawl past the start path. crawlSite
+      // skips this phase on a backend without the option.
+      if (firecrawlCapabilities().crawlEntireDomain)
+        body.crawlEntireDomain = true;
+    }
     if (excludePath) body.excludePaths = [excludePath];
 
     // Versioned via firecrawlEndpoint rather than a hardcoded prefix. This line
@@ -313,8 +325,11 @@ export async function firecrawlMapUrls(url: string): Promise<string[] | null> {
  * subpaths by default; this makes the other strategies agree with it.
  */
 export function defaultCrawlScope(url: string): string | undefined {
-  const segments = new URL(url).pathname.split("/").filter(Boolean);
-  if (segments.at(-1)?.includes(".")) segments.pop();
+  const { pathname } = new URL(url);
+  const segments = pathname.split("/").filter(Boolean);
+  // A last segment with a dot is a file name (`index.html`) only when the path
+  // doesn't end in "/": `/v1.2/` is a directory and keeps its scope.
+  if (!pathname.endsWith("/") && segments.at(-1)?.includes(".")) segments.pop();
   return segments.length > 0 ? `/${segments.join("/")}` : undefined;
 }
 
@@ -660,8 +675,13 @@ export async function crawlSite(
 
   let manifest: CrawlManifest | null = null;
 
-  // Phase 1: Firecrawl (scopes itself to the start URL's subpaths)
-  if (FIRECRAWL_URL) {
+  // Phase 1: Firecrawl (scopes itself to the start URL's subpaths). An
+  // explicit include_path needs crawlEntireDomain to reach outside them; a
+  // backend without it skips to the strategies that honour include_path.
+  if (
+    FIRECRAWL_URL &&
+    (includePath === undefined || firecrawlCapabilities().crawlEntireDomain)
+  ) {
     manifest = await firecrawlCrawl(url, maxPages, includePath, excludePath);
     if (manifest) {
       incCounter("crawl", { strategy: "firecrawl", outcome: "success" });

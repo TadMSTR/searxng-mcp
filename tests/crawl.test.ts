@@ -331,6 +331,10 @@ describe("defaultCrawlScope", () => {
     ["https://valkey.io/docs/", "/docs"],
     ["https://valkey.io/docs/index.html", "/docs"],
     ["https://valkey.io/docs/topics/persistence", "/docs/topics/persistence"],
+    // A trailing "/" makes a dotted last segment a directory, not a file.
+    ["https://example.com/v1.2/", "/v1.2"],
+    ["https://example.com/docs/v1.2/", "/docs/v1.2"],
+    ["https://example.com/docs/v1.2", "/docs"],
   ])("%s → %s", (url, scope) => {
     expect(defaultCrawlScope(url)).toBe(scope);
   });
