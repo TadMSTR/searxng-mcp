@@ -20,7 +20,7 @@
  *   1. Server-side, the SDK calls `safeParseAsync(outputSchema, payload)`.
  *      zod's `z.object()` is *strip*, not *strict*: an unrecognised key is
  *      silently removed and the parse SUCCEEDS. The server never rejected
- *      anything. Verified against zod 3.25 — `S.parse({known, bogus})` returns
+ *      anything. Verified against zod 3.25 and 4.6 — `S.parse({known, bogus})` returns
  *      `{known}` without throwing.
  *   2. Client-side, the SDK advertises `toJsonSchemaCompat(outputSchema)` in
  *      tools/list, and that conversion emits `additionalProperties: false`.
@@ -72,20 +72,24 @@ interface TiersNode {
   additionalProperties?: boolean;
 }
 
+interface AdvertisedModes {
+  properties: {
+    record: { anyOf: [{ properties: { tiers: TiersNode } }] };
+    aggregate: { anyOf: [{ properties: { tiers: TiersNode } }] };
+  };
+}
+
 /**
- * The `tiers` subschema as advertised. Only `record` carries the expanded
- * definition — `aggregate.tiers` is emitted as a `$ref` to it, which is exactly
- * why both tool modes broke together in #637 and why fixing one fixes both.
- * That relationship is asserted below rather than assumed.
+ * The `tiers` subschema as advertised, read from `record`. Both tool modes are
+ * built from the one `AllTiersOutputSchema`, which is exactly why both broke
+ * together in #637 and why fixing one fixes both. zod 3's converter emitted
+ * `aggregate.tiers` as a `$ref` to this node; zod 4's inlines an identical
+ * copy. Either way the two must be the same schema, and that is asserted below
+ * rather than assumed.
  */
 function advertisedTiers(): TiersNode {
-  const schema = ADVERTISED_SCHEMA as unknown as {
-    properties: {
-      record: { anyOf: [{ properties: { tiers: TiersNode } }] };
-      aggregate: { anyOf: [{ properties: { tiers: { $ref?: string } } }] };
-    };
-  };
-  return schema.properties.record.anyOf[0].properties.tiers;
+  return (ADVERTISED_SCHEMA as unknown as AdvertisedModes).properties.record
+    .anyOf[0].properties.tiers;
 }
 
 const NOW = Date.now();
@@ -129,21 +133,14 @@ describe("domain_stats advertised output schema", () => {
     );
   });
 
-  it("covers both tool modes from one definition — aggregate.tiers $refs record.tiers", () => {
+  it("covers both tool modes from one definition — aggregate.tiers equals record.tiers", () => {
     // #637 broke `single` and `aggregate` simultaneously because they share
     // this one node. If a future change gives them separate definitions, the
     // single-definition assumption the rest of this file rests on is void.
-    const aggregateTiers = (
-      ADVERTISED_SCHEMA as unknown as {
-        properties: {
-          aggregate: { anyOf: [{ properties: { tiers: { $ref?: string } } }] };
-        };
-      }
-    ).properties.aggregate.anyOf[0].properties.tiers;
+    const aggregateTiers = (ADVERTISED_SCHEMA as unknown as AdvertisedModes)
+      .properties.aggregate.anyOf[0].properties.tiers;
 
-    expect(aggregateTiers.$ref).toBe(
-      "#/properties/record/anyOf/0/properties/tiers",
-    );
+    expect(aggregateTiers).toEqual(advertisedTiers());
   });
 
   it("keeps additionalProperties:false — the strictness that makes this suite meaningful", () => {

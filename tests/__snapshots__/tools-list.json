@@ -11,50 +11,51 @@
           "description": "Search query"
         },
         "num_results": {
+          "default": 5,
+          "description": "Number of results to return (default 5, max 20)",
           "type": "number",
           "minimum": 1,
-          "maximum": 20,
-          "default": 5,
-          "description": "Number of results to return (default 5, max 20)"
+          "maximum": 20
         },
         "category": {
+          "default": "general",
+          "description": "Search category: general, news, it, or science (default general)",
           "type": "string",
           "enum": [
             "general",
             "news",
             "it",
             "science"
-          ],
-          "default": "general",
-          "description": "Search category: general, news, it, or science (default general)"
+          ]
         },
         "time_range": {
+          "description": "Limit results to: day, week, month, or year (omit for all time)",
           "type": "string",
           "enum": [
             "day",
             "week",
             "month",
             "year"
-          ],
-          "description": "Limit results to: day, week, month, or year (omit for all time)"
+          ]
         },
         "domain_profile": {
-          "type": "string",
-          "description": "Named domain profile to apply: 'homelab', 'dev', or omit for default filters"
+          "description": "Named domain profile to apply: 'homelab', 'dev', or omit for default filters",
+          "type": "string"
         },
         "expand": {
-          "type": "boolean",
-          "description": "Use local LLM to generate 2-3 query variants and merge results for a wider search surface (default: off). Adds ~3s latency; most useful for research queries where one phrasing may miss relevant results."
+          "description": "Use local LLM to generate 2-3 query variants and merge results for a wider search surface (default: off). Adds ~3s latency; most useful for research queries where one phrasing may miss relevant results.",
+          "type": "boolean"
         },
         "language": {
-          "type": "string",
-          "description": "BCP-47 language code (e.g. 'en', 'de') or 'all' for all languages. Omit to use the SearXNG instance default."
+          "description": "BCP-47 language code (e.g. 'en', 'de') or 'all' for all languages. Omit to use the SearXNG instance default.",
+          "type": "string"
         },
         "engines": {
-          "type": "string",
-          "description": "Comma-separated SearXNG engine names to restrict the search to (e.g. 'google,duckduckgo'). Forwarded verbatim; unknown/disabled engines degrade to fewer results rather than erroring."
+          "description": "Comma-separated SearXNG engine names to restrict the search to (e.g. 'google,duckduckgo'). Forwarded verbatim; unknown/disabled engines degrade to fewer results rather than erroring.",
+          "type": "string"
         },
         "site": {
+          "description": "Restrict results to one domain or a list of domains (e.g. 'github.com'). Best-effort — applied as a site: query operator; most engines honor it but some ignore it.",
           "anyOf": [
             {
               "type": "string"
@@ -65,20 +66,18 @@
                 "type": "string"
               }
             }
-          ],
-          "description": "Restrict results to one domain or a list of domains (e.g. 'github.com'). Best-effort — applied as a site: query operator; most engines honor it but some ignore it."
+          ]
         },
         "min_score": {
+          "description": "Drop results whose reranker relevance score is below this threshold (0-1, omit for no filtering). Filters on the RAW cross-encoder relevance score, not the recency-adjusted score used for ordering. Scores are strongly bimodal — relevant results cluster near 1.0 and irrelevant ones near 0, with little in between — so any value in roughly 0.01-0.9 behaves about the same; 0.01-0.1 is the useful range and 0.5 is not a midpoint. A high score means topically related, NOT correct: an Apache mod_proxy page scores 0.967 on an nginx query. Thresholds are model-dependent and not comparable across rerankers. No-op (with a logged warning) when the reranker is unavailable, since no scores exist to filter on.",
           "type": "number",
           "minimum": 0,
-          "maximum": 1,
-          "description": "Drop results whose reranker relevance score is below this threshold (0-1, omit for no filtering). Filters on the RAW cross-encoder relevance score, not the recency-adjusted score used for ordering. Scores are strongly bimodal — relevant results cluster near 1.0 and irrelevant ones near 0, with little in between — so any value in roughly 0.01-0.9 behaves about the same; 0.01-0.1 is the useful range and 0.5 is not a midpoint. A high score means topically related, NOT correct: an Apache mod_proxy page scores 0.967 on an nginx query. Thresholds are model-dependent and not comparable across rerankers. No-op (with a logged warning) when the reranker is unavailable, since no scores exist to filter on."
+          "maximum": 1
         }
       },
       "required": [
         "query"
       ],
-      "additionalProperties": false,
       "$schema": "http://json-schema.org/draft-07/schema#"
     },
     "outputSchema": {
@@ -178,8 +177,8 @@
         "suggestions",
         "results"
       ],
-      "additionalProperties": false,
-      "$schema": "http://json-schema.org/draft-07/schema#"
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false
     },
     "execution": {
       "taskSupport": "forbidden"
@@ -196,50 +195,51 @@
           "description": "Search query"
         },
         "category": {
+          "default": "general",
+          "description": "Search category: general, news, it, or science (default general)",
           "type": "string",
           "enum": [
             "general",
             "news",
             "it",
             "science"
-          ],
-          "default": "general",
-          "description": "Search category: general, news, it, or science (default general)"
+          ]
         },
         "time_range": {
+          "description": "Limit results to: day, week, month, or year (omit for all time)",
           "type": "string",
           "enum": [
             "day",
             "week",
             "month",
             "year"
-          ],
-          "description": "Limit results to: day, week, month, or year (omit for all time)"
+          ]
         },
         "fetch_count": {
+          "default": 1,
+          "description": "Number of top results to fetch full content for (default 1, max 3)",
           "type": "number",
           "minimum": 1,
-          "maximum": 3,
-          "default": 1,
-          "description": "Number of top results to fetch full content for (default 1, max 3)"
+          "maximum": 3
         },
         "domain_profile": {
-          "type": "string",
-          "description": "Named domain profile to apply: 'homelab', 'dev', or omit for default filters"
+          "description": "Named domain profile to apply: 'homelab', 'dev', or omit for default filters",
+          "type": "string"
         },
         "expand": {
-          "type": "boolean",
-          "description": "Use local LLM to generate 2-3 query variants and merge results for a wider search surface (default: off). Adds ~3s latency."
+          "description": "Use local LLM to generate 2-3 query variants and merge results for a wider search surface (default: off). Adds ~3s latency.",
+          "type": "boolean"
         },
         "language": {
-          "type": "string",
-          "description": "BCP-47 language code (e.g. 'en', 'de') or 'all' for all languages. Omit to use the SearXNG instance default."
+          "description": "BCP-47 language code (e.g. 'en', 'de') or 'all' for all languages. Omit to use the SearXNG instance default.",
+          "type": "string"
         },
         "engines": {
-          "type": "string",
-          "description": "Comma-separated SearXNG engine names to restrict the search to (e.g. 'google,duckduckgo'). Forwarded verbatim; unknown/disabled engines degrade to fewer results rather than erroring."
+          "description": "Comma-separated SearXNG engine names to restrict the search to (e.g. 'google,duckduckgo'). Forwarded verbatim; unknown/disabled engines degrade to fewer results rather than erroring.",
+          "type": "string"
         },
         "site": {
+          "description": "Restrict results to one domain or a list of domains (e.g. 'github.com'). Best-effort — applied as a site: query operator; most engines honor it but some ignore it.",
           "anyOf": [
             {
               "type": "string"
@@ -250,20 +250,18 @@
                 "type": "string"
               }
             }
-          ],
-          "description": "Restrict results to one domain or a list of domains (e.g. 'github.com'). Best-effort — applied as a site: query operator; most engines honor it but some ignore it."
+          ]
         },
         "min_score": {
+          "description": "Drop results whose reranker relevance score is below this threshold (0-1, omit for no filtering). Filters on the RAW cross-encoder relevance score, not the recency-adjusted score used for ordering. Scores are strongly bimodal — relevant results cluster near 1.0 and irrelevant ones near 0, with little in between — so any value in roughly 0.01-0.9 behaves about the same; 0.01-0.1 is the useful range and 0.5 is not a midpoint. A high score means topically related, NOT correct: an Apache mod_proxy page scores 0.967 on an nginx query. Thresholds are model-dependent and not comparable across rerankers. No-op (with a logged warning) when the reranker is unavailable, since no scores exist to filter on.",
           "type": "number",
           "minimum": 0,
-          "maximum": 1,
-          "description": "Drop results whose reranker relevance score is below this threshold (0-1, omit for no filtering). Filters on the RAW cross-encoder relevance score, not the recency-adjusted score used for ordering. Scores are strongly bimodal — relevant results cluster near 1.0 and irrelevant ones near 0, with little in between — so any value in roughly 0.01-0.9 behaves about the same; 0.01-0.1 is the useful range and 0.5 is not a midpoint. A high score means topically related, NOT correct: an Apache mod_proxy page scores 0.967 on an nginx query. Thresholds are model-dependent and not comparable across rerankers. No-op (with a logged warning) when the reranker is unavailable, since no scores exist to filter on."
+          "maximum": 1
         }
       },
       "required": [
         "query"
       ],
-      "additionalProperties": false,
       "$schema": "http://json-schema.org/draft-07/schema#"
     },
     "execution": {
@@ -282,30 +280,29 @@
           "description": "URL to fetch and extract content from"
         },
         "domain_profile": {
-          "type": "string",
-          "description": "Named domain profile to apply: 'homelab', 'dev', or omit for default filters"
+          "description": "Named domain profile to apply: 'homelab', 'dev', or omit for default filters",
+          "type": "string"
         },
         "max_tokens": {
+          "description": "Approximate token budget for the returned content (chars ≈ tokens × 4). Omit for the ~2000-token / 8000-char default; max 10000 tokens.",
           "type": "integer",
           "minimum": 100,
-          "maximum": 10000,
-          "description": "Approximate token budget for the returned content (chars ≈ tokens × 4). Omit for the ~2000-token / 8000-char default; max 10000 tokens."
+          "maximum": 10000
         },
         "target_selector": {
+          "description": "CSS selector to scope extraction to a specific element (e.g. 'article', 'main .content'). Honored by Firecrawl/Crawl4AI and applied client-side on the raw-HTTP tier; ignored by fast paths and if it matches nothing.",
           "type": "string",
-          "maxLength": 500,
-          "description": "CSS selector to scope extraction to a specific element (e.g. 'article', 'main .content'). Honored by Firecrawl/Crawl4AI and applied client-side on the raw-HTTP tier; ignored by fast paths and if it matches nothing."
+          "maxLength": 500
         },
         "wait_for_selector": {
+          "description": "CSS selector to wait for before extracting, for JS-rendered pages. Honored by the rendering tiers (Firecrawl/Crawl4AI); ignored on raw HTTP (no JS).",
           "type": "string",
-          "maxLength": 500,
-          "description": "CSS selector to wait for before extracting, for JS-rendered pages. Honored by the rendering tiers (Firecrawl/Crawl4AI); ignored on raw HTTP (no JS)."
+          "maxLength": 500
         }
       },
       "required": [
         "url"
       ],
-      "additionalProperties": false,
       "$schema": "http://json-schema.org/draft-07/schema#"
     },
     "execution": {
@@ -323,50 +320,51 @@
           "description": "Research query to search for and summarize"
         },
         "fetch_count": {
+          "default": 3,
+          "description": "Number of top results to fetch and synthesize (default 3, max 5)",
           "type": "number",
           "minimum": 1,
-          "maximum": 5,
-          "default": 3,
-          "description": "Number of top results to fetch and synthesize (default 3, max 5)"
+          "maximum": 5
         },
         "category": {
+          "default": "general",
+          "description": "Search category: general, news, it, or science (default general)",
           "type": "string",
           "enum": [
             "general",
             "news",
             "it",
             "science"
-          ],
-          "default": "general",
-          "description": "Search category: general, news, it, or science (default general)"
+          ]
         },
         "time_range": {
+          "description": "Limit results to: day, week, month, or year (omit for all time)",
           "type": "string",
           "enum": [
             "day",
             "week",
             "month",
             "year"
-          ],
-          "description": "Limit results to: day, week, month, or year (omit for all time)"
+          ]
         },
         "domain_profile": {
-          "type": "string",
-          "description": "Named domain profile to apply: 'homelab', 'dev', or omit for default filters"
+          "description": "Named domain profile to apply: 'homelab', 'dev', or omit for default filters",
+          "type": "string"
         },
         "expand": {
-          "type": "boolean",
-          "description": "Use query expansion before searching (default: off)"
+          "description": "Use query expansion before searching (default: off)",
+          "type": "boolean"
         },
         "language": {
-          "type": "string",
-          "description": "BCP-47 language code (e.g. 'en', 'de') or 'all' for all languages. Omit to use the SearXNG instance default."
+          "description": "BCP-47 language code (e.g. 'en', 'de') or 'all' for all languages. Omit to use the SearXNG instance default.",
+          "type": "string"
         },
         "engines": {
-          "type": "string",
-          "description": "Comma-separated SearXNG engine names to restrict the search to (e.g. 'google,duckduckgo'). Forwarded verbatim; unknown/disabled engines degrade to fewer results rather than erroring."
+          "description": "Comma-separated SearXNG engine names to restrict the search to (e.g. 'google,duckduckgo'). Forwarded verbatim; unknown/disabled engines degrade to fewer results rather than erroring.",
+          "type": "string"
         },
         "site": {
+          "description": "Restrict results to one domain or a list of domains (e.g. 'github.com'). Best-effort — applied as a site: query operator; most engines honor it but some ignore it.",
           "anyOf": [
             {
               "type": "string"
@@ -377,20 +375,18 @@
                 "type": "string"
               }
             }
-          ],
-          "description": "Restrict results to one domain or a list of domains (e.g. 'github.com'). Best-effort — applied as a site: query operator; most engines honor it but some ignore it."
+          ]
         },
         "min_score": {
+          "description": "Drop results whose reranker relevance score is below this threshold (0-1, omit for no filtering). Filters on the RAW cross-encoder relevance score, not the recency-adjusted score used for ordering. Scores are strongly bimodal — relevant results cluster near 1.0 and irrelevant ones near 0, with little in between — so any value in roughly 0.01-0.9 behaves about the same; 0.01-0.1 is the useful range and 0.5 is not a midpoint. A high score means topically related, NOT correct: an Apache mod_proxy page scores 0.967 on an nginx query. Thresholds are model-dependent and not comparable across rerankers. No-op (with a logged warning) when the reranker is unavailable, since no scores exist to filter on.",
           "type": "number",
           "minimum": 0,
-          "maximum": 1,
-          "description": "Drop results whose reranker relevance score is below this threshold (0-1, omit for no filtering). Filters on the RAW cross-encoder relevance score, not the recency-adjusted score used for ordering. Scores are strongly bimodal — relevant results cluster near 1.0 and irrelevant ones near 0, with little in between — so any value in roughly 0.01-0.9 behaves about the same; 0.01-0.1 is the useful range and 0.5 is not a midpoint. A high score means topically related, NOT correct: an Apache mod_proxy page scores 0.967 on an nginx query. Thresholds are model-dependent and not comparable across rerankers. No-op (with a logged warning) when the reranker is unavailable, since no scores exist to filter on."
+          "maximum": 1
         }
       },
       "required": [
         "query"
       ],
-      "additionalProperties": false,
       "$schema": "http://json-schema.org/draft-07/schema#"
     },
     "execution": {
@@ -409,30 +405,29 @@
           "description": "Base URL to crawl. Its path scopes the crawl when include_path is omitted"
         },
         "max_pages": {
+          "default": 20,
+          "description": "Maximum pages to crawl (default 20, max 100)",
           "type": "number",
           "minimum": 1,
-          "maximum": 100,
-          "default": 20,
-          "description": "Maximum pages to crawl (default 20, max 100)"
+          "maximum": 100
         },
         "same_domain_only": {
-          "type": "boolean",
           "default": true,
-          "description": "Restrict crawl to the same domain (default true)"
+          "description": "Restrict crawl to the same domain (default true)",
+          "type": "boolean"
         },
         "include_path": {
-          "type": "string",
-          "description": "Only include URLs matching this path prefix (e.g. '/docs'); replaces the start URL's default scope, '/' for the whole site"
+          "description": "Only include URLs matching this path prefix (e.g. '/docs'); replaces the start URL's default scope, '/' for the whole site",
+          "type": "string"
         },
         "exclude_path": {
-          "type": "string",
-          "description": "Exclude URLs matching this path prefix (e.g. '/blog')"
+          "description": "Exclude URLs matching this path prefix (e.g. '/blog')",
+          "type": "string"
         }
       },
       "required": [
         "url"
       ],
-      "additionalProperties": false,
       "$schema": "http://json-schema.org/draft-07/schema#"
     },
     "execution": {
@@ -446,18 +441,17 @@
       "type": "object",
       "properties": {
         "target": {
+          "default": "all",
+          "description": "Which cache to clear: search results, fetched pages, crawl manifests, or all (default all)",
           "type": "string",
           "enum": [
             "search",
             "fetch",
             "crawl",
             "all"
-          ],
-          "default": "all",
-          "description": "Which cache to clear: search results, fetched pages, crawl manifests, or all (default all)"
+          ]
         }
       },
-      "additionalProperties": false,
       "$schema": "http://json-schema.org/draft-07/schema#"
     },
     "execution": {
@@ -472,11 +466,10 @@
       "type": "object",
       "properties": {
         "hostname": {
-          "type": "string",
-          "description": "Hostname or URL to look up (e.g. 'docs.anthropic.com'). Omit for an aggregate over all tracked domains."
+          "description": "Hostname or URL to look up (e.g. 'docs.anthropic.com'). Omit for an aggregate over all tracked domains.",
+          "type": "string"
         }
       },
-      "additionalProperties": false,
       "$schema": "http://json-schema.org/draft-07/schema#"
     },
     "outputSchema": {
@@ -549,22 +542,166 @@
                       "additionalProperties": false
                     },
                     "tier2": {
-                      "$ref": "#/properties/record/anyOf/0/properties/tiers/properties/tier1"
+                      "type": "object",
+                      "properties": {
+                        "attempts": {
+                          "type": "number"
+                        },
+                        "ok": {
+                          "type": "number"
+                        },
+                        "fail": {
+                          "type": "number"
+                        },
+                        "success_rate": {
+                          "type": [
+                            "number",
+                            "null"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "attempts",
+                        "ok",
+                        "fail",
+                        "success_rate"
+                      ],
+                      "additionalProperties": false
                     },
                     "tier3": {
-                      "$ref": "#/properties/record/anyOf/0/properties/tiers/properties/tier1"
+                      "type": "object",
+                      "properties": {
+                        "attempts": {
+                          "type": "number"
+                        },
+                        "ok": {
+                          "type": "number"
+                        },
+                        "fail": {
+                          "type": "number"
+                        },
+                        "success_rate": {
+                          "type": [
+                            "number",
+                            "null"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "attempts",
+                        "ok",
+                        "fail",
+                        "success_rate"
+                      ],
+                      "additionalProperties": false
                     },
                     "tier4": {
-                      "$ref": "#/properties/record/anyOf/0/properties/tiers/properties/tier1"
+                      "type": "object",
+                      "properties": {
+                        "attempts": {
+                          "type": "number"
+                        },
+                        "ok": {
+                          "type": "number"
+                        },
+                        "fail": {
+                          "type": "number"
+                        },
+                        "success_rate": {
+                          "type": [
+                            "number",
+                            "null"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "attempts",
+                        "ok",
+                        "fail",
+                        "success_rate"
+                      ],
+                      "additionalProperties": false
                     },
                     "github": {
-                      "$ref": "#/properties/record/anyOf/0/properties/tiers/properties/tier1"
+                      "type": "object",
+                      "properties": {
+                        "attempts": {
+                          "type": "number"
+                        },
+                        "ok": {
+                          "type": "number"
+                        },
+                        "fail": {
+                          "type": "number"
+                        },
+                        "success_rate": {
+                          "type": [
+                            "number",
+                            "null"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "attempts",
+                        "ok",
+                        "fail",
+                        "success_rate"
+                      ],
+                      "additionalProperties": false
                     },
                     "solver": {
-                      "$ref": "#/properties/record/anyOf/0/properties/tiers/properties/tier1"
+                      "type": "object",
+                      "properties": {
+                        "attempts": {
+                          "type": "number"
+                        },
+                        "ok": {
+                          "type": "number"
+                        },
+                        "fail": {
+                          "type": "number"
+                        },
+                        "success_rate": {
+                          "type": [
+                            "number",
+                            "null"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "attempts",
+                        "ok",
+                        "fail",
+                        "success_rate"
+                      ],
+                      "additionalProperties": false
                     },
                     "crawl": {
-                      "$ref": "#/properties/record/anyOf/0/properties/tiers/properties/tier1"
+                      "type": "object",
+                      "properties": {
+                        "attempts": {
+                          "type": "number"
+                        },
+                        "ok": {
+                          "type": "number"
+                        },
+                        "fail": {
+                          "type": "number"
+                        },
+                        "success_rate": {
+                          "type": [
+                            "number",
+                            "null"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "attempts",
+                        "ok",
+                        "fail",
+                        "success_rate"
+                      ],
+                      "additionalProperties": false
                     }
                   },
                   "additionalProperties": false
@@ -656,7 +793,199 @@
                   "type": "number"
                 },
                 "tiers": {
-                  "$ref": "#/properties/record/anyOf/0/properties/tiers"
+                  "type": "object",
+                  "properties": {
+                    "tier1": {
+                      "type": "object",
+                      "properties": {
+                        "attempts": {
+                          "type": "number"
+                        },
+                        "ok": {
+                          "type": "number"
+                        },
+                        "fail": {
+                          "type": "number"
+                        },
+                        "success_rate": {
+                          "type": [
+                            "number",
+                            "null"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "attempts",
+                        "ok",
+                        "fail",
+                        "success_rate"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "tier2": {
+                      "type": "object",
+                      "properties": {
+                        "attempts": {
+                          "type": "number"
+                        },
+                        "ok": {
+                          "type": "number"
+                        },
+                        "fail": {
+                          "type": "number"
+                        },
+                        "success_rate": {
+                          "type": [
+                            "number",
+                            "null"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "attempts",
+                        "ok",
+                        "fail",
+                        "success_rate"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "tier3": {
+                      "type": "object",
+                      "properties": {
+                        "attempts": {
+                          "type": "number"
+                        },
+                        "ok": {
+                          "type": "number"
+                        },
+                        "fail": {
+                          "type": "number"
+                        },
+                        "success_rate": {
+                          "type": [
+                            "number",
+                            "null"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "attempts",
+                        "ok",
+                        "fail",
+                        "success_rate"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "tier4": {
+                      "type": "object",
+                      "properties": {
+                        "attempts": {
+                          "type": "number"
+                        },
+                        "ok": {
+                          "type": "number"
+                        },
+                        "fail": {
+                          "type": "number"
+                        },
+                        "success_rate": {
+                          "type": [
+                            "number",
+                            "null"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "attempts",
+                        "ok",
+                        "fail",
+                        "success_rate"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "github": {
+                      "type": "object",
+                      "properties": {
+                        "attempts": {
+                          "type": "number"
+                        },
+                        "ok": {
+                          "type": "number"
+                        },
+                        "fail": {
+                          "type": "number"
+                        },
+                        "success_rate": {
+                          "type": [
+                            "number",
+                            "null"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "attempts",
+                        "ok",
+                        "fail",
+                        "success_rate"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "solver": {
+                      "type": "object",
+                      "properties": {
+                        "attempts": {
+                          "type": "number"
+                        },
+                        "ok": {
+                          "type": "number"
+                        },
+                        "fail": {
+                          "type": "number"
+                        },
+                        "success_rate": {
+                          "type": [
+                            "number",
+                            "null"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "attempts",
+                        "ok",
+                        "fail",
+                        "success_rate"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "crawl": {
+                      "type": "object",
+                      "properties": {
+                        "attempts": {
+                          "type": "number"
+                        },
+                        "ok": {
+                          "type": "number"
+                        },
+                        "fail": {
+                          "type": "number"
+                        },
+                        "success_rate": {
+                          "type": [
+                            "number",
+                            "null"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "attempts",
+                        "ok",
+                        "fail",
+                        "success_rate"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "additionalProperties": false
                 },
                 "failing_count": {
                   "type": "number"
@@ -723,8 +1052,8 @@
         "record",
         "aggregate"
       ],
-      "additionalProperties": false,
-      "$schema": "http://json-schema.org/draft-07/schema#"
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false
     },
     "execution": {
       "taskSupport": "forbidden"
