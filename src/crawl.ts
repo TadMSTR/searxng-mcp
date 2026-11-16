@@ -36,14 +36,22 @@ export interface CrawlManifest {
   note?: string;
 }
 
+/**
+ * `scope` is the default scope crawlSite applies (see defaultCrawlScope). It is
+ * part of the key only when set, so a root crawl keeps its key, while a path
+ * crawl no longer shares one with the site-wide manifest an earlier version
+ * cached for the same arguments.
+ */
 function crawlManifestCacheKey(
   url: string,
   maxPages: number,
   sameDomainOnly: boolean,
   includePath?: string,
   excludePath?: string,
+  scope?: string,
 ): string {
-  const raw = `${url}|${maxPages}|${sameDomainOnly}|${includePath ?? ""}|${excludePath ?? ""}`;
+  let raw = `${url}|${maxPages}|${sameDomainOnly}|${includePath ?? ""}|${excludePath ?? ""}`;
+  if (scope) raw += `|scope=${scope}`;
   return `crawl:${createHash("sha256").update(raw).digest("hex")}`;
 }
 
@@ -620,12 +628,16 @@ export async function crawlSite(
   // URL is handed off (parity with fetchPage's tier1/tier2 guard).
   await assertResolvedPublic(url);
   const t0 = Date.now();
+  // An explicit include_path — including "/" for the whole site — replaces the
+  // default scope rather than narrowing it.
+  const scope = includePath === undefined ? defaultCrawlScope(url) : undefined;
   const cacheKey = crawlManifestCacheKey(
     url,
     maxPages,
     sameDomainOnly,
     includePath,
     excludePath,
+    scope,
   );
 
   // Check manifest cache
@@ -645,10 +657,6 @@ export async function crawlSite(
       // corrupt cache — fall through
     }
   }
-
-  // An explicit include_path — including "/" for the whole site — replaces the
-  // default scope rather than narrowing it.
-  const scope = includePath === undefined ? defaultCrawlScope(url) : undefined;
 
   let manifest: CrawlManifest | null = null;
 

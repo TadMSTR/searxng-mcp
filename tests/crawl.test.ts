@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../src/cache.js", () => ({
@@ -441,6 +442,26 @@ describe("crawlSite default scope", () => {
       "https://example.com/authors/a",
       "https://example.com/authors/b",
     ]);
+  });
+
+  it("does not reuse a site-wide manifest cached before the scope existed", async () => {
+    // 3.30.1 keyed a crawl on its arguments alone, and cached the site-wide
+    // result for a path start URL under that key.
+    const legacyKey = `crawl:${createHash("sha256").update("https://example.com/docs|5|true||").digest("hex")}`;
+    mockSitemapSite(SCOPE_SITEMAP_LOCS);
+    await crawlSite("https://example.com/docs", 5, true);
+    expect(cacheGetMock).toHaveBeenCalledOnce();
+    expect(cacheGetMock.mock.calls[0][0]).not.toBe(legacyKey);
+    expect(cacheSetMock.mock.calls.at(-1)?.[0]).toBe(
+      cacheGetMock.mock.calls[0][0],
+    );
+  });
+
+  it("keeps a root crawl's cache key unchanged", async () => {
+    const rootKey = `crawl:${createHash("sha256").update("https://example.com/|20|true||").digest("hex")}`;
+    mockSitemapSite(SCOPE_SITEMAP_LOCS);
+    await crawlSite("https://example.com/", 20, true);
+    expect(cacheGetMock.mock.calls[0][0]).toBe(rootKey);
   });
 
   it("explains an empty scope instead of returning unrelated pages", async () => {

@@ -20,6 +20,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
     `include_path` replaces the default scope. A start URL at the site root is unaffected.
   - An empty scope returns an error manifest whose note names the scope and the opt-out,
     instead of pages from elsewhere on the site.
+  - Manifests are cached under a key that includes the default scope, so a site-wide manifest
+    an earlier version cached for the same start URL is not served as the scoped result.
 - **`docs/tools.md` listed a `bfs` parameter on `crawl_site` that the tool has never taken**;
   BFS is the server-side `CRAWL_BFS_ENABLED` switch. The row now lists the real parameters.
 
