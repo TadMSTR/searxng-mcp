@@ -124,7 +124,7 @@ async function fetchDirectoryListing(
 ): Promise<{ title: string; url: string; text: string }> {
   const dir = dirPath.join("/");
   const res = await fetchWithRedirectGuard(
-    `https://api.github.com/repos/${owner}/${repo}/contents/${dir}?ref=${branch}`,
+    `https://api.github.com/repos/${owner}/${repo}/contents/${dir}?ref=${refParam(branch)}`,
     apiHeaders(),
     "GitHub API error",
   );
@@ -139,6 +139,22 @@ async function fetchDirectoryListing(
       maxChars,
     );
   return { title: `${owner}/${repo}/${dir} (${branch})`, url: pageUrl, text };
+}
+
+/**
+ * A `tree` URL's ref segment as a query value. The WHATWG parser leaves `&` and
+ * `=` unescaped in a path, so `…/tree/main&per_page=1/docs` interpolated as-is
+ * added a parameter to the API request. Decode the segment, then encode it as
+ * one value; a malformed escape is encoded as written.
+ */
+function refParam(segment: string): string {
+  let ref = segment;
+  try {
+    ref = decodeURIComponent(segment);
+  } catch {
+    // malformed percent-escape: encode the raw segment
+  }
+  return encodeURIComponent(ref);
 }
 
 function rawHeaders(): Record<string, string> {
@@ -281,7 +297,7 @@ export async function githubFetch(
   let apiUrl = `https://api.github.com/repos/${owner}/${repo}/readme`;
   if (parts[2] === "tree") {
     if (dirPath.length > 0) apiUrl += `/${dirPath.join("/")}`;
-    apiUrl += `?ref=${branch}`;
+    apiUrl += `?ref=${refParam(branch)}`;
   }
   let res: Response;
   try {

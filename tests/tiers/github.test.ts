@@ -301,6 +301,40 @@ describe("githubFetch — github.com", () => {
     );
   });
 
+  it("encodes a tree ref as one query value, so it cannot add parameters", async () => {
+    mockFetch
+      .mockResolvedValueOnce(jsonResponse({}, { status: 404 }))
+      .mockResolvedValueOnce(jsonResponse([]));
+    await githubFetch("https://github.com/a/b/tree/main&per_page=1/docs");
+    expect(mockFetch).toHaveBeenNthCalledWith(
+      1,
+      "https://api.github.com/repos/a/b/readme/docs?ref=main%26per_page%3D1",
+      expect.anything(),
+    );
+    expect(mockFetch).toHaveBeenNthCalledWith(
+      2,
+      "https://api.github.com/repos/a/b/contents/docs?ref=main%26per_page%3D1",
+      expect.anything(),
+    );
+  });
+
+  it("keeps an already-escaped tree ref escaped once, and a malformed one intact", async () => {
+    const content = Buffer.from("# x").toString("base64");
+    mockFetch.mockImplementation(async () =>
+      jsonResponse({ content, name: "README.md", html_url: "x" }),
+    );
+    await githubFetch("https://github.com/a/b/tree/feat%2Fx");
+    expect(mockFetch).toHaveBeenLastCalledWith(
+      "https://api.github.com/repos/a/b/readme?ref=feat%2Fx",
+      expect.anything(),
+    );
+    await githubFetch("https://github.com/a/b/tree/100%zz");
+    expect(mockFetch).toHaveBeenLastCalledWith(
+      "https://api.github.com/repos/a/b/readme?ref=100%25zz",
+      expect.anything(),
+    );
+  });
+
   it("refuses an issues URL instead of answering it with the README", async () => {
     await expect(
       githubFetch("https://github.com/valkey-io/valkey/issues/1234"),
