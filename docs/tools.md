@@ -38,7 +38,7 @@
 
 # GitHub URLs
 
-GitHub URLs are handled natively without Firecrawl. `githubFetch` dispatches on hostname and, for `github.com`, on the URL's shape:
+Some GitHub URLs are handled natively without Firecrawl: `raw.githubusercontent.com`, `api.github.com`, and the `github.com` shapes listed below. Every other GitHub page takes the normal fetch cascade (see the end of this section). `githubFetch` dispatches on hostname and, for `github.com`, on the URL's shape:
 
 - **Repo root** (`github.com/owner/repo`) — fetches the README via the GitHub API
 - **File blob** (`github.com/owner/repo/blob/branch/path/to/file`) — rewrites to and fetches raw content from `raw.githubusercontent.com`
