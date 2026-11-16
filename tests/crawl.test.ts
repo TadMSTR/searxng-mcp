@@ -335,6 +335,11 @@ describe("defaultCrawlScope", () => {
     ["https://example.com/v1.2/", "/v1.2"],
     ["https://example.com/docs/v1.2/", "/docs/v1.2"],
     ["https://example.com/docs/v1.2", "/docs"],
+    // A lone dotted segment is kept unless it is an index page, so the
+    // heuristic never widens the scope to the whole site.
+    ["https://example.com/v1.2", "/v1.2"],
+    ["https://example.com/node.js", "/node.js"],
+    ["https://example.com/default.aspx", undefined],
   ])("%s → %s", (url, scope) => {
     expect(defaultCrawlScope(url)).toBe(scope);
   });

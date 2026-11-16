@@ -30,7 +30,9 @@ Two contributed fixes from @blakemartz (#89, #90), empty optional arguments acce
     an earlier version cached for the same start URL is not served as the scoped result.
   - A start path ending in `/` keeps its last segment even when it contains a dot, so
     `https://example.com/v1.2/` is scoped to `/v1.2`. A dotted last segment without a trailing
-    slash (`/docs/index.html`) is still read as a file name.
+    slash (`/docs/index.html`) is still read as a file name, except when it is the only
+    segment: `https://example.com/v1.2` is scoped to `/v1.2` rather than the whole site, and
+    only an index page (`/index.html`) at the root still means the whole site.
   - An explicit `include_path` now reaches past the start path in the Firecrawl phase too:
     under `FIRECRAWL_API_VERSION=v2` the crawl request sends `crawlEntireDomain`. Before this,
     Firecrawl stayed under the start URL's path, so `include_path: "/"` from a subpath returned

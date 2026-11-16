@@ -328,8 +328,16 @@ export function defaultCrawlScope(url: string): string | undefined {
   const { pathname } = new URL(url);
   const segments = pathname.split("/").filter(Boolean);
   // A last segment with a dot is a file name (`index.html`) only when the path
-  // doesn't end in "/": `/v1.2/` is a directory and keeps its scope.
-  if (!pathname.endsWith("/") && segments.at(-1)?.includes(".")) segments.pop();
+  // doesn't end in "/": `/v1.2/` is a directory and keeps its scope. A lone
+  // segment is dropped only when it is an index page: dropping `/v1.2` or
+  // `/node.js` would widen the scope to the whole site, so they stay.
+  const last = segments.at(-1);
+  if (
+    !pathname.endsWith("/") &&
+    last?.includes(".") &&
+    (segments.length > 1 || /^(index|default)\.[a-z0-9]+$/i.test(last))
+  )
+    segments.pop();
   return segments.length > 0 ? `/${segments.join("/")}` : undefined;
 }
 
