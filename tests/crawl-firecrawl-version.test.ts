@@ -359,3 +359,57 @@ describe("crawlSite cascade placement", () => {
     expect(m.strategy).toBe("error");
   });
 });
+
+// Firecrawl follows only the start URL's subpaths by default, so an explicit
+// include_path ("/" for the whole site, or a sibling section) never widened the
+// crawl past the start path. v2 gets crawlEntireDomain; v1, where the option
+// is unverified, skips the phase for the strategies that honour include_path.
+describe("an explicit include_path can widen the Firecrawl crawl", () => {
+  /** The JSON body of the crawl-start request. */
+  function startBody(): Record<string, unknown> {
+    const init = mockFetch.mock.calls[0][1] as RequestInit;
+    return JSON.parse(init.body as string) as Record<string, unknown>;
+  }
+
+  it.each(["/", "/authors"])(
+    "sends crawlEntireDomain with include_path %s under v2",
+    async (includePath) => {
+      cfg.version = "v2";
+      mockFetch.mockResolvedValueOnce(new Response("no", { status: 500 }));
+      await firecrawlCrawl(`${SITE}/docs`, 5, includePath);
+      expect(startBody()).toMatchObject({
+        url: `${SITE}/docs`,
+        includePaths: [includePath],
+        crawlEntireDomain: true,
+      });
+    },
+  );
+
+  it("leaves the default subpath scope alone with no include_path", async () => {
+    cfg.version = "v2";
+    mockFetch.mockResolvedValueOnce(new Response("no", { status: 500 }));
+    await firecrawlCrawl(`${SITE}/docs`, 5);
+    expect(startBody()).not.toHaveProperty("crawlEntireDomain");
+    expect(startBody()).not.toHaveProperty("includePaths");
+  });
+
+  it("never sends crawlEntireDomain under v1", async () => {
+    mockFetch.mockResolvedValueOnce(new Response("no", { status: 500 }));
+    await firecrawlCrawl(`${SITE}/docs`, 5, "/");
+    expect(startBody()).not.toHaveProperty("crawlEntireDomain");
+  });
+
+  it("skips the v1 Firecrawl phase when include_path is given", async () => {
+    mockFetch.mockResolvedValue(new Response("", { status: 404 }));
+    await crawlSite(`${SITE}/docs`, 5, true, "/");
+    expect(fetchedUrls().some((u) => u.startsWith("http://fc:3002/"))).toBe(
+      false,
+    );
+  });
+
+  it("still runs the v1 Firecrawl phase with no include_path", async () => {
+    mockFetch.mockResolvedValue(new Response("", { status: 404 }));
+    await crawlSite(`${SITE}/docs`, 5, true);
+    expect(fetchedUrls()[0]).toBe("http://fc:3002/v1/crawl");
+  });
+});

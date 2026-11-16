@@ -7,8 +7,8 @@
 | `search` | Search via SearXNG with local reranking. Fetches a wider result pool, reranks by relevance, returns top N. SearXNG's native direct answers, infoboxes, spelling corrections, and related suggestions are surfaced above the list and in `structuredContent`. | `query`, `num_results` (1–20), `category`, `time_range`, `domain_profile`, `expand`, `language`, `engines`, `site`, `min_score` |
 | `search_and_fetch` | Search, rerank, then fetch full content of the top result(s) using the fetch cascade (Firecrawl → Crawl4AI → raw HTTP). | `query`, `category`, `time_range`, `fetch_count` (1–3), `domain_profile`, `expand`, `language`, `engines`, `site`, `min_score` |
 | `search_and_summarize` | Search, fetch top results, then synthesize a summary with citations via Ollama (`OLLAMA_SUMMARIZE_MODEL`). Falls back to raw fetched content if Ollama is unavailable — the fallback announces itself with a leading `--- summarization unavailable (<kind>: <detail>) — the text below is raw fetched pages, NOT a synthesis ---` marker, so a caller can always tell a synthesis from a degradation. | `query`, `fetch_count` (1–5), `category`, `time_range`, `domain_profile`, `expand`, `language`, `engines`, `site`, `min_score` |
-| `fetch_url` | Fetch and extract readable markdown from any public URL. GitHub hosts take the GitHub fast path; YouTube video URLs return the transcript and Reddit thread URLs return post+comments (both opt-in via robots, see below); all others use the fetch cascade (Firecrawl → Crawl4AI → raw HTTP). Trimmed to a token budget (default ~8,000 chars). | `url`, `domain_profile`, `max_tokens`, `target_selector`, `wait_for_selector` |
-| `crawl_site` | Crawl an entire site and return a manifest of URL/title/snippet for each page. Tries Firecrawl crawl first, falls back to sitemap parsing, then optional BFS. Full page content is cached in Valkey so follow-up `fetch_url` calls are zero-cost. | `url`, `max_pages` (default: `CRAWL_MAX_PAGES_DEFAULT`), `bfs` (bool, opt-in BFS) |
+| `fetch_url` | Fetch and extract readable markdown from any public URL. GitHub repo, file, directory and release URLs take the GitHub fast path (other GitHub pages use the cascade); YouTube video URLs return the transcript and Reddit thread URLs return post+comments (both opt-in via robots, see below); all others use the fetch cascade (Firecrawl → Crawl4AI → raw HTTP). Trimmed to a token budget (default ~8,000 chars). | `url`, `domain_profile`, `max_tokens`, `target_selector`, `wait_for_selector` |
+| `crawl_site` | Crawl a site and return a manifest of URL/title/snippet for each page. Tries Firecrawl crawl first, falls back to sitemap parsing, then BFS (opt-in server-side via `CRAWL_BFS_ENABLED`). A start URL with a path (`https://example.com/docs`) limits every strategy to pages under that path unless `include_path` is given; `include_path: "/"` crawls the whole site. Full page content is cached in Valkey so follow-up `fetch_url` calls are zero-cost. | `url`, `max_pages` (default: `CRAWL_MAX_PAGES_DEFAULT`, max 100), `same_domain_only`, `include_path`, `exclude_path` |
 | `clear_cache` | Purge the search cache, fetch cache, crawl manifest cache, or all. Useful when researching fast-moving topics where cached results may be stale. | `target` (`search`, `fetch`, `crawl`, `all`) |
 | `domain_stats` | Read-only view of the [domain capability database](architecture.md#domain-capability-database). With `hostname`: one domain's per-tier success rates and capability flags. Without: an aggregate across all tracked domains (per-tier success, worst failing domains, seen-but-never-fetched count). Returns MCP structured output (`structuredContent`) for programmatic thresholding. | `hostname` (optional) |
 
@@ -38,14 +38,18 @@
 
 # GitHub URLs
 
-GitHub URLs are handled natively without Firecrawl. `githubFetch` dispatches on hostname:
+Some GitHub URLs are handled natively without Firecrawl: `raw.githubusercontent.com`, `api.github.com`, and the `github.com` shapes listed below. Every other GitHub page takes the normal fetch cascade (see the end of this section). `githubFetch` dispatches on hostname and, for `github.com`, on the URL's shape:
 
-- **Repo root** (`github.com/owner/repo`) — fetches the README via the GitHub API
+- **Repo root** (`github.com/owner/repo`, no query) — fetches the README via the GitHub API. With a query (`?tab=security-ov-file`) it takes the cascade, since the query can name another document
 - **File blob** (`github.com/owner/repo/blob/branch/path/to/file`) — rewrites to and fetches raw content from `raw.githubusercontent.com`
+- **Directory** (`github.com/owner/repo/tree/branch/path`) — that directory's README at that ref; a file listing if it has none. A ref with a slash (`tree/feature/topic/docs`) is resolved against the repo's branches and tags; if that lookup fails, the fetch fails rather than guess (the lookup error is recorded as the GitHub tier's failure reason)
+- **Releases** (`github.com/owner/repo/releases`, `…/releases/latest`, `…/releases/tag/<tag>`) — release notes from the releases API as markdown (the list is the 10 most recent, newest first). With a query (`?page=2`) they take the cascade
 - **Raw file** (`raw.githubusercontent.com/...`) — fetched directly as-is
 - **API** (`api.github.com/...`) — response decoded (base64 `content` fields) or pretty-printed as JSON
 
 Direct `raw.githubusercontent.com` and `api.github.com` URLs previously matched only `github.com` and fell through to the HTML-scraping tier cascade, which cannot render a raw text file or bare JSON response — they failed 100% of the time. They now take the GitHub fast path.
+
+Any other `github.com` page — issues, pull requests, commits, wiki, owner pages, release asset downloads — is not handled here and takes the normal fetch cascade, which renders the page. Until 3.30.x those were claimed by the fast path too and answered with the **repo-root README**, with nothing in the result to say it was not the requested page.
 
 Unauthenticated requests are rate-limited to 60/hour. Set `GITHUB_TOKEN` to raise this to 5,000/hour.
 

@@ -29,6 +29,7 @@ import { rerankWithFallback } from "./reranker.js";
 import { searxSearch } from "./search.js";
 import {
   CategorySchema,
+  optionalArg,
   type SearxMeta,
   type SearxResult,
   TimeRangeSchema,
@@ -145,12 +146,9 @@ async function instrumentSearchTool<T>(
   return instrumentTool(toolName, () => withSearchEvents(toolName, ctx, fn));
 }
 
-const DomainProfileSchema = z
-  .string()
-  .optional()
-  .describe(
-    "Named domain profile to apply: 'homelab', 'dev', or omit for default filters",
-  );
+const DomainProfileSchema = optionalArg(z.string().optional()).describe(
+  "Named domain profile to apply: 'homelab', 'dev', or omit for default filters",
+);
 
 function formatResults(results: SearxResult[]): string {
   if (results.length === 0) return "No results found.";
@@ -796,26 +794,19 @@ export async function handleDomainStats({ hostname }: { hostname?: string }) {
   });
 }
 
-const LanguageSchema = z
-  .string()
-  .optional()
-  .describe(
-    "BCP-47 language code (e.g. 'en', 'de') or 'all' for all languages. Omit to use the SearXNG instance default.",
-  );
+const LanguageSchema = optionalArg(z.string().optional()).describe(
+  "BCP-47 language code (e.g. 'en', 'de') or 'all' for all languages. Omit to use the SearXNG instance default.",
+);
 
-const EnginesSchema = z
-  .string()
-  .optional()
-  .describe(
-    "Comma-separated SearXNG engine names to restrict the search to (e.g. 'google,duckduckgo'). Forwarded verbatim; unknown/disabled engines degrade to fewer results rather than erroring.",
-  );
+const EnginesSchema = optionalArg(z.string().optional()).describe(
+  "Comma-separated SearXNG engine names to restrict the search to (e.g. 'google,duckduckgo'). Forwarded verbatim; unknown/disabled engines degrade to fewer results rather than erroring.",
+);
 
-const SiteSchema = z
-  .union([z.string(), z.array(z.string())])
-  .optional()
-  .describe(
-    "Restrict results to one domain or a list of domains (e.g. 'github.com'). Best-effort — applied as a site: query operator; most engines honor it but some ignore it.",
-  );
+const SiteSchema = optionalArg(
+  z.union([z.string(), z.array(z.string())]).optional(),
+).describe(
+  "Restrict results to one domain or a list of domains (e.g. 'github.com'). Best-effort — applied as a site: query operator; most engines honor it but some ignore it.",
+);
 
 /**
  * `min_score` — a relevance floor applied after reranking.
@@ -840,19 +831,16 @@ const SiteSchema = z
  *    scored 0.967 on an nginx query. This is a topicality floor and cannot be
  *    trusted as a correctness filter.
  */
-const MinScoreSchema = z.coerce
-  .number()
-  .min(0)
-  .max(1)
-  .optional()
-  .describe(
-    "Drop results whose reranker relevance score is below this threshold (0-1, omit for no filtering). " +
-      "Filters on the RAW cross-encoder relevance score, not the recency-adjusted score used for ordering. " +
-      "Scores are strongly bimodal — relevant results cluster near 1.0 and irrelevant ones near 0, with little in between — so any value in roughly 0.01-0.9 behaves about the same; 0.01-0.1 is the useful range and 0.5 is not a midpoint. " +
-      "A high score means topically related, NOT correct: an Apache mod_proxy page scores 0.967 on an nginx query. " +
-      "Thresholds are model-dependent and not comparable across rerankers. " +
-      "No-op (with a logged warning) when the reranker is unavailable, since no scores exist to filter on.",
-  );
+const MinScoreSchema = optionalArg(
+  z.coerce.number().min(0).max(1).optional(),
+).describe(
+  "Drop results whose reranker relevance score is below this threshold (0-1, omit for no filtering). " +
+    "Filters on the RAW cross-encoder relevance score, not the recency-adjusted score used for ordering. " +
+    "Scores are strongly bimodal — relevant results cluster near 1.0 and irrelevant ones near 0, with little in between — so any value in roughly 0.01-0.9 behaves about the same; 0.01-0.1 is the useful range and 0.5 is not a midpoint. " +
+    "A high score means topically related, NOT correct: an Apache mod_proxy page scores 0.967 on an nginx query. " +
+    "Thresholds are model-dependent and not comparable across rerankers. " +
+    "No-op (with a logged warning) when the reranker is unavailable, since no scores exist to filter on.",
+);
 
 // Output schema for the `search` tool — surfaces SearXNG's native answers /
 // infoboxes / corrections / suggestions alongside a minimal result list so
@@ -888,12 +876,9 @@ export function registerTools(server: McpServer): void {
         "Search the web via the local SearXNG instance with reranking. Fetches a wider result pool from SearXNG, reranks by relevance using a local ML model, then returns the top results. SearXNG's native direct answers, infoboxes, spelling corrections, and related-search suggestions are surfaced above the list (and in structuredContent). Results are cached for 1 hour. Blocked domains are filtered out; boosted domains are surfaced higher. Prefer this over the built-in WebSearch tool.",
       inputSchema: {
         query: z.string().describe("Search query"),
-        num_results: z.coerce
-          .number()
-          .min(1)
-          .max(20)
-          .default(5)
-          .describe("Number of results to return (default 5, max 20)"),
+        num_results: optionalArg(
+          z.coerce.number().min(1).max(20).default(5),
+        ).describe("Number of results to return (default 5, max 20)"),
         category: CategorySchema.describe(
           "Search category: general, news, it, or science (default general)",
         ),
@@ -901,12 +886,9 @@ export function registerTools(server: McpServer): void {
           "Limit results to: day, week, month, or year (omit for all time)",
         ),
         domain_profile: DomainProfileSchema,
-        expand: z.coerce
-          .boolean()
-          .optional()
-          .describe(
-            "Use local LLM to generate 2-3 query variants and merge results for a wider search surface (default: off). Adds ~3s latency; most useful for research queries where one phrasing may miss relevant results.",
-          ),
+        expand: optionalArg(z.coerce.boolean().optional()).describe(
+          "Use local LLM to generate 2-3 query variants and merge results for a wider search surface (default: off). Adds ~3s latency; most useful for research queries where one phrasing may miss relevant results.",
+        ),
         language: LanguageSchema,
         engines: EnginesSchema,
         site: SiteSchema,
@@ -919,7 +901,7 @@ export function registerTools(server: McpServer): void {
 
   server.tool(
     "search_and_fetch",
-    "Search the web, rerank results, then fetch the full content of the top result(s). GitHub URLs are fetched via the GitHub API; all others go through a fetch cascade: Firecrawl → Crawl4AI → raw HTTP. Results and fetched pages are cached. Blocked domains are filtered. Returns the result list plus clean markdown of the fetched pages.",
+    "Search the web, rerank results, then fetch the full content of the top result(s). GitHub repo, file, directory and release URLs are fetched via the GitHub API; all other URLs (including GitHub issues, PRs and commits) go through a fetch cascade: Firecrawl → Crawl4AI → raw HTTP. Results and fetched pages are cached. Blocked domains are filtered. Returns the result list plus clean markdown of the fetched pages.",
     {
       query: z.string().describe("Search query"),
       category: CategorySchema.describe(
@@ -928,21 +910,15 @@ export function registerTools(server: McpServer): void {
       time_range: TimeRangeSchema.describe(
         "Limit results to: day, week, month, or year (omit for all time)",
       ),
-      fetch_count: z.coerce
-        .number()
-        .min(1)
-        .max(3)
-        .default(1)
-        .describe(
-          "Number of top results to fetch full content for (default 1, max 3)",
-        ),
+      fetch_count: optionalArg(
+        z.coerce.number().min(1).max(3).default(1),
+      ).describe(
+        "Number of top results to fetch full content for (default 1, max 3)",
+      ),
       domain_profile: DomainProfileSchema,
-      expand: z.coerce
-        .boolean()
-        .optional()
-        .describe(
-          "Use local LLM to generate 2-3 query variants and merge results for a wider search surface (default: off). Adds ~3s latency.",
-        ),
+      expand: optionalArg(z.coerce.boolean().optional()).describe(
+        "Use local LLM to generate 2-3 query variants and merge results for a wider search surface (default: off). Adds ~3s latency.",
+      ),
       language: LanguageSchema,
       engines: EnginesSchema,
       site: SiteSchema,
@@ -953,33 +929,21 @@ export function registerTools(server: McpServer): void {
 
   server.tool(
     "fetch_url",
-    "Fetch and extract readable content from any URL. GitHub URLs are fetched via the GitHub API; all others go through a fetch cascade: Firecrawl → Crawl4AI → raw HTTP. Returns clean markdown where possible. Content is trimmed to a token budget (default ~2000 tokens / 8000 chars; raise with max_tokens). Results cached for 24 hours. Blocked domains and private/internal addresses are refused.",
+    "Fetch and extract readable content from any URL. GitHub repo, file, directory and release URLs are fetched via the GitHub API; all other URLs (including GitHub issues, PRs and commits) go through a fetch cascade: Firecrawl → Crawl4AI → raw HTTP. Returns clean markdown where possible. Content is trimmed to a token budget (default ~2000 tokens / 8000 chars; raise with max_tokens). Results cached for 24 hours. Blocked domains and private/internal addresses are refused.",
     {
       url: z.string().url().describe("URL to fetch and extract content from"),
       domain_profile: DomainProfileSchema,
-      max_tokens: z.coerce
-        .number()
-        .int()
-        .min(100)
-        .max(10000)
-        .optional()
-        .describe(
-          "Approximate token budget for the returned content (chars ≈ tokens × 4). Omit for the ~2000-token / 8000-char default; max 10000 tokens.",
-        ),
-      target_selector: z
-        .string()
-        .max(500)
-        .optional()
-        .describe(
-          "CSS selector to scope extraction to a specific element (e.g. 'article', 'main .content'). Honored by Firecrawl/Crawl4AI and applied client-side on the raw-HTTP tier; ignored by fast paths and if it matches nothing.",
-        ),
-      wait_for_selector: z
-        .string()
-        .max(500)
-        .optional()
-        .describe(
-          "CSS selector to wait for before extracting, for JS-rendered pages. Honored by the rendering tiers (Firecrawl/Crawl4AI); ignored on raw HTTP (no JS).",
-        ),
+      max_tokens: optionalArg(
+        z.coerce.number().int().min(100).max(10000).optional(),
+      ).describe(
+        "Approximate token budget for the returned content (chars ≈ tokens × 4). Omit for the ~2000-token / 8000-char default; max 10000 tokens.",
+      ),
+      target_selector: optionalArg(z.string().max(500).optional()).describe(
+        "CSS selector to scope extraction to a specific element (e.g. 'article', 'main .content'). Honored by Firecrawl/Crawl4AI and applied client-side on the raw-HTTP tier; ignored by fast paths and if it matches nothing.",
+      ),
+      wait_for_selector: optionalArg(z.string().max(500).optional()).describe(
+        "CSS selector to wait for before extracting, for JS-rendered pages. Honored by the rendering tiers (Firecrawl/Crawl4AI); ignored on raw HTTP (no JS).",
+      ),
     },
     handleFetchUrl,
   );
@@ -989,14 +953,11 @@ export function registerTools(server: McpServer): void {
     "Search, rerank, fetch top results, then synthesize a summary with citations using a local LLM (`OLLAMA_SUMMARIZE_MODEL`). Returns a structured answer with source attribution. If the LLM is unavailable it falls back to raw fetched content, and that fallback is always announced by a leading '--- summarization unavailable (<kind>: <detail>) --- ' marker: if you do not see that marker, what you received is a real synthesis. Best for deep research where you want pre-digested synthesis rather than raw pages.",
     {
       query: z.string().describe("Research query to search for and summarize"),
-      fetch_count: z.coerce
-        .number()
-        .min(1)
-        .max(5)
-        .default(3)
-        .describe(
-          "Number of top results to fetch and synthesize (default 3, max 5)",
-        ),
+      fetch_count: optionalArg(
+        z.coerce.number().min(1).max(5).default(3),
+      ).describe(
+        "Number of top results to fetch and synthesize (default 3, max 5)",
+      ),
       category: CategorySchema.describe(
         "Search category: general, news, it, or science (default general)",
       ),
@@ -1004,10 +965,9 @@ export function registerTools(server: McpServer): void {
         "Limit results to: day, week, month, or year (omit for all time)",
       ),
       domain_profile: DomainProfileSchema,
-      expand: z.coerce
-        .boolean()
-        .optional()
-        .describe("Use query expansion before searching (default: off)"),
+      expand: optionalArg(z.coerce.boolean().optional()).describe(
+        "Use query expansion before searching (default: off)",
+      ),
       language: LanguageSchema,
       engines: EnginesSchema,
       site: SiteSchema,
@@ -1020,27 +980,28 @@ export function registerTools(server: McpServer): void {
     "crawl_site",
     "Crawl a site and return a manifest of pages with titles and snippets. " +
       "Full page content is cached — call fetch_url on any page URL for the full text. " +
-      "Strategy: Firecrawl (JS rendering) → sitemap-first → BFS (if enabled).",
+      "Strategy: Firecrawl (JS rendering) → sitemap-first → BFS (if enabled). " +
+      "A start URL with a path (e.g. https://example.com/docs) limits the crawl to pages under that path " +
+      "unless include_path is given; include_path '/' crawls the whole site.",
     {
-      url: z.string().url().describe("Base URL to crawl"),
-      max_pages: z.coerce
-        .number()
-        .min(1)
-        .max(100)
-        .default(20)
-        .describe("Maximum pages to crawl (default 20, max 100)"),
-      same_domain_only: z.coerce
-        .boolean()
-        .default(true)
-        .describe("Restrict crawl to the same domain (default true)"),
-      include_path: z
+      url: z
         .string()
-        .optional()
-        .describe("Only include URLs matching this path prefix (e.g. '/docs')"),
-      exclude_path: z
-        .string()
-        .optional()
-        .describe("Exclude URLs matching this path prefix (e.g. '/blog')"),
+        .url()
+        .describe(
+          "Base URL to crawl. Its path scopes the crawl when include_path is omitted",
+        ),
+      max_pages: optionalArg(
+        z.coerce.number().min(1).max(100).default(20),
+      ).describe("Maximum pages to crawl (default 20, max 100)"),
+      same_domain_only: optionalArg(z.coerce.boolean().default(true)).describe(
+        "Restrict crawl to the same domain (default true)",
+      ),
+      include_path: optionalArg(z.string().optional()).describe(
+        "Only include URLs matching this path prefix (e.g. '/docs'); replaces the start URL's default scope, '/' for the whole site",
+      ),
+      exclude_path: optionalArg(z.string().optional()).describe(
+        "Exclude URLs matching this path prefix (e.g. '/blog')",
+      ),
     },
     handleCrawlSite,
   );
@@ -1049,12 +1010,11 @@ export function registerTools(server: McpServer): void {
     "clear_cache",
     "Purge the search and/or fetch result cache. Useful when researching fast-moving topics where cached results from the past hour may be stale.",
     {
-      target: z
-        .enum(["search", "fetch", "crawl", "all"])
-        .default("all")
-        .describe(
-          "Which cache to clear: search results, fetched pages, crawl manifests, or all (default all)",
-        ),
+      target: optionalArg(
+        z.enum(["search", "fetch", "crawl", "all"]).default("all"),
+      ).describe(
+        "Which cache to clear: search results, fetched pages, crawl manifests, or all (default all)",
+      ),
     },
     handleClearCache,
   );
@@ -1066,12 +1026,9 @@ export function registerTools(server: McpServer): void {
       description:
         "Read the searxng-mcp domain capability database — what it has learned about hosts from fetches: per-tier success rates (tier1-3 cascade, tier4 wayback, github fast path), llms.txt/robots presence, metadata reachability, and search appearances. Provide `hostname` for one domain's record, or omit it for an aggregate across all tracked domains (per-tier success rates, worst failing domains, seen-but-never-fetched count). Read-only. Aggregate mode reports `truncated: true` if the internal scan cap is hit.",
       inputSchema: {
-        hostname: z
-          .string()
-          .optional()
-          .describe(
-            "Hostname or URL to look up (e.g. 'docs.anthropic.com'). Omit for an aggregate over all tracked domains.",
-          ),
+        hostname: optionalArg(z.string().optional()).describe(
+          "Hostname or URL to look up (e.g. 'docs.anthropic.com'). Omit for an aggregate over all tracked domains.",
+        ),
       },
       outputSchema: DomainStatsOutputSchema,
     },

@@ -187,7 +187,7 @@ flowchart TD
     entry["fetchPage(url)"]
     cache{"Valkey cache hit?"}
     cached["→ return cached { title, url, text }"]
-    github{"GitHub host?\ngithub.com · raw · api"}
+    github{"GitHub fast-path URL?\nraw · api · repo root · blob · tree · releases"}
     gh_fetch["GitHub API / raw.githubusercontent.com / api.github.com\n→ return"]
     llms{"llms.txt domain?"}
     llms_fetch["Probe /llms-full.txt\nextract matching section\n→ return"]

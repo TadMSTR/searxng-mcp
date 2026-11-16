@@ -162,6 +162,7 @@ describe("firecrawlCapabilities table", () => {
       map: false,
       pdf: false,
       htmlFormat: "rawHtml",
+      crawlEntireDomain: false,
     });
   });
 
@@ -172,6 +173,7 @@ describe("firecrawlCapabilities table", () => {
       map: true,
       pdf: true,
       htmlFormat: "html",
+      crawlEntireDomain: true,
     });
   });
 

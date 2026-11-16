@@ -1,6 +1,6 @@
 {
   "name": "@tadmstr/searxng-mcp",
-  "version": "3.30.1",
+  "version": "3.31.0",
   "description": "MCP server for SearXNG \u2014 private web search for Claude Code",
   "main": "build/src/index.js",
   "bin": {
@@ -41,43 +41,44 @@
     "CHANGELOG.md"
   ],
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.29.0",
+    "@modelcontextprotocol/sdk": "^1.32.1",
     "@mozilla/readability": "^0.6.0",
     "@nats-io/nats-core": "^3.4.0",
     "@nats-io/transport-node": "^3.4.0",
     "@opentelemetry/api": "^1.9.1",
-    "@opentelemetry/exporter-metrics-otlp-http": "^0.222.0",
-    "@opentelemetry/exporter-trace-otlp-http": "^0.222.0",
+    "@opentelemetry/exporter-metrics-otlp-http": "^0.223.0",
+    "@opentelemetry/exporter-trace-otlp-http": "^0.223.0",
     "@opentelemetry/sdk-metrics": "^2.11.0",
-    "@opentelemetry/sdk-node": "^0.222.0",
-    "fast-xml-parser": "^5.11.1",
+    "@opentelemetry/sdk-node": "^0.223.0",
+    "fast-xml-parser": "^5.12.0",
     "iovalkey": "^0.4.0",
     "jsdom": "^29.1.1",
     "robots-parser": "^3.0.1",
-    "undici": "^7.29.0",
-    "zod": "^3.25.76"
+    "undici": "^7.30.1",
+    "zod": "^4.6.6"
   },
   "devDependencies": {
-    "@biomejs/biome": "^2.5.12",
+    "@biomejs/biome": "^2.6.2",
     "@types/jsdom": "^28.0.3",
     "@types/node": "^22.20.1",
-    "@vitest/coverage-v8": "^4.1.11",
+    "@vitest/coverage-v8": "^4.1.12",
     "ajv": "^8.20.0",
     "fast-check": "^4.9.0",
     "typescript": "^5.9.3",
-    "vite": "^8.0.16",
-    "vitest": "^4.1.11",
+    "vite": "^8.3.5",
+    "vitest": "^4.1.12",
     "yaml": "^2.9.0"
   },
   "pnpm": {
     "overrides": {
       "path-to-regexp": ">=8.4.0 <9",
-      "hono": ">=4.12.34 <5",
-      "@hono/node-server": ">=2.0.10 <3",
-      "fast-uri": ">=4.1.5 <5",
-      "ip-address": ">=10.7.1 <11",
-      "qs": ">=6.16.0 <7",
-      "vite": ">=8.0.16 <9"
+      "hono": ">=4.13.16 <5",
+      "@hono/node-server": ">=2.1.6 <3",
+      "fast-uri": ">=4.2.3 <5",
+      "ip-address": ">=10.7.4 <11",
+      "body-parser": ">=2.4.0 <3",
+      "qs": ">=6.16.1 <7",
+      "vite": ">=8.3.5 <9"
     }
   }
 }

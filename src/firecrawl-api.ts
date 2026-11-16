@@ -76,11 +76,33 @@ export interface FirecrawlCapabilities {
    * one value keys both sides.
    */
   htmlFormat: "html" | "rawHtml";
+  /**
+   * Whether `/crawl` accepts `crawlEntireDomain`, which lets an explicit
+   * `includePaths` reach outside the start URL's subpaths.
+   *
+   * v2 does: verified live 2026-11-16 against forge's firecrawl-v2-api, which
+   * returns 200 for it and 400 `unrecognized_keys` for an unknown key. Unverified
+   * for the v1 backend, whose schema is strict too, so v1 never sends it and
+   * crawl_site skips the Firecrawl phase when an include_path is given.
+   */
+  crawlEntireDomain: boolean;
 }
 
 const CAPABILITIES: Record<FirecrawlApiVersion, FirecrawlCapabilities> = {
-  v1: { actions: true, map: false, pdf: false, htmlFormat: "rawHtml" },
-  v2: { actions: false, map: true, pdf: true, htmlFormat: "html" },
+  v1: {
+    actions: true,
+    map: false,
+    pdf: false,
+    htmlFormat: "rawHtml",
+    crawlEntireDomain: false,
+  },
+  v2: {
+    actions: false,
+    map: true,
+    pdf: true,
+    htmlFormat: "html",
+    crawlEntireDomain: true,
+  },
 };
 
 export function firecrawlCapabilities(

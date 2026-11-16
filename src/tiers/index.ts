@@ -1,6 +1,6 @@
 export { applyTier2Readability, crawl4aiFetch } from "./crawl4ai.js";
 export { firecrawlScrape } from "./firecrawl.js";
-export { githubFetch, isGithubUrl } from "./github.js";
+export { githubFetch, isGithubFastPathUrl, isGithubUrl } from "./github.js";
 export { fetchRawHtmlForMetadata, rawFetch } from "./raw.js";
 export { buildScopedCookieHeader, solverFetch } from "./solver.js";
 export type { Tier } from "./types.js";

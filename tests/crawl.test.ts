@@ -1,3 +1,7 @@
+import { createHash } from "node:crypto";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../src/cache.js", () => ({
@@ -57,7 +61,9 @@ import type { CrawlManifest } from "../src/crawl.js";
 import {
   bfsCrawl,
   crawlSite,
+  defaultCrawlScope,
   extractSitemapUrls,
+  inCrawlScope,
   sitemapCrawl,
 } from "../src/crawl.js";
 import { fetchPage } from "../src/fetch.js";
@@ -251,7 +257,7 @@ describe("crawlSite manifest cache", () => {
 
 // ─── 6. clear_cache "crawl" ──────────────────────────────────────────────────
 
-import { handleClearCache } from "../src/tools.js";
+import { handleClearCache, registerTools } from "../src/tools.js";
 
 describe("handleClearCache crawl target", () => {
   it("calls cacheClear with crawl:* pattern for target='crawl'", async () => {
@@ -311,5 +317,237 @@ describe("robots.txt respect", () => {
     const urls = manifest?.pages.map((p) => p.url);
     expect(urls).not.toContain("https://example.com/blocked");
     expect(urls).toContain("https://example.com/allowed");
+  });
+});
+
+// ─── Default scope: the start URL's path ─────────────────────────────────────
+
+describe("defaultCrawlScope", () => {
+  it.each([
+    ["https://valkey.io", undefined],
+    ["https://valkey.io/", undefined],
+    ["https://valkey.io/index.html", undefined],
+    ["https://valkey.io/docs", "/docs"],
+    ["https://valkey.io/docs/", "/docs"],
+    ["https://valkey.io/docs/index.html", "/docs"],
+    ["https://valkey.io/docs/topics/persistence", "/docs/topics/persistence"],
+    // A trailing "/" makes a dotted last segment a directory, not a file.
+    ["https://example.com/v1.2/", "/v1.2"],
+    ["https://example.com/docs/v1.2/", "/docs/v1.2"],
+    ["https://example.com/docs/v1.2", "/docs"],
+    // A lone dotted segment is kept unless it is an index page, so the
+    // heuristic never widens the scope to the whole site.
+    ["https://example.com/v1.2", "/v1.2"],
+    ["https://example.com/node.js", "/node.js"],
+    ["https://example.com/default.aspx", undefined],
+  ])("%s → %s", (url, scope) => {
+    expect(defaultCrawlScope(url)).toBe(scope);
+  });
+});
+
+describe("inCrawlScope", () => {
+  it("matches the scope path and anything below it", () => {
+    expect(inCrawlScope("https://x.io/docs", "/docs")).toBe(true);
+    expect(inCrawlScope("https://x.io/docs/a/b", "/docs")).toBe(true);
+  });
+
+  it("does not match a sibling that only shares the prefix, or a deeper match", () => {
+    expect(inCrawlScope("https://x.io/docs-old/a", "/docs")).toBe(false);
+    expect(inCrawlScope("https://x.io/blog/docs", "/docs")).toBe(false);
+  });
+
+  it("returns false for an unparseable URL", () => {
+    expect(inCrawlScope("not a url", "/docs")).toBe(false);
+  });
+});
+
+// A site whose sitemap lists the home page and other sections ahead of /docs,
+// the shape that made an unscoped 5-page crawl of /docs return no docs.
+const SCOPE_SITEMAP_LOCS = [
+  "https://example.com/",
+  "https://example.com/authors/a",
+  "https://example.com/authors/b",
+  "https://example.com/docs-old/legacy",
+  "https://example.com/blog/docs-tips",
+  "https://example.com/docs/",
+  "https://example.com/docs/install",
+  "https://example.com/docs/config",
+];
+
+function mockSitemapSite(locs: string[]) {
+  vi.spyOn(global, "fetch").mockImplementation(
+    async (input: RequestInfo | URL) => {
+      const url = typeof input === "string" ? input : input.toString();
+      if (url === "https://example.com/sitemap.xml") {
+        const body = locs.map((l) => `<url><loc>${l}</loc></url>`).join("");
+        return new Response(
+          `<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">${body}</urlset>`,
+          { status: 200, headers: { "Content-Type": "text/xml" } },
+        );
+      }
+      // robots.txt, Firecrawl and everything else: absent.
+      return new Response("", { status: 404 });
+    },
+  );
+  fetchPageMock.mockImplementation(async (url: string) => ({
+    title: url,
+    url,
+    text: "content",
+  }));
+}
+
+describe("sitemapCrawl scope", () => {
+  it("keeps only sitemap URLs under the scope", async () => {
+    mockSitemapSite(SCOPE_SITEMAP_LOCS);
+    const manifest = await sitemapCrawl(
+      "https://example.com/docs",
+      20,
+      undefined,
+      undefined,
+      "/docs",
+    );
+    expect(manifest?.pages.map((p) => p.url)).toEqual([
+      "https://example.com/docs/",
+      "https://example.com/docs/install",
+      "https://example.com/docs/config",
+    ]);
+  });
+});
+
+describe("crawlSite default scope", () => {
+  it("confines a crawl started at /docs to /docs and says so", async () => {
+    mockSitemapSite(SCOPE_SITEMAP_LOCS);
+    const manifest = await crawlSite("https://example.com/docs", 5, true);
+    expect(manifest.strategy).toBe("sitemap");
+    expect(manifest.pages.map((p) => p.url)).toEqual([
+      "https://example.com/docs/",
+      "https://example.com/docs/install",
+      "https://example.com/docs/config",
+    ]);
+    expect(manifest.note).toContain("Limited to pages under /docs/");
+    expect(manifest.note).toContain('include_path "/"');
+  });
+
+  it("does not scope a crawl started at the site root", async () => {
+    mockSitemapSite(SCOPE_SITEMAP_LOCS);
+    const manifest = await crawlSite("https://example.com/", 20, true);
+    expect(manifest.page_count).toBe(SCOPE_SITEMAP_LOCS.length);
+    expect(manifest.note).toBeUndefined();
+  });
+
+  it('lets include_path "/" opt back into the whole site', async () => {
+    mockSitemapSite(SCOPE_SITEMAP_LOCS);
+    const manifest = await crawlSite("https://example.com/docs", 20, true, "/");
+    expect(manifest.page_count).toBe(SCOPE_SITEMAP_LOCS.length);
+    expect(manifest.note).toBeUndefined();
+  });
+
+  it("lets an explicit include_path replace the default scope", async () => {
+    mockSitemapSite(SCOPE_SITEMAP_LOCS);
+    const manifest = await crawlSite(
+      "https://example.com/docs",
+      20,
+      true,
+      "/authors",
+    );
+    expect(manifest.pages.map((p) => p.url)).toEqual([
+      "https://example.com/authors/a",
+      "https://example.com/authors/b",
+    ]);
+  });
+
+  it("does not reuse a site-wide manifest cached before the scope existed", async () => {
+    // 3.30.1 keyed a crawl on its arguments alone, and cached the site-wide
+    // result for a path start URL under that key.
+    const legacyKey = `crawl:${createHash("sha256").update("https://example.com/docs|5|true||").digest("hex")}`;
+    mockSitemapSite(SCOPE_SITEMAP_LOCS);
+    await crawlSite("https://example.com/docs", 5, true);
+    expect(cacheGetMock).toHaveBeenCalledOnce();
+    expect(cacheGetMock.mock.calls[0][0]).not.toBe(legacyKey);
+    expect(cacheSetMock.mock.calls.at(-1)?.[0]).toBe(
+      cacheGetMock.mock.calls[0][0],
+    );
+  });
+
+  it("keeps a root crawl's cache key unchanged", async () => {
+    const rootKey = `crawl:${createHash("sha256").update("https://example.com/|20|true||").digest("hex")}`;
+    mockSitemapSite(SCOPE_SITEMAP_LOCS);
+    await crawlSite("https://example.com/", 20, true);
+    expect(cacheGetMock.mock.calls[0][0]).toBe(rootKey);
+  });
+
+  it('applies the default scope when a client sends include_path: ""', async () => {
+    // #79: `""` in an optional argument means "not given". Without that,
+    // crawlSite saw includePath "" — not undefined — and dropped the default
+    // scope, so this crawl returned the whole site.
+    mockSitemapSite(SCOPE_SITEMAP_LOCS);
+    const server = new McpServer({ name: "searxng-mcp", version: "test" });
+    registerTools(server);
+    const [clientTransport, serverTransport] =
+      InMemoryTransport.createLinkedPair();
+    const client = new Client({ name: "crawl-scope", version: "test" });
+    await Promise.all([
+      server.connect(serverTransport),
+      client.connect(clientTransport),
+    ]);
+    try {
+      const result = await client.callTool({
+        name: "crawl_site",
+        arguments: {
+          url: "https://example.com/docs",
+          max_pages: 5,
+          include_path: "",
+          exclude_path: null,
+        },
+      });
+      expect(result.isError).toBeFalsy();
+      const text = (result.content as Array<{ text: string }>)[0].text;
+      expect(text).toContain("https://example.com/docs/install");
+      expect(text).toContain("Limited to pages under /docs/");
+      expect(text).not.toContain("https://example.com/authors/a");
+    } finally {
+      await client.close();
+      await server.close();
+    }
+  });
+
+  it("explains an empty scope instead of returning unrelated pages", async () => {
+    mockSitemapSite(SCOPE_SITEMAP_LOCS.filter((l) => !l.includes("/docs/")));
+    const manifest = await crawlSite("https://example.com/docs", 5, true);
+    expect(manifest.strategy).toBe("error");
+    expect(manifest.pages).toEqual([]);
+    expect(manifest.note).toContain("no sitemap entries under /docs/");
+    expect(manifest.note).toContain('include_path "/"');
+  });
+});
+
+describe("bfsCrawl scope", () => {
+  it("does not follow links out of the scope", async () => {
+    fetchPageMock.mockImplementation(async (url: string) => ({
+      title: url,
+      url,
+      text: "content",
+    }));
+    vi.spyOn(global, "fetch").mockImplementation(async () => {
+      const html = `<html><body>
+        <a href="https://example.com/docs/install">in</a>
+        <a href="https://example.com/blog/post">out</a>
+        <a href="https://example.com/docs-old/legacy">sibling</a>
+      </body></html>`;
+      return new Response(html, { status: 200 });
+    });
+    const manifest = await bfsCrawl(
+      "https://example.com/docs",
+      10,
+      2,
+      true,
+      undefined,
+      undefined,
+      "/docs",
+    );
+    expect(manifest.pages.map((p) => p.url).sort()).toEqual([
+      "https://example.com/docs",
+      "https://example.com/docs/install",
+    ]);
   });
 });

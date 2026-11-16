@@ -6,6 +6,108 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [3.31.0] - 2026-11-16
+
+Two contributed fixes from @blakemartz (#89, #90), empty optional arguments accepted as omitted
+(#79), zod 4, and the dependency advisories that had the audit job failing on `main`.
+
+### Changed
+
+- **`crawl_site` now stays under the start URL's path** (#90, contributed by @blakemartz). The
+  sitemap, `/map` and BFS strategies ignored the path:
+  `crawl_site("https://valkey.io/docs", max_pages: 5)` returned the home page
+  and four author pages — the first five entries of the site-wide sitemap — and no docs, and
+  BFS followed navigation links out of the section. A start URL with a path now confines every
+  strategy to that path and below, on a segment boundary (`/docs` matches `/docs/install`, not
+  `/docs-old` or `/blog/docs`), which is what Firecrawl's crawl, phase 1, already did. The
+  manifest note says when the scope applied.
+  - **Behaviour change:** a crawl that started at a subpath and relied on getting the whole
+    site now gets only that section. Pass `include_path: "/"` for the old result; any explicit
+    `include_path` replaces the default scope. A start URL at the site root is unaffected.
+  - An empty scope returns an error manifest whose note names the scope and the opt-out,
+    instead of pages from elsewhere on the site.
+  - Manifests are cached under a key that includes the default scope, so a site-wide manifest
+    an earlier version cached for the same start URL is not served as the scoped result.
+  - A start path ending in `/` keeps its last segment even when it contains a dot, so
+    `https://example.com/v1.2/` is scoped to `/v1.2`. A dotted last segment without a trailing
+    slash (`/docs/index.html`) is still read as a file name, except when it is the only
+    segment: `https://example.com/v1.2` is scoped to `/v1.2` rather than the whole site, and
+    only an index page (`/index.html`) at the root still means the whole site.
+  - An explicit `include_path` now reaches past the start path in the Firecrawl phase too:
+    under `FIRECRAWL_API_VERSION=v2` the crawl request sends `crawlEntireDomain`. Before this,
+    Firecrawl stayed under the start URL's path, so `include_path: "/"` from a subpath returned
+    only that section. The option is not verified for v1, so under v1 `crawl_site` never sends it
+    and skips the Firecrawl phase when `include_path` is given.
+- **`docs/tools.md` listed a `bfs` parameter on `crawl_site` that the tool has never taken**;
+  BFS is the server-side `CRAWL_BFS_ENABLED` switch. The row now lists the real parameters (#90).
+- **zod 3.25.76 → 4.6.7.** zod 3 has no fix for GHSA-mrhx-c7xc-m3w5. Tool behaviour is unchanged.
+  The published `tools/list` schemas change in two ways; every enum value, default, bound and
+  description is the same:
+  - input schemas no longer carry `additionalProperties: false`. The server still drops unknown
+    argument keys, as before, so only what a client is told to reject before sending changes;
+  - `domain_stats`' output schema repeats the tier-stats object inline where it used `$ref`s.
+    The two are equivalent.
+- **Dev and CI:** @biomejs/biome 2.6.2, vitest and @vitest/coverage-v8 4.1.12, vite 8.3.5 (#93);
+  codeql-action 4.39.0, upload-artifact 7.0.2, download-artifact 8.0.2, scorecard-action 2.5.0
+  (#92). OpenTelemetry sdk-node and the OTLP HTTP exporters 0.222 → 0.223, together (#83, #84,
+  #85).
+
+### Fixed
+
+- **`fetch_url` answered most github.com pages with the repo's README** (#89, contributed by
+  @blakemartz). The GitHub fast path
+  claimed every `github.com` URL but only knew two shapes, `blob` files and the repo root, so
+  `…/releases`, `…/releases/tag/<tag>`, `…/issues/<n>`, `…/pull/<n>`, `…/commit/<sha>`, wiki and
+  owner pages all came back as the root README — titled as the README, but returned for the
+  requested URL with no error. An agent asked for Valkey's latest release fetched
+  `github.com/valkey-io/valkey/releases`, got the README, and had to work out on its own that
+  the fetcher was wrong. A `tree` URL for a subdirectory got the root README too.
+  - Release pages (`/releases`, `/releases/latest`, `/releases/tag/<tag>`) now come from the
+    releases API as markdown: tag, name, date, pre-release flag, notes. The rendered page puts
+    roughly 100 lines of site navigation ahead of the notes, and GitHub's `robots.txt` points
+    crawlers at the API.
+  - `tree` URLs return that directory's README at that ref, or its file listing when it has
+    none (`robots.txt` disallows `/*/tree/`, so the cascade is no fallback there).
+  - Every other `github.com` page now takes the normal fetch cascade and is rendered as the page
+    it is.
+  - Results cached by earlier versions keep serving the README for up to the fetch TTL
+    (24 h by default); `clear_cache` with `target: "fetch"` drops them.
+  - A `tree` URL's ref is sent to the API as one query value, so a ref containing `&` or `=`
+    cannot add parameters to the request.
+  - A `tree` URL whose ref contains a slash (`…/tree/feature/topic/docs`) is resolved
+    against the repo's branches and tags (the longest match wins) instead of taking `feature`
+    as the ref. If that lookup fails (a rate limit, say), the fetch fails rather than guessing a
+    ref and serving another directory; the lookup error is recorded as the GitHub tier's
+    failure reason.
+  - A release URL with a query (`…/releases?page=2`) takes the normal fetch cascade. The API
+    call ignores the query, so page 2 was answered with page 1. A repo-root URL with a query
+    does too: `?tab=security-ov-file` shows the security policy, which the README call never
+    fetched.
+- **The `search_and_fetch` and `fetch_url` descriptions said every GitHub URL is fetched via
+  the GitHub API.** They now name the repo, file, directory and release shapes that are.
+- **An empty or null optional argument failed the whole call** (#79). Some models send every
+  field of a tool's schema and fill the ones they mean to omit with `""` or `null`. `time_range:
+  ""` was not one of the enum values, and `num_results: ""` coerced to 0, below the minimum of 1,
+  so the call was rejected with `-32602` and every search from such a model failed. On all seven
+  tools, `""` and `null` in an optional argument now mean the argument was not given, and its
+  default applies. Required arguments (`query`, `url`) are unchanged, and a non-empty invalid
+  value is still an error. The published input schemas are unchanged.
+  - `crawl_site` with `include_path: ""` gets the default scope described under Changed, as if
+    `include_path` were omitted, rather than switching the scope off.
+
+### Security
+
+`pnpm audit --prod` reported 28 findings on 3.30.1 (8 high) and reports none now.
+
+- **@modelcontextprotocol/sdk 1.31.0 → 1.32.1** (#82): GHSA-22jm-h49p-29qw and
+  GHSA-46jr-4wx8-v453 (high), plus two moderate. The range floor moves to `^1.32.1`.
+- **zod 4.6.7:** GHSA-mrhx-c7xc-m3w5 (high). See Changed.
+- **undici 7.30.0 → 7.30.2**, range `^7.30.1`: four high and four moderate advisories.
+- **fast-xml-parser 5.11.2 → 5.12.1**, range `^5.12.0`: one low.
+- **`pnpm.overrides`**, all reached through the SDK; each keeps its upper bound: body-parser
+  `>=2.4.0` (new, high), hono `>=4.13.16`, @hono/node-server `>=2.1.6`, fast-uri `>=4.2.3`,
+  ip-address `>=10.7.4`, qs `>=6.16.1`.
+
 ## [3.30.1] - 2026-10-06
 
 Dependency release. No application code changed.
