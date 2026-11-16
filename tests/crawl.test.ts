@@ -57,7 +57,9 @@ import type { CrawlManifest } from "../src/crawl.js";
 import {
   bfsCrawl,
   crawlSite,
+  defaultCrawlScope,
   extractSitemapUrls,
+  inCrawlScope,
   sitemapCrawl,
 } from "../src/crawl.js";
 import { fetchPage } from "../src/fetch.js";
@@ -311,5 +313,173 @@ describe("robots.txt respect", () => {
     const urls = manifest?.pages.map((p) => p.url);
     expect(urls).not.toContain("https://example.com/blocked");
     expect(urls).toContain("https://example.com/allowed");
+  });
+});
+
+// ─── Default scope: the start URL's path ─────────────────────────────────────
+
+describe("defaultCrawlScope", () => {
+  it.each([
+    ["https://valkey.io", undefined],
+    ["https://valkey.io/", undefined],
+    ["https://valkey.io/index.html", undefined],
+    ["https://valkey.io/docs", "/docs"],
+    ["https://valkey.io/docs/", "/docs"],
+    ["https://valkey.io/docs/index.html", "/docs"],
+    ["https://valkey.io/docs/topics/persistence", "/docs/topics/persistence"],
+  ])("%s → %s", (url, scope) => {
+    expect(defaultCrawlScope(url)).toBe(scope);
+  });
+});
+
+describe("inCrawlScope", () => {
+  it("matches the scope path and anything below it", () => {
+    expect(inCrawlScope("https://x.io/docs", "/docs")).toBe(true);
+    expect(inCrawlScope("https://x.io/docs/a/b", "/docs")).toBe(true);
+  });
+
+  it("does not match a sibling that only shares the prefix, or a deeper match", () => {
+    expect(inCrawlScope("https://x.io/docs-old/a", "/docs")).toBe(false);
+    expect(inCrawlScope("https://x.io/blog/docs", "/docs")).toBe(false);
+  });
+
+  it("returns false for an unparseable URL", () => {
+    expect(inCrawlScope("not a url", "/docs")).toBe(false);
+  });
+});
+
+// A site whose sitemap lists the home page and other sections ahead of /docs,
+// the shape that made an unscoped 5-page crawl of /docs return no docs.
+const SCOPE_SITEMAP_LOCS = [
+  "https://example.com/",
+  "https://example.com/authors/a",
+  "https://example.com/authors/b",
+  "https://example.com/docs-old/legacy",
+  "https://example.com/blog/docs-tips",
+  "https://example.com/docs/",
+  "https://example.com/docs/install",
+  "https://example.com/docs/config",
+];
+
+function mockSitemapSite(locs: string[]) {
+  vi.spyOn(global, "fetch").mockImplementation(
+    async (input: RequestInfo | URL) => {
+      const url = typeof input === "string" ? input : input.toString();
+      if (url === "https://example.com/sitemap.xml") {
+        const body = locs.map((l) => `<url><loc>${l}</loc></url>`).join("");
+        return new Response(
+          `<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">${body}</urlset>`,
+          { status: 200, headers: { "Content-Type": "text/xml" } },
+        );
+      }
+      // robots.txt, Firecrawl and everything else: absent.
+      return new Response("", { status: 404 });
+    },
+  );
+  fetchPageMock.mockImplementation(async (url: string) => ({
+    title: url,
+    url,
+    text: "content",
+  }));
+}
+
+describe("sitemapCrawl scope", () => {
+  it("keeps only sitemap URLs under the scope", async () => {
+    mockSitemapSite(SCOPE_SITEMAP_LOCS);
+    const manifest = await sitemapCrawl(
+      "https://example.com/docs",
+      20,
+      undefined,
+      undefined,
+      "/docs",
+    );
+    expect(manifest?.pages.map((p) => p.url)).toEqual([
+      "https://example.com/docs/",
+      "https://example.com/docs/install",
+      "https://example.com/docs/config",
+    ]);
+  });
+});
+
+describe("crawlSite default scope", () => {
+  it("confines a crawl started at /docs to /docs and says so", async () => {
+    mockSitemapSite(SCOPE_SITEMAP_LOCS);
+    const manifest = await crawlSite("https://example.com/docs", 5, true);
+    expect(manifest.strategy).toBe("sitemap");
+    expect(manifest.pages.map((p) => p.url)).toEqual([
+      "https://example.com/docs/",
+      "https://example.com/docs/install",
+      "https://example.com/docs/config",
+    ]);
+    expect(manifest.note).toContain("Limited to pages under /docs/");
+    expect(manifest.note).toContain('include_path "/"');
+  });
+
+  it("does not scope a crawl started at the site root", async () => {
+    mockSitemapSite(SCOPE_SITEMAP_LOCS);
+    const manifest = await crawlSite("https://example.com/", 20, true);
+    expect(manifest.page_count).toBe(SCOPE_SITEMAP_LOCS.length);
+    expect(manifest.note).toBeUndefined();
+  });
+
+  it('lets include_path "/" opt back into the whole site', async () => {
+    mockSitemapSite(SCOPE_SITEMAP_LOCS);
+    const manifest = await crawlSite("https://example.com/docs", 20, true, "/");
+    expect(manifest.page_count).toBe(SCOPE_SITEMAP_LOCS.length);
+    expect(manifest.note).toBeUndefined();
+  });
+
+  it("lets an explicit include_path replace the default scope", async () => {
+    mockSitemapSite(SCOPE_SITEMAP_LOCS);
+    const manifest = await crawlSite(
+      "https://example.com/docs",
+      20,
+      true,
+      "/authors",
+    );
+    expect(manifest.pages.map((p) => p.url)).toEqual([
+      "https://example.com/authors/a",
+      "https://example.com/authors/b",
+    ]);
+  });
+
+  it("explains an empty scope instead of returning unrelated pages", async () => {
+    mockSitemapSite(SCOPE_SITEMAP_LOCS.filter((l) => !l.includes("/docs/")));
+    const manifest = await crawlSite("https://example.com/docs", 5, true);
+    expect(manifest.strategy).toBe("error");
+    expect(manifest.pages).toEqual([]);
+    expect(manifest.note).toContain("no sitemap entries under /docs/");
+    expect(manifest.note).toContain('include_path "/"');
+  });
+});
+
+describe("bfsCrawl scope", () => {
+  it("does not follow links out of the scope", async () => {
+    fetchPageMock.mockImplementation(async (url: string) => ({
+      title: url,
+      url,
+      text: "content",
+    }));
+    vi.spyOn(global, "fetch").mockImplementation(async () => {
+      const html = `<html><body>
+        <a href="https://example.com/docs/install">in</a>
+        <a href="https://example.com/blog/post">out</a>
+        <a href="https://example.com/docs-old/legacy">sibling</a>
+      </body></html>`;
+      return new Response(html, { status: 200 });
+    });
+    const manifest = await bfsCrawl(
+      "https://example.com/docs",
+      10,
+      2,
+      true,
+      undefined,
+      undefined,
+      "/docs",
+    );
+    expect(manifest.pages.map((p) => p.url).sort()).toEqual([
+      "https://example.com/docs",
+      "https://example.com/docs/install",
+    ]);
   });
 });
