@@ -17,6 +17,8 @@ import {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // clearAllMocks keeps an implementation; routeFetch installs one.
+  mockFetch.mockReset();
 });
 
 // These mocks need a real body stream: the tier reads through
@@ -119,6 +121,9 @@ describe("isGithubFastPathUrl", () => {
     "https://github.com/valkey-io/valkey/releases?page=2",
     "https://github.com/valkey-io/valkey/releases?q=9.1&expanded=true",
     "https://github.com/valkey-io/valkey/releases/latest?x=1",
+    // A repo-root query can name another document; the README call ignores it.
+    "https://github.com/valkey-io/valkey?tab=security-ov-file",
+    "https://github.com/valkey-io/valkey/?tab=license-ov-file",
   ])("leaves %s to the normal cascade", (url) => {
     expect(isGithubFastPathUrl(url)).toBe(false);
   });
@@ -402,6 +407,7 @@ describe("githubFetch — github.com", () => {
           { ref: "refs/heads/feature/topic" },
         ]),
       )
+      .mockResolvedValueOnce(jsonResponse([]))
       .mockResolvedValueOnce(
         jsonResponse({ content, name: "README.md", html_url: "x" }),
       );
@@ -417,7 +423,7 @@ describe("githubFetch — github.com", () => {
       "https://api.github.com/repos/a/b/readme/docs/api?ref=feature%2Ftopic",
       expect.anything(),
     );
-    expect(mockFetch).toHaveBeenCalledTimes(2);
+    expect(mockFetch).toHaveBeenCalledTimes(3);
     expect(result.text).toBe("# api");
   });
 
@@ -450,6 +456,7 @@ describe("githubFetch — github.com", () => {
       .mockResolvedValueOnce(
         jsonResponse([{ ref: "refs/heads/feature/topic" }]),
       )
+      .mockResolvedValueOnce(jsonResponse([]))
       .mockResolvedValueOnce(
         jsonResponse({ content, name: "README.md", html_url: "x" }),
       );
@@ -460,19 +467,94 @@ describe("githubFetch — github.com", () => {
     );
   });
 
-  it("falls back to the first segment when the ref lookup fails", async () => {
-    const content = Buffer.from("# docs").toString("base64");
-    mockFetch
-      .mockResolvedValueOnce(jsonResponse({}, { status: 403 }))
-      .mockResolvedValueOnce(
-        jsonResponse({ content, name: "README.md", html_url: "x" }),
-      );
-    await githubFetch("https://github.com/a/b/tree/main/docs");
+  // A guessed ref could serve another ref's directory under this URL, cached,
+  // with nothing to say so. A failed lookup refuses instead.
+  it.each([
+    [
+      "a 403 on the branch lookup",
+      () => {
+        mockFetch.mockResolvedValueOnce(jsonResponse({}, { status: 403 }));
+      },
+      "(heads)",
+    ],
+    [
+      "a network error on the branch lookup",
+      () => {
+        mockFetch.mockRejectedValueOnce(new Error("ECONNRESET"));
+      },
+      "(heads)",
+    ],
+    [
+      "a 500 on the tag lookup",
+      () => {
+        mockFetch
+          .mockResolvedValueOnce(jsonResponse([]))
+          .mockResolvedValueOnce(jsonResponse({}, { status: 500 }));
+      },
+      "(tags)",
+    ],
+    [
+      "a non-list tag body",
+      () => {
+        mockFetch
+          .mockResolvedValueOnce(jsonResponse([]))
+          .mockResolvedValueOnce(jsonResponse({ message: "x" }));
+      },
+      "(tags)",
+    ],
+  ])("refuses when the ref lookup fails: %s", async (_name, arrange, kind) => {
+    (arrange as () => void)();
+    await expect(
+      githubFetch("https://github.com/a/b/tree/main/docs"),
+    ).rejects.toThrow(`GitHub ref lookup failed ${kind}`);
+    // No README or listing request was made with a guessed ref.
+    for (const call of mockFetch.mock.calls) {
+      expect(String(call[0])).toContain("/git/matching-refs/");
+    }
+  });
+
+  /** Answer by URL, so a request the code should not make fails the test on
+   * its URL rather than by consuming another request's response. */
+  function routeFetch(routes: Record<string, unknown>) {
+    const readme = {
+      content: Buffer.from("# d").toString("base64"),
+      name: "README.md",
+      html_url: "x",
+    };
+    mockFetch.mockImplementation((url: string) => {
+      if (url in routes) return Promise.resolve(jsonResponse(routes[url]));
+      if (url.includes("/readme")) return Promise.resolve(jsonResponse(readme));
+      return Promise.resolve(jsonResponse([]));
+    });
+  }
+
+  it("takes the longest match across branches and tags", async () => {
+    routeFetch({
+      "https://api.github.com/repos/a/b/git/matching-refs/heads/rel": [
+        { ref: "refs/heads/rel/1" },
+      ],
+      "https://api.github.com/repos/a/b/git/matching-refs/tags/rel": [
+        { ref: "refs/tags/rel/1/2" },
+      ],
+    });
+    await githubFetch("https://github.com/a/b/tree/rel/1/2/docs");
     expect(mockFetch).toHaveBeenLastCalledWith(
-      "https://api.github.com/repos/a/b/readme/docs?ref=main",
+      "https://api.github.com/repos/a/b/readme/docs?ref=rel%2F1%2F2",
       expect.anything(),
     );
-    expect(mockFetch).toHaveBeenCalledTimes(2);
+  });
+
+  it("decodes a resolved slashed ref once", async () => {
+    routeFetch({
+      "https://api.github.com/repos/a/b/git/matching-refs/heads/feat": [
+        { ref: "refs/heads/feat/a%41" },
+      ],
+    });
+    await githubFetch("https://github.com/a/b/tree/feat/a%2541/docs");
+    expect(mockFetch).toHaveBeenLastCalledWith(
+      "https://api.github.com/repos/a/b/readme/docs?ref=feat%2Fa%2541",
+      expect.anything(),
+    );
   });
 });
 

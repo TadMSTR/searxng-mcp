@@ -75,9 +75,13 @@ Two contributed fixes from @blakemartz (#89, #90), empty optional arguments acce
   - A `tree` URL's ref is sent to the API as one query value, so a ref containing `&` or `=`
     cannot add parameters to the request.
   - A `tree` URL whose ref contains a slash (`…/tree/feature/topic/docs`) is resolved
-    against the repo's branches, then tags, instead of taking `feature` as the ref.
+    against the repo's branches and tags (the longest match wins) instead of taking `feature`
+    as the ref. If that lookup fails (a rate limit, say), the fetch fails with an error that
+    says so, rather than guessing a ref and serving another directory.
   - A release URL with a query (`…/releases?page=2`) takes the normal fetch cascade. The API
-    call ignores the query, so page 2 was answered with page 1.
+    call ignores the query, so page 2 was answered with page 1. A repo-root URL with a query
+    does too: `?tab=security-ov-file` shows the security policy, which the README call never
+    fetched.
 - **The `search_and_fetch` and `fetch_url` descriptions said every GitHub URL is fetched via
   the GitHub API.** They now name the repo, file, directory and release shapes that are.
 - **An empty or null optional argument failed the whole call** (#79). Some models send every

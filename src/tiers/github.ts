@@ -48,7 +48,9 @@ export function isGithubFastPathUrl(url: string): boolean {
   if (!GITHUB_HOSTS.has(parsed.hostname)) return false;
   if (parsed.hostname !== "github.com") return true;
   const parts = parsed.pathname.split("/").filter(Boolean);
-  if (parts.length === 2) return true;
+  // A repo-root query can name another document (`?tab=security-ov-file`
+  // shows the security policy), and the README call ignores it.
+  if (parts.length === 2) return parsed.search === "";
   // A query changes which releases the page shows (`?page=2`, `?q=`), and the
   // API call below takes none of it: `…/releases?page=2` was answered with
   // page 1 and cached under the page-2 URL. Those go to the cascade.
@@ -152,10 +154,16 @@ async function fetchDirectoryListing(
  * gives no boundary between ref and path. Taking the first segment as the ref
  * sent `ref=feature` for a branch named `feature/topic`, so the request failed,
  * or named another ref's directory when both existed. When there is more than
- * one segment, ask the API which branches (then tags) start with the first one
- * and take the longest that the path begins with on a segment boundary. Git
- * refuses `feature` beside `feature/topic` among branches, so a branch match
- * is unambiguous. Any lookup failure falls back to the first segment.
+ * one segment, ask the API which branches and tags start with the first one
+ * and take the longest that the path begins with on a segment boundary,
+ * across both namespaces. A tie is one name, and GitHub resolves it as it
+ * resolves any `ref=`.
+ *
+ * A failed lookup (error status, network error, a body that is not a list)
+ * throws. Falling back to the first segment could serve another ref's
+ * directory under this URL with nothing to say so.
+ *
+ * The ref is returned as written in the URL; `refParam` decodes it once.
  */
 async function splitTreeRef(
   owner: string,
@@ -171,30 +179,39 @@ async function splitTreeRef(
       return seg;
     }
   });
+  const names = new Set<string>();
   for (const kind of ["heads", "tags"]) {
-    let names: string[];
+    let data: unknown;
     try {
       const res = await fetchWithRedirectGuard(
         `https://api.github.com/repos/${owner}/${repo}/git/matching-refs/${kind}/${encodeURIComponent(decoded[0])}`,
         apiHeaders(),
         "GitHub API error",
       );
-      const data: unknown = JSON.parse(await readBoundedText(res));
-      if (!Array.isArray(data)) continue;
-      const prefix = `refs/${kind}/`;
-      names = data
-        .map((r) => (r as { ref?: unknown })?.ref)
-        .filter(
-          (r): r is string => typeof r === "string" && r.startsWith(prefix),
-        )
-        .map((r) => r.slice(prefix.length));
-    } catch {
-      return fallback;
+      data = JSON.parse(await readBoundedText(res));
+    } catch (err) {
+      throw new Error(
+        `GitHub ref lookup failed (${kind}): ${err instanceof Error ? err.message : String(err)}. ` +
+          "The ref in this tree URL cannot be told apart from its path.",
+      );
     }
-    for (let k = rest.length; k >= 2; k--) {
-      if (names.includes(decoded.slice(0, k).join("/"))) {
-        return { ref: decoded.slice(0, k).join("/"), dirPath: rest.slice(k) };
+    if (!Array.isArray(data)) {
+      throw new Error(
+        `GitHub ref lookup failed (${kind}): response is not a list. ` +
+          "The ref in this tree URL cannot be told apart from its path.",
+      );
+    }
+    const prefix = `refs/${kind}/`;
+    for (const r of data) {
+      const ref = (r as { ref?: unknown })?.ref;
+      if (typeof ref === "string" && ref.startsWith(prefix)) {
+        names.add(ref.slice(prefix.length));
       }
+    }
+  }
+  for (let k = rest.length; k >= 2; k--) {
+    if (names.has(decoded.slice(0, k).join("/"))) {
+      return { ref: rest.slice(0, k).join("/"), dirPath: rest.slice(k) };
     }
   }
   return fallback;
