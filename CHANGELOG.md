@@ -76,8 +76,9 @@ Two contributed fixes from @blakemartz (#89, #90), empty optional arguments acce
     cannot add parameters to the request.
   - A `tree` URL whose ref contains a slash (`…/tree/feature/topic/docs`) is resolved
     against the repo's branches and tags (the longest match wins) instead of taking `feature`
-    as the ref. If that lookup fails (a rate limit, say), the fetch fails with an error that
-    says so, rather than guessing a ref and serving another directory.
+    as the ref. If that lookup fails (a rate limit, say), the fetch fails rather than guessing a
+    ref and serving another directory; the lookup error is recorded as the GitHub tier's
+    failure reason.
   - A release URL with a query (`…/releases?page=2`) takes the normal fetch cascade. The API
     call ignores the query, so page 2 was answered with page 1. A repo-root URL with a query
     does too: `?tab=security-ov-file` shows the security policy, which the README call never

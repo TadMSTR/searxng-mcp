@@ -42,7 +42,7 @@ Some GitHub URLs are handled natively without Firecrawl: `raw.githubusercontent.
 
 - **Repo root** (`github.com/owner/repo`, no query) — fetches the README via the GitHub API. With a query (`?tab=security-ov-file`) it takes the cascade, since the query can name another document
 - **File blob** (`github.com/owner/repo/blob/branch/path/to/file`) — rewrites to and fetches raw content from `raw.githubusercontent.com`
-- **Directory** (`github.com/owner/repo/tree/branch/path`) — that directory's README at that ref; a file listing if it has none. A ref with a slash (`tree/feature/topic/docs`) is resolved against the repo's branches and tags; if that lookup fails, the fetch fails rather than guess
+- **Directory** (`github.com/owner/repo/tree/branch/path`) — that directory's README at that ref; a file listing if it has none. A ref with a slash (`tree/feature/topic/docs`) is resolved against the repo's branches and tags; if that lookup fails, the fetch fails rather than guess (the lookup error is recorded as the GitHub tier's failure reason)
 - **Releases** (`github.com/owner/repo/releases`, `…/releases/latest`, `…/releases/tag/<tag>`) — release notes from the releases API as markdown (the list is the 10 most recent, newest first). With a query (`?page=2`) they take the cascade
 - **Raw file** (`raw.githubusercontent.com/...`) — fetched directly as-is
 - **API** (`api.github.com/...`) — response decoded (base64 `content` fields) or pretty-printed as JSON
