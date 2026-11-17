@@ -77,12 +77,18 @@ export function assertPublicUrl(url: string): void {
 // upstream text without it (audit 2026-09-20/searxng-mcp-hygiene-probes-2026-09,
 // finding F-01). A pattern with one call site and no shared home is one the next
 // module will skip too, so it moved rather than being copied.
+//
+// Whitespace runs, newlines included, collapse to one space first. Every sink
+// is a single line (a log line, `domain_stats`' "| last fail: …" row), and a
+// relayed newline could forge a second line there. Same rule as ollama.ts's
+// sanitizeFailureDetail.
 export const MAX_RELAYED_TEXT_CHARS = 200;
 
 export function boundRelayedText(text: string): string {
-  return text.length > MAX_RELAYED_TEXT_CHARS
-    ? `${text.slice(0, MAX_RELAYED_TEXT_CHARS)}…`
-    : text;
+  const oneLine = text.replace(/\s+/g, " ").trim();
+  return oneLine.length > MAX_RELAYED_TEXT_CHARS
+    ? `${oneLine.slice(0, MAX_RELAYED_TEXT_CHARS)}…`
+    : oneLine;
 }
 
 export interface FetchTuning {

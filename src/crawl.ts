@@ -13,7 +13,7 @@ import {
 } from "./config.js";
 import { recordTierAttempt } from "./domain-db.js";
 import { assertPublicUrl, fetchPage } from "./fetch.js";
-import { readBoundedText, safeFetch } from "./fetch-utils.js";
+import { boundRelayedText, readBoundedText, safeFetch } from "./fetch-utils.js";
 import {
   firecrawlCapabilities,
   firecrawlEndpoint,
@@ -91,8 +91,13 @@ interface FirecrawlPollResponse {
 function recordCrawlOutcome(
   url: string,
   outcome: "hit" | "miss",
-  reason?: string,
+  rawReason?: string,
 ): void {
+  // Reasons carry upstream error text (poll, start and crawl errors), which
+  // reaches callers through domain_stats. Bounded and made single-line here so
+  // every call site gets it.
+  const reason =
+    rawReason === undefined ? undefined : boundRelayedText(rawReason);
   if (outcome === "miss") {
     logWarn(`crawl_site firecrawl phase miss: ${reason} url=${url}`);
   }

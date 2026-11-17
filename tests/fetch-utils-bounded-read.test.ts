@@ -1,6 +1,11 @@
 import { createServer, type Server } from "node:http";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { RAW_HTML_MAX_BYTES, readBoundedText } from "../src/fetch-utils.js";
+import {
+  boundRelayedText,
+  MAX_RELAYED_TEXT_CHARS,
+  RAW_HTML_MAX_BYTES,
+  readBoundedText,
+} from "../src/fetch-utils.js";
 
 // A stub that streams far more than any cap the tests set, and records how
 // many bytes it actually pushed onto the wire before the client went away.
@@ -148,5 +153,22 @@ describe("readBoundedText — truncation is byte-based, not character-based", ()
     expect(
       await readBoundedText(new Response("plenty of content here"), 0),
     ).toBe("");
+  });
+});
+
+describe("boundRelayedText", () => {
+  it("collapses whitespace runs, newlines included, to one space", () => {
+    expect(boundRelayedText("  a\n\nb\r\n\tc  ")).toBe("a b c");
+  });
+
+  it("bounds after collapsing, so the cap counts what is shown", () => {
+    const out = boundRelayedText(`${"y\n".repeat(300)}`);
+    expect(out).not.toContain("\n");
+    expect(out).toHaveLength(MAX_RELAYED_TEXT_CHARS + 1);
+    expect(out.endsWith("…")).toBe(true);
+  });
+
+  it("leaves short single-line text unchanged", () => {
+    expect(boundRelayedText("poll 503")).toBe("poll 503");
   });
 });
