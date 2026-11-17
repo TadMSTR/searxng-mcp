@@ -131,7 +131,7 @@ const BOOLEAN_ARGS = [
   },
 ] as const;
 
-describe.each(BOOLEAN_ARGS)("$tool.$arg", ({ tool, arg, base, absent }) => {
+describe.each(BOOLEAN_ARGS)("$tool $arg", ({ tool, arg, base, absent }) => {
   it.each([
     [true, true],
     [false, false],

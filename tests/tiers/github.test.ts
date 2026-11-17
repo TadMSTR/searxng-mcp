@@ -632,3 +632,104 @@ describe("githubFetch — github.com releases", () => {
     expect(mockFetch).not.toHaveBeenCalled();
   });
 });
+
+// F-03: a github.com path segment goes into an API path. One that decodes to
+// "/" (or is a dot segment) would name another API path than the URL shows.
+describe("githubFetch — path segments", () => {
+  it.each([
+    "https://github.com/a/b/releases/tag/x%2F..%2F..%2F..%2Fuser",
+    "https://github.com/a/b/tree/main/docs%2F..%2F..",
+    "https://github.com/a/b/tree/main%2Fx/docs",
+    "https://github.com/a/b/blob/main/a%2F..%2F..%2Fc",
+    "https://github.com/a/b/tree/main/a%5Cb",
+    "https://github.com/a%2F..%2Fuser/b",
+    "https://github.com/a/b%2Fc/tree/main",
+    "https://github.com/a/b~c/releases",
+  ])("refuses %s before any request", async (url) => {
+    await expect(githubFetch(url)).rejects.toThrow(
+      "GitHub fast path refuses this URL",
+    );
+    expect(mockFetch).not.toHaveBeenCalled();
+  });
+
+  it("never sees a dot segment: the URL parser has already resolved it", async () => {
+    // `/a/%2e%2e/tree/main` is `/tree/main` by the time the tier reads it, a
+    // repo named "main" owned by "tree"; ".." never reaches an API path.
+    const content = Buffer.from("# x").toString("base64");
+    mockFetch.mockResolvedValueOnce(
+      jsonResponse({ content, name: "README.md", html_url: "x" }),
+    );
+    await githubFetch("https://github.com/a/%2e%2e/tree/main");
+    expect(mockFetch).toHaveBeenCalledWith(
+      "https://api.github.com/repos/tree/main/readme",
+      expect.anything(),
+    );
+  });
+
+  it("encodes each tag segment on its own", async () => {
+    mockFetch.mockResolvedValueOnce(
+      jsonResponse({
+        tag_name: "v1+b",
+        name: null,
+        body: "",
+        html_url: "x",
+        published_at: null,
+        prerelease: false,
+        draft: false,
+      }),
+    );
+    await githubFetch("https://github.com/a/b/releases/tag/rel/v1+b");
+    expect(mockFetch).toHaveBeenCalledWith(
+      "https://api.github.com/repos/a/b/releases/tags/rel/v1%2Bb",
+      expect.anything(),
+    );
+  });
+
+  it("encodes each directory segment on its own", async () => {
+    noMatchingRefs();
+    const content = Buffer.from("# x").toString("base64");
+    mockFetch.mockResolvedValueOnce(
+      jsonResponse({ content, name: "README.md", html_url: "x" }),
+    );
+    await githubFetch("https://github.com/a/b/tree/main/my%20dir/a&b=c");
+    expect(mockFetch).toHaveBeenLastCalledWith(
+      "https://api.github.com/repos/a/b/readme/my%20dir/a%26b%3Dc?ref=main",
+      expect.anything(),
+    );
+  });
+});
+
+// F-04: the Contents API answers a file path with one object, not a list.
+describe("githubFetch — a tree URL that names a file", () => {
+  it("fetches the file as its blob URL would be", async () => {
+    noMatchingRefs();
+    mockFetch
+      .mockResolvedValueOnce(jsonResponse({}, { status: 404 }))
+      .mockResolvedValueOnce(
+        jsonResponse({ name: "hi.py", type: "file", content: "" }),
+      )
+      .mockResolvedValueOnce(textResponse("print('hi')"));
+    const result = await githubFetch(
+      "https://github.com/a/b/tree/main/scripts/hi.py",
+    );
+    expect(mockFetch).toHaveBeenLastCalledWith(
+      "https://raw.githubusercontent.com/a/b/main/scripts/hi.py",
+      expect.anything(),
+    );
+    expect(result).toEqual({
+      title: "hi.py",
+      url: "https://github.com/a/b/tree/main/scripts/hi.py",
+      text: "print('hi')",
+    });
+  });
+
+  it("names any other single entry instead of throwing a TypeError", async () => {
+    noMatchingRefs();
+    mockFetch
+      .mockResolvedValueOnce(jsonResponse({}, { status: 404 }))
+      .mockResolvedValueOnce(jsonResponse({ name: "link", type: "symlink" }));
+    await expect(
+      githubFetch("https://github.com/a/b/tree/main/link"),
+    ).rejects.toThrow("GitHub tree URL does not name a directory (symlink)");
+  });
+});
