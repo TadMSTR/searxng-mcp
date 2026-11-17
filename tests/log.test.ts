@@ -167,6 +167,9 @@ describe("redactUrlCredentialsInText — every userinfo shape, not just the colo
     "http://[::1]:8080/@x",
     "https://host.example:/a@b",
     "https://github.com/o/r/blob/main/@scope/pkg.json",
+    // The documented limit (CHANGELOG 3.32.0): digits before an unencoded '/'
+    // read as a port, so this password shape is not scrubbed.
+    "https://u:1234/rest@host.example",
   ])("leaves %s untouched", (input) => {
     expect(redactUrlCredentialsInText(input)).toBe(input);
   });

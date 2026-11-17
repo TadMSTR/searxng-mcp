@@ -366,7 +366,7 @@ Standard OTEL env vars apply (`OTEL_SERVICE_NAME` defaults to `searxng-mcp`).
 | `searxng.cache.hit` / `.miss` | On every Valkey lookup |
 | `searxng.error` | Stage-tagged errors |
 
-Each envelope includes `request_id` and (when OTel is enabled) `trace_id` so subscribers can join the two streams. Subject prefix overridable via `NATS_SUBJECT_PREFIX`. Search queries flow through `search.*` events — downstream consumers are responsible for any PII scrubbing.
+Each envelope includes `request_id` and (when OTel is enabled) `trace_id` so subscribers can join the two streams. Subject prefix overridable via `NATS_SUBJECT_PREFIX`. Before publishing, URL credentials (`scheme://user:pass@`) are scrubbed from every string in every event, error text included. Nothing else is scrubbed: search queries flow through `search.*` events, and downstream consumers are responsible for any PII scrubbing.
 
 ## Politeness
 

@@ -51,7 +51,9 @@ endpoint, and checks the compose examples in CI.
   error message, which reached log lines, `domain_stats` and the NATS `fetch.tier.miss` event.
   URL userinfo is now scrubbed from that text before it is bounded, and every string in every
   NATS event is scrubbed before it is published. Passwords that hold an unencoded `@` or `/`
-  are now scrubbed whole. The redaction pattern now caps the scheme it scans for, so long
+  are now scrubbed whole, with one exception: when everything before an unencoded `/` is
+  digits (`user:1234/rest@host`), it reads as a port and is not scrubbed, so percent-encode a
+  `/` in a password (`%2F`). The redaction pattern now caps the scheme it scans for, so long
   crafted text can no longer make it take seconds.
 - **`crawl_site` cached an empty manifest when `same_domain_only` dropped every Firecrawl
   page** (a `www.` crawl for a bare domain, say), and skipped the map, sitemap and BFS
