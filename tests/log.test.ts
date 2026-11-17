@@ -207,15 +207,34 @@ describe("redactUrlCredentialsInText — every userinfo shape, not just the colo
     );
   });
 
-  // Known shapes, pinned so a change to them is a decision. With no '/', an
-  // '@' in a query value is taken as the userinfo end: the value's tail is
-  // left as the host. A space ends the URL, so a password holding one is not
-  // scrubbed (CHANGELOG 3.32.0 says so).
-  it("treats a query '@' with no '/' as the userinfo end", () => {
-    expect(
-      redactUrlCredentialsInText("https://host.example?password=a@b"),
-    ).toBe("https://<redacted>@b");
+  // Delimiters inside a password: the cut is still at the '@' before the host.
+  it.each([
+    ["https://u:p?ss@host.example/x", "'?'"],
+    ["https://u:p#ss@host.example/x", "'#'"],
+    ["https://u:p/?ss@host.example/x", "'/?'"],
+    ["https://u:p%40ss@host.example/x", "percent-encoded '@'"],
+  ])("redacts %s (%s in the password)", (input) => {
+    expect(redactUrlCredentialsInText(input)).toBe(
+      "https://<redacted>@host.example/x",
+    );
   });
+
+  // With no '/' before it, an '@' after a host's '?' or '#' may be a query or
+  // fragment value. Cutting at it would leave the value's tail as the host, so
+  // the whole URL is redacted.
+  it.each([
+    "https://host.example?password=a@b",
+    "https://host.example:8080?password=a@b",
+    "https://host.example#frag@x",
+    "https://host.example?password=a@b/path",
+  ])("redacts all of %s (ambiguous '@' after '?' or '#')", (input) => {
+    const out = redactUrlCredentialsInText(input);
+    expect(out).toBe("https://<redacted>");
+    expect(redactUrlCredentialsInText(out)).toBe(out);
+  });
+
+  // A space ends the URL, so a password holding one is not scrubbed
+  // (CHANGELOG 3.32.0 says so). Pinned so a change to it is a decision.
 
   it("leaves a password holding a space (documented limit)", () => {
     expect(redactUrlCredentialsInText("https://u:pa ss@host.example/x")).toBe(
@@ -287,6 +306,7 @@ describe("redactUrlCredentialsInText — linear on adversarial text", () => {
     ["nested clean URLs ending in '@'", `${"x://h/".repeat(33_000)}@`],
     ["many '@' segments", "x://u:a@b/c@d ".repeat(14_000)],
     ["inner schemes in a password", `x://u:${"ax://".repeat(40_000)}@h`],
+    ["'@' after a host's '?', back to back", "x://h?a@".repeat(25_000)],
   ])("%s: 200 KB in well under a second", (_name, input) => {
     const t0 = performance.now();
     redactUrlCredentialsInText(input);

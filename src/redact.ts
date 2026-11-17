@@ -66,8 +66,8 @@ export function redactUrlCredentialsInText(text: string): string {
 }
 
 // Where the userinfo of the run text[start, end) ends: the index of the '@'
-// that is kept, or -1 when the run carries none. `lastAt` is the run's last
-// '@' (>= start).
+// that is kept, `end` when the whole run is redacted, or -1 when the run
+// carries none. `lastAt` is the run's last '@' (>= start).
 //
 // The authority is everything before the first '/'. A '?' or '#' does not end
 // it here: an unencoded '#' or '?' in a password is common, and running the
@@ -90,7 +90,20 @@ function credentialCut(
   // cheaper mistake. A ':' is not required: `scheme://TOKEN@host` is how a
   // bearer token or a GitHub PAT appears in a URL (audit
   // searxng-mcp-release-hygiene-2026-09, Low).
-  if (authority.includes("@")) return lastAt;
+  const firstAt = authority.indexOf("@");
+  if (firstAt >= 0) {
+    // With no '/' before it, an '@' after the first '?' or '#' may be a query
+    // or fragment '@' (`host?password=a@b`), not userinfo: cutting there would
+    // leave the value's tail as the host. When the text before that '?' or '#'
+    // reads as host[:port], the boundary is ambiguous, so the whole run is
+    // redacted. A password holding '?' or '#' (`u:p?ss@host`) has a ':' and
+    // non-digits before it, so it is still cut at the '@' and keeps the host.
+    const q = authority.search(/[?#]/);
+    if (q >= 0 && q < firstAt && HOST_PORT.test(authority.slice(0, q))) {
+      return end;
+    }
+    return lastAt;
+  }
 
   // No '@' before the first '/'. Usually that is an ordinary path, query or
   // fragment '@' (`github.com/@handle`, `/?q=a@b.com`, `matrix.to/#/@user`),
@@ -100,6 +113,9 @@ function credentialCut(
   // by anything but digits. Then the authority is ambiguous, and everything up
   // to the run's last '@' is redacted: over-redacting a path is the cheaper
   // mistake. Controls for both sides in tests/log.test.ts.
-  if (!/^(\[[^\]]*\]|[^:]*)(:\d*)?$/.test(authority)) return lastAt;
+  if (!HOST_PORT.test(authority)) return lastAt;
   return -1;
 }
+
+// host[:port], with a bracketed IPv6 host allowed.
+const HOST_PORT = /^(\[[^\]]*\]|[^:]*)(:\d*)?$/;
