@@ -39,6 +39,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
 
       # linux/amd64 only. arm64 would need QEMU emulation on this runner, which
       # roughly triples the job for a platform with no consumer today. Add it
@@ -196,6 +198,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
 
       # amd64 only, consistent with the main image.
       - name: Build reranker image
@@ -355,6 +359,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
 
       - name: Build adblock-proxy image
         run: docker build -t "$PROXY_IMAGE:candidate" ./docker/adblock-proxy
@@ -520,6 +526,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
 
       # THE ASSERTION THAT MATTERS IS NOT "ARE ADS BLOCKED".
       #

@@ -28,6 +28,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
 
       - name: Set up Node.js ${{ matrix.node-version }}
         uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
@@ -59,11 +61,13 @@ jobs:
 
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
 
       # Plain `docker build` rather than docker/build-push-action: buildx ships
       # on the runner, nothing is pushed, and this adds no third-party action to
       # pin. Without this job the Dockerfile rots the way the compose examples
-      # did — nothing exercised them on a PR.
+      # did before the `examples` job below — nothing exercised them on a PR.
       - name: Build image
         run: docker build -t searxng-mcp:ci .
 
@@ -130,6 +134,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
 
       # The filter lists are vendored (vikunja#716), so NOTHING in this build may
       # contact easylist.to.
@@ -197,6 +203,45 @@ jobs:
             "
           '
 
+  # ── examples ────────────────────────────────────────────────────────────────
+  # The compose files in examples/ are the documented way to run the stack, and
+  # nothing checked them: a renamed variable, a moved build context or a broken
+  # interpolation shipped silently. This parses every one with `docker compose
+  # config` and checks that each local build context and bind-mount source it
+  # names exists. No variables are supplied: every example has to parse with
+  # an empty environment, which is what a first-time user has.
+  examples:
+    name: Compose examples parse
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+
+      - name: Validate every compose example
+        working-directory: examples
+        run: |
+          set -euo pipefail
+          shopt -s nullglob globstar
+          files=(**/compose*.y*ml **/docker-compose*.y*ml)
+          # A glob that silently matched nothing would pass. Four is the
+          # number of examples today; raise it when one is added.
+          [ "${#files[@]}" -ge 4 ] || { echo "FAIL: expected at least 4 compose examples, found ${#files[@]}"; exit 1; }
+          for f in "${files[@]}"; do
+            echo "== $f"
+            env -i PATH="$PATH" HOME="$HOME" docker compose -f "$f" config --quiet
+            # kiwix-data is where the user puts their own ZIM files; it is
+            # documented as user-supplied and is the one path allowed absent.
+            docker compose -f "$f" config --format json \
+              | jq -r '.services[] | (.build.context // empty), ((.volumes // [])[] | select(.type == "bind") | .source)' \
+              | while read -r p; do
+                  case "$p" in */examples/kiwix-data) continue ;; esac
+                  [ -e "$p" ] || { echo "FAIL: $f references a missing path: ${p#"$GITHUB_WORKSPACE"/}"; exit 1; }
+                  echo "  ok ${p#"$GITHUB_WORKSPACE"/}"
+                done
+          done
+
   # ── workflow-pins ───────────────────────────────────────────────────────────
   # A separate job, and it deliberately installs nothing. It needs neither the
   # lockfile nor the toolchain, so it still reports when either is what broke —
@@ -208,6 +253,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
 
       # Runs the checker's own fixtures FIRST, and fails the job if any of them
       # misbehaves. Five must go red and four must stay green.
@@ -247,6 +294,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
 
       - name: Set up Node.js
         uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
