@@ -30,6 +30,7 @@ import { searxSearch } from "./search.js";
 import {
   CategorySchema,
   optionalArg,
+  optionalBool,
   type SearxMeta,
   type SearxResult,
   TimeRangeSchema,
@@ -886,7 +887,7 @@ export function registerTools(server: McpServer): void {
           "Limit results to: day, week, month, or year (omit for all time)",
         ),
         domain_profile: DomainProfileSchema,
-        expand: optionalArg(z.coerce.boolean().optional()).describe(
+        expand: optionalBool().describe(
           "Use local LLM to generate 2-3 query variants and merge results for a wider search surface (default: off). Adds ~3s latency; most useful for research queries where one phrasing may miss relevant results.",
         ),
         language: LanguageSchema,
@@ -916,7 +917,7 @@ export function registerTools(server: McpServer): void {
         "Number of top results to fetch full content for (default 1, max 3)",
       ),
       domain_profile: DomainProfileSchema,
-      expand: optionalArg(z.coerce.boolean().optional()).describe(
+      expand: optionalBool().describe(
         "Use local LLM to generate 2-3 query variants and merge results for a wider search surface (default: off). Adds ~3s latency.",
       ),
       language: LanguageSchema,
@@ -965,7 +966,7 @@ export function registerTools(server: McpServer): void {
         "Limit results to: day, week, month, or year (omit for all time)",
       ),
       domain_profile: DomainProfileSchema,
-      expand: optionalArg(z.coerce.boolean().optional()).describe(
+      expand: optionalBool().describe(
         "Use query expansion before searching (default: off)",
       ),
       language: LanguageSchema,
@@ -993,7 +994,7 @@ export function registerTools(server: McpServer): void {
       max_pages: optionalArg(
         z.coerce.number().min(1).max(100).default(20),
       ).describe("Maximum pages to crawl (default 20, max 100)"),
-      same_domain_only: optionalArg(z.coerce.boolean().default(true)).describe(
+      same_domain_only: optionalBool(true).describe(
         "Restrict crawl to the same domain (default true)",
       ),
       include_path: optionalArg(z.string().optional()).describe(

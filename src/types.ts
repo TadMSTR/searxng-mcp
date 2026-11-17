@@ -184,6 +184,37 @@ export function optionalArg<T extends z.ZodType>(schema: T) {
   return z.preprocess(blankToUndefined, schema);
 }
 
+/** `"true"` / `"false"` (any case, trimmed) as booleans; anything else as is. */
+function booleanString(value: unknown): unknown {
+  if (typeof value !== "string") return value;
+  const word = value.trim().toLowerCase();
+  if (word === "true") return true;
+  if (word === "false") return false;
+  return value;
+}
+
+/**
+ * An optional boolean tool argument: `optionalArg` plus the exact strings
+ * `"true"` and `"false"`, which the same models send for a boolean.
+ *
+ * 3.31.0 used `z.coerce.boolean()` here, which is `Boolean(input)`: every
+ * non-empty string was `true`, so `same_domain_only: "false"` kept the crawl
+ * on one domain and `expand: "false"` turned expansion on. Any other string
+ * (`"0"`, `"1"`, `"yes"`) and any number reaches `z.boolean()` unchanged and is
+ * rejected. The published JSON Schema is the inner `type: boolean`, with its
+ * default if one is given.
+ */
+export function optionalBool(): z.ZodPreprocess<z.ZodOptional<z.ZodBoolean>>;
+export function optionalBool(
+  defaultValue: boolean,
+): z.ZodPreprocess<z.ZodDefault<z.ZodBoolean>>;
+export function optionalBool(defaultValue?: boolean) {
+  const toBoolean = (value: unknown) => booleanString(blankToUndefined(value));
+  return defaultValue === undefined
+    ? z.preprocess(toBoolean, z.boolean().optional())
+    : z.preprocess(toBoolean, z.boolean().default(defaultValue));
+}
+
 export const CategorySchema = optionalArg(
   z.enum(["general", "news", "it", "science"]).default("general"),
 );
