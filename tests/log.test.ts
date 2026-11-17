@@ -294,6 +294,57 @@ describe("redactUrlCredentialsInText — every userinfo shape, not just the colo
   });
 });
 
+// Every combination of the delimiters a pasted password can hold, in every
+// suffix shape, in bare and embedded text. Nothing of the password, or of a
+// query or fragment value holding '@', may survive, except the documented
+// limit: an authority before the first '/' that reads as host[:port] with no
+// '@' (CHANGELOG 3.32.0), which Node also parses as a host with no
+// credentials.
+describe("redactUrlCredentialsInText — password delimiter table", () => {
+  const pieces = ["@", "/", "?", "#", ":", "x://", "%40", "/?"];
+  const suffixes = [
+    "",
+    "/p",
+    "/p?q=1",
+    "?q=1",
+    "#f",
+    "/p@z",
+    "/p?q=QA@QB",
+    "?q=QA@QB",
+    "#QA@QB",
+  ];
+  const hostPort = /^(\[[^\]]*\]|[^:]*)(:\d*)?$/;
+  const urls: string[] = [];
+  for (const a of pieces)
+    for (const b of ["", ...pieces])
+      for (const user of ["u:", ""])
+        for (const sfx of suffixes)
+          urls.push(
+            `https://${user}SA${a}SB${b}${b ? "SC" : ""}@host.example${sfx}`,
+          );
+
+  it("leaves no password text outside the documented limit", () => {
+    const leaks: string[] = [];
+    let limited = 0;
+    for (const url of urls) {
+      const auth = url.slice("https://".length).split("/")[0];
+      if (!auth.includes("@") && hostPort.test(auth)) {
+        limited++;
+        continue;
+      }
+      for (const msg of [url, `includes credentials: ${url}`, `a ${url} b`]) {
+        const out = redactUrlCredentialsInText(msg);
+        if (/S[ABC]|Q[AB]/.test(out)) leaks.push(`${url} -> ${out}`);
+        if (redactUrlCredentialsInText(out) !== out)
+          leaks.push(`re-scrub ${url}`);
+      }
+    }
+    expect(leaks).toEqual([]);
+    // The table must exercise the redacting side, not only the limit.
+    expect(urls.length - limited).toBeGreaterThan(900);
+  });
+});
+
 // IV-78: the scheme run used to be unbounded, so dotted text with no `://`
 // was quadratic on long dotted text. boundRelayedText runs this over
 // upstream error text before truncating, so the input size is the upstream's.
