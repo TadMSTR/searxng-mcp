@@ -46,20 +46,20 @@ endpoint, and checks the compose examples in CI.
   error text. Relayed upstream error text in fetch failure reasons and crawl log lines is
   bounded the same way, and adblock-proxy caps each filter list at 16 MiB and bounds its error
   log lines.
-- **Error text relayed from upstream could include credentials from a configured service
-  URL.** Node's `fetch()` rejects a URL with `user:password@` and puts the whole URL in its
-  error message, which reached log lines, `domain_stats` and the NATS `fetch.tier.miss` event.
-  URL userinfo is now scrubbed from that text before it is bounded, and every string in every
-  NATS event is scrubbed before it is published. Passwords that hold an unencoded `@`, `/` or
-  `://` are now scrubbed whole, up to the last `@` before the next whitespace. An `@` after a
-  `?` or `#` that follows the host or an earlier `@` may be a query or fragment value, so that
-  whole URL is redacted. The rule has limits. When the text before the first unencoded `/` reads as
-  `host[:port]` (`user:1234/rest@host`, `user:/rest@host`, a username or token holding a
-  `/`), it is taken as a host and the rest as a path, so nothing is scrubbed. Node parses those URLs the same way: as a host with no
-  credentials, so its error names only the host. A password holding a space is cut at the
-  space and not scrubbed. Percent-encode `@`, `/`, `:` and spaces in credentials (`%40`,
-  `%2F`, `%3A`, `%20`). The redaction pattern now caps the scheme it scans for, so long
-  crafted text can no longer make it take seconds.
+- **Error text relayed from upstream could include credentials from a configured service URL.**
+  Node's `fetch()` rejects a URL with `user:password@` and puts the whole URL in its error
+  message, which reached log lines, `domain_stats` and the NATS `fetch.tier.miss` event. URL
+  userinfo is now scrubbed from that text before it is bounded, and every string in every NATS
+  event is scrubbed before it is published. Passwords that hold an unencoded `@`, `/` or `://`
+  are now scrubbed whole, up to the last `@` before the next whitespace. An `@` after a `?` or
+  `#` that follows the host or an earlier `@` may be a query or fragment value, so that whole
+  URL is redacted. The rule has limits. When the text before the first unencoded `/` reads as
+  `host[:port]` (`user:1234/rest@host`, `user:/rest@host`, a username or token holding a `/`),
+  it is taken as a host and the rest as a path, so nothing is scrubbed. Node parses those URLs
+  the same way: as a host with no credentials, so its error names only the host. A password
+  holding a space is cut at the space and not scrubbed. Percent-encode `@`, `/`, `:` and spaces
+  in credentials (`%40`, `%2F`, `%3A`, `%20`). The redaction pattern now caps the scheme it
+  scans for, so long crafted text can no longer make it take seconds.
 - **`crawl_site` cached an empty manifest when `same_domain_only` dropped every Firecrawl
   page** (a `www.` crawl for a bare domain, say), and skipped the map, sitemap and BFS
   strategies. It now falls back to them.
