@@ -114,9 +114,9 @@ describe("publishEvent — connected", () => {
   });
 
   it("honours NATS_SUBJECT_PREFIX", async () => {
-    const m = await connected("forge");
+    const m = await connected("example");
     m.publishEvent("fetch.requested", {});
-    expect(h.state.published[0].subject).toBe("forge.fetch.requested");
+    expect(h.state.published[0].subject).toBe("example.fetch.requested");
   });
 
   it("never throws when publish itself throws", async () => {
@@ -161,6 +161,45 @@ describe("publishEvent — connected", () => {
       "searxng.fetch.tier.miss",
       "searxng.fetch.tier.skipped",
     ]);
+  });
+
+  it("scrubs URL credentials from every string in the payload", async () => {
+    // The generic sink: whatever call site forgets to scrub, nothing with a
+    // password leaves the process on the bus.
+    const m = await connected();
+    m.events.fetchTierMiss({
+      url: "https://u:urlpw@site.example/x",
+      tier: "tier1",
+      reason:
+        "Request cannot be constructed from a URL that includes credentials: https://fc:hunter2@firecrawl.example/v2/scrape",
+      latency_ms: 3,
+    });
+    m.publishEvent("custom", {
+      nested: { list: ["redis://:deep@cache:6379"] },
+    });
+    const raw = h.state.published.map((p) => p.data).join("\n");
+    expect(raw).not.toMatch(/urlpw|hunter2|deep@/);
+    const body = JSON.parse(h.state.published[0].data);
+    expect(body.reason).toContain("<redacted>@firecrawl.example");
+    expect(body.url).toBe("https://<redacted>@site.example/x");
+    expect(JSON.parse(h.state.published[1].data).nested.list[0]).toBe(
+      "redis://<redacted>@cache:6379",
+    );
+  });
+
+  it("keeps each field intact when one ends in a URL and the next holds an '@'", async () => {
+    // Scrubbing the serialised JSON would let a run cross the closing quote
+    // of `url` into `reason`, eat both and break the JSON. Per-value does not.
+    const m = await connected();
+    m.events.fetchTierMiss({
+      url: "https://site.example",
+      tier: "tier1",
+      reason: "owner@site.example said no",
+      latency_ms: 3,
+    });
+    const body = JSON.parse(h.state.published[0].data);
+    expect(body.url).toBe("https://site.example");
+    expect(body.reason).toBe("owner@site.example said no");
   });
 });
 

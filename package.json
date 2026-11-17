@@ -1,6 +1,6 @@
 {
   "name": "@tadmstr/searxng-mcp",
-  "version": "3.31.1",
+  "version": "3.32.0",
   "description": "MCP server for SearXNG \u2014 private web search for Claude Code",
   "main": "build/src/index.js",
   "bin": {
@@ -59,6 +59,7 @@
   },
   "devDependencies": {
     "@biomejs/biome": "^2.6.2",
+    "@ghostery/adblocker": "2.18.2",
     "@types/jsdom": "^28.0.3",
     "@types/node": "^22.20.1",
     "@vitest/coverage-v8": "^4.1.12",

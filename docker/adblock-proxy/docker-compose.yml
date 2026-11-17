@@ -35,5 +35,12 @@ services:
     security_opt: [no-new-privileges:true]
     # Verified running fully read-only (vikunja#693).
     read_only: true
+    # Same probe as the image's HEALTHCHECK, stated here so it is visible.
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get({host:'127.0.0.1',port:process.env.PORT||8118,path:'/health',timeout:4000},(r)=>process.exit(r.statusCode===200?0:1)).on('timeout',function(){this.destroy()}).on('error',()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      start_period: 90s
+      retries: 3
     mem_limit: 512m
     cpus: 1.0

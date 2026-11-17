@@ -193,6 +193,35 @@ describe("fetchPage — terminal failure names every tier", () => {
     expect(message).toContain("tier3_rawfetch");
   });
 
+  it("scrubs and bounds a tier error before every sink, NATS included", async () => {
+    // A credentialed FIRECRAWL_URL makes Node's fetch() throw with the URL in
+    // the message. The caller's outcome was scrubbed; the fetch.tier.miss
+    // event two lines earlier got the raw text, password and all.
+    const { events } = await import("../src/events.js");
+    const { recordTierAttempt } = await import("../src/domain-db.js");
+    tiers.tier1Fetch.mockRejectedValue(
+      new TypeError(
+        `Request cannot be constructed from a URL that includes credentials: https://fc:hunter2@firecrawl.example/v2/scrape ${"X".repeat(5000)}`,
+      ),
+    );
+
+    const err = await fetchPage(URL_).catch((e: Error) => e);
+
+    const miss = vi
+      .mocked(events.fetchTierMiss)
+      .mock.calls.find(([p]) => p.tier === "tier1_firecrawl");
+    expect(miss).toBeDefined();
+    const reason = miss?.[0].reason ?? "";
+    expect(reason).not.toContain("hunter2");
+    expect(reason).toContain("<redacted>@firecrawl.example");
+    expect(reason.length).toBeLessThan(1000);
+    const attempt = vi
+      .mocked(recordTierAttempt)
+      .mock.calls.find(([, tier]) => tier === "tier1_firecrawl");
+    expect(attempt?.[3]).toBe(reason);
+    expect(String(err)).not.toContain("hunter2");
+  });
+
   it("leaves a normal-length reason intact", async () => {
     // Negative control for the cap: without this, a bound that truncated
     // everything would satisfy the test above.

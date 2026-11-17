@@ -160,9 +160,9 @@ export const FIRECRAWL_API_KEY =
 
 /**
  * Which Firecrawl API the client speaks. The legacy firecrawl-simple backend
- * serves only `/v1`; upstream Firecrawl 2.x serves only `/v2`. Both are live on
- * forge at the same time during the firecrawl-upstream-2026-09 migration, so
- * this is a configuration axis rather than a one-off path fix.
+ * serves only `/v1`; upstream Firecrawl 2.x serves only `/v2`. A deployment can
+ * run both at once while migrating from one to the other, so this is a
+ * configuration axis rather than a one-off path fix.
  *
  * Defaults to `v1`: the live fetch path must not change on upgrade.
  *
@@ -325,7 +325,7 @@ export function tierConfigured(): Record<TierSlot, boolean> {
 }
 export const WAYBACK_ENABLED = process.env.WAYBACK_ENABLED === "true";
 // Challenge-solving tier. SOLVER_URL points at a FlareSolverr-v1-compatible
-// solver — Byparr on forge (`http://byparr:8191`); FlareSolverr itself speaks
+// solver, for example Byparr (`http://byparr:8191`); FlareSolverr itself speaks
 // the same POST /v1 contract, so swapping is config, not code.
 //
 // SOLVER_ENABLED is the kill switch and defaults off, mirroring

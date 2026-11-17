@@ -44,7 +44,7 @@ export interface FirecrawlCapabilities {
    * available to a self-host deployment (`fetch`, `playwright`, `pdf`,
    * `document`) reports `actions: false`. Sending one returns HTTP 400
    * `SCRAPE_ACTIONS_NOT_SUPPORTED` and fails the whole request, verified live
-   * against firecrawl 2.11.162 on forge. So this is not a graceful-degradation
+   * against self-hosted firecrawl 2.11.162. So this is not a graceful-degradation
    * check: sending `actions` under v2 turns every `wait_for_selector` call into
    * a hard tier-1 miss.
    */
@@ -80,8 +80,8 @@ export interface FirecrawlCapabilities {
    * Whether `/crawl` accepts `crawlEntireDomain`, which lets an explicit
    * `includePaths` reach outside the start URL's subpaths.
    *
-   * v2 does: verified live 2026-11-16 against forge's firecrawl-v2-api, which
-   * returns 200 for it and 400 `unrecognized_keys` for an unknown key. Unverified
+   * v2 does: verified live 2026-11-16 against a self-hosted Firecrawl v2 API,
+   * which returns 200 for it and 400 `unrecognized_keys` for an unknown key. Unverified
    * for the v1 backend, whose schema is strict too, so v1 never sends it and
    * crawl_site skips the Firecrawl phase when an include_path is given.
    */

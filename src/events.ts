@@ -4,6 +4,7 @@
 import type { NatsConnection } from "@nats-io/nats-core";
 import { getRequestId } from "./context.js";
 import { getCurrentTraceId } from "./observability.js";
+import { redactUrlCredentialsInText } from "./redact.js";
 
 interface BaseEnvelope {
   request_id?: string;
@@ -37,10 +38,10 @@ export async function initEvents(): Promise<void> {
         readFileSync(process.env.NATS_CREDS),
       );
     } else if (process.env.NATS_USER && process.env.NATS_PASSWORD) {
-      // Forge's searxng-mcp NATS user is bcrypt username/password (no .creds
-      // file exists), so the JWT creds authenticator above could never
-      // authenticate it — this is why NATS events have never fired. Creds-file
-      // auth still wins when both are configured.
+      // A NATS user configured with a bcrypt username/password has no .creds
+      // file, so the JWT creds authenticator above can never authenticate it;
+      // before this branch existed such a deployment published no events at
+      // all. Creds-file auth still wins when both are configured.
       opts.user = process.env.NATS_USER;
       opts.pass = process.env.NATS_PASSWORD;
     }
@@ -77,10 +78,21 @@ function envelope<T extends object>(payload: T): T & BaseEnvelope {
   };
 }
 
+// Every string in every event is scrubbed of URL credentials on its way out.
+// Error text reaches these payloads from many call sites (a tier's reason, a
+// tool error), and guarding each one missed fetch.tier.miss. Scrubbing per
+// string value, not the serialised JSON, keeps a run from crossing one field's
+// closing quote into the next.
+function scrubStrings(_key: string, value: unknown): unknown {
+  return typeof value === "string" ? redactUrlCredentialsInText(value) : value;
+}
+
 export function publishEvent(suffix: string, payload: object): void {
   if (!nc) return;
   try {
-    const data = new TextEncoder().encode(JSON.stringify(envelope(payload)));
+    const data = new TextEncoder().encode(
+      JSON.stringify(envelope(payload), scrubStrings),
+    );
     nc.publish(`${subjectPrefix}.${suffix}`, data);
   } catch {
     // fire-and-forget — never throw from the event hook

@@ -75,7 +75,7 @@ vi.mock("../src/config.js", async () => {
   };
 });
 
-import { cacheGet } from "../src/cache.js";
+import { cacheGet, cacheSet } from "../src/cache.js";
 import {
   crawlSite,
   extractMapUrls,
@@ -190,6 +190,78 @@ describe("firecrawlCrawl failures are logged and counted, not swallowed", () => 
     );
   });
 
+  it("scrubs URL credentials from a start error before logging and storing it", async () => {
+    mockFetch.mockRejectedValueOnce(
+      new TypeError(
+        "Request cannot be constructed from a URL that includes credentials: http://fc:hunter2@fc:3002/v1/crawl",
+      ),
+    );
+    expect(await firecrawlCrawl(SITE, 5)).toBeNull();
+    const reason = recordTierAttemptMock.mock.calls[0][3] as string;
+    expect(reason).toContain("http://<redacted>@fc:3002");
+    expect(reason).not.toContain("hunter2");
+    expect(logWarnMock.mock.calls.flat().join("\n")).not.toContain("hunter2");
+  });
+
+  it("logs the crawl URL on one line", async () => {
+    mockFetch.mockResolvedValueOnce(
+      new Response("Cannot POST", { status: 404 }),
+    );
+    await firecrawlCrawl("https://example.com/a\nFAKE second line", 5);
+    const line = logWarnMock.mock.calls.flat().join("");
+    expect(line).not.toMatch(/[\r\n]/);
+    expect(line).toContain("url=https://example.com/a FAKE second line");
+  });
+
+  it("returns null, so crawlSite can fall back, when every page is off-host", async () => {
+    mockFetch
+      .mockResolvedValueOnce(json({ success: true, id: "job1" }))
+      .mockResolvedValueOnce(
+        json({
+          status: "completed",
+          data: [
+            {
+              markdown: "www page",
+              metadata: { sourceURL: "https://www.example.com/1" },
+            },
+          ],
+        }),
+      );
+    const filter = { host: "example.com", dropped: 0 };
+    expect(
+      await firecrawlCrawl(SITE, 5, undefined, undefined, filter),
+    ).toBeNull();
+    expect(filter.dropped).toBe(1);
+    expect(recordTierAttemptMock).toHaveBeenCalledWith(
+      SITE,
+      "crawl_firecrawl",
+      "miss",
+      "every page off-host (1 dropped)",
+    );
+  });
+
+  it("keeps the manifest when some pages survive the host filter", async () => {
+    mockFetch
+      .mockResolvedValueOnce(json({ success: true, id: "job1" }))
+      .mockResolvedValueOnce(
+        json({
+          status: "completed",
+          data: [
+            {
+              markdown: "a",
+              metadata: { sourceURL: "https://www.example.com/1" },
+            },
+            { markdown: "b", metadata: { sourceURL: `${SITE}/2` } },
+          ],
+        }),
+      );
+    const m = await firecrawlCrawl(SITE, 5, undefined, undefined, {
+      host: "example.com",
+      dropped: 0,
+    });
+    expect(m?.pages.map((p) => p.url)).toEqual([`${SITE}/2`]);
+  });
+
   it("records a miss when the start response carries no job id", async () => {
     mockFetch.mockResolvedValueOnce(json({ success: true }));
     expect(await firecrawlCrawl(SITE, 5)).toBeNull();
@@ -253,7 +325,7 @@ describe("firecrawlCrawl failures are logged and counted, not swallowed", () => 
 });
 
 describe("extractMapUrls", () => {
-  // Live shape from firecrawl 2.11.162 on forge: {url} objects with no title,
+  // Live shape from self-hosted firecrawl 2.11.162: {url} objects with no title,
   // which is NOT the {url, title} the migration plan assumed. Both are accepted
   // so the next shape change is not another silent dead path.
   it("reads the {url} objects the deployed backend actually returns", () => {
@@ -411,5 +483,75 @@ describe("an explicit include_path can widen the Firecrawl crawl", () => {
     mockFetch.mockResolvedValue(new Response("", { status: 404 }));
     await crawlSite(`${SITE}/docs`, 5, true);
     expect(fetchedUrls()[0]).toBe("http://fc:3002/v1/crawl");
+  });
+});
+
+// vikunja#719 class: the three Firecrawl error reasons relay upstream error
+// text (err.message), and domain_stats shows the last one to callers on a
+// single "| last fail: …" line. Each site's reason comes out bounded and on one
+// line.
+describe("crawl error reasons are bounded and single-line", () => {
+  const LONG = `first line\n${"x".repeat(500)}\r\n\tthird line`;
+
+  function lastReason(): string {
+    const call = recordTierAttemptMock.mock.calls.at(-1);
+    expect(call?.[1]).toBe("crawl_firecrawl");
+    return String(call?.[3]);
+  }
+
+  function expectBounded(reason: string, prefix: string) {
+    expect(reason.startsWith(prefix)).toBe(true);
+    expect(reason).not.toMatch(/[\r\n\t]/);
+    // 200 chars plus the ellipsis.
+    expect(reason.length).toBeLessThanOrEqual(201);
+    expect(reason.endsWith("…")).toBe(true);
+  }
+
+  it("start error", async () => {
+    mockFetch.mockRejectedValueOnce(new Error(LONG));
+    expect(await firecrawlCrawl(SITE, 5)).toBeNull();
+    expectBounded(lastReason(), "start error: first line x");
+  });
+
+  it("poll error", async () => {
+    mockFetch
+      .mockResolvedValueOnce(json({ success: true, id: "job1" }))
+      .mockRejectedValueOnce(new Error(LONG));
+    expect(await firecrawlCrawl(SITE, 5)).toBeNull();
+    expectBounded(lastReason(), "poll error: first line x");
+  });
+
+  it("crawl error", async () => {
+    mockFetch
+      .mockResolvedValueOnce(json({ success: true, id: "job1" }))
+      .mockResolvedValueOnce(
+        json({
+          status: "completed",
+          data: [
+            { markdown: "m", metadata: { title: "t", sourceURL: `${SITE}/1` } },
+          ],
+        }),
+      );
+    vi.mocked(cacheSet).mockRejectedValueOnce(new Error(LONG));
+    expect(await firecrawlCrawl(SITE, 5)).toBeNull();
+    expectBounded(lastReason(), "crawl error: first line x");
+  });
+
+  it("map phase: the log line is bounded and single-line", async () => {
+    cfg.version = "v2";
+    mockFetch.mockRejectedValueOnce(new Error(LONG));
+    expect(await firecrawlMapUrls(SITE)).toBeNull();
+    const line = String(logWarnMock.mock.calls.at(-1)?.[0]);
+    expect(line).toMatch(/^crawl_site map phase miss: first line x/);
+    expect(line).not.toMatch(/[\r\n\t]/);
+    expect(line).toContain("… url=https://example.com");
+  });
+
+  it("the log line carries the same bounded reason", async () => {
+    mockFetch.mockRejectedValueOnce(new Error(LONG));
+    await firecrawlCrawl(SITE, 5);
+    const line = String(logWarnMock.mock.calls.at(-1)?.[0]);
+    expect(line).not.toMatch(/[\r\n\t]/);
+    expect(line).toContain("start error: first line x");
   });
 });

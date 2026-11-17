@@ -11,9 +11,8 @@
 //   1. The poll route was `/task/{task_id}`, which does not exist on 0.8.6. It
 //      404s, the !resp.ok guard returns null, and the tier books an ordinary
 //      miss. That spelling is still printed in upstream's own installation doc
-//      (overview-05-installation.md), which is the likely reason two forge
-//      repos wrote it independently — jobsearch-mcp has the same defect
-//      (vikunja#654).
+//      (overview-05-installation.md), which is the likely reason two
+//      independent integrations wrote it.
 //   2. The payload did not survive the rename. A completed job nests the crawl
 //      result one level deeper than the old code read. Repointing the route
 //      alone would have turned a 404 into a 200 that still produced no text.

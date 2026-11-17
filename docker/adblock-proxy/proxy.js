@@ -10,6 +10,10 @@
  * ad/tracker domains are not filtered at content level (acceptable tradeoff
  * vs. certificate complexity — see docker/adblock-proxy/README.md).
  *
+ * GET /health (origin-form only): 200 when a rule set with at least one network
+ * filter is loaded (status "partial" if some lists are missing from it), 503
+ * otherwise. See README.md, "Health endpoint".
+ *
  * Environment:
  *   PORT                  Listen port (default: 8118)
  *   ADBLOCK_FILTERS_URL   Comma-separated filter list URLs
@@ -35,14 +39,72 @@ const FILTERS_URLS = (
 const REFRESH_HOURS = parseInt(process.env.ADBLOCK_REFRESH_HOURS ?? "168", 10);
 const LOG_BLOCKED = process.env.LOG_BLOCKED === "true";
 
-let engine = null;
+// Per-list byte cap. EasyList is about 2.0 MB and EasyPrivacy about 1.5 MB
+// (measured 2026-11-17), so 16 MiB is wide headroom for list growth while a
+// misconfigured or hostile URL can't make the proxy buffer without limit. A
+// list over the cap is a failed fetch, and reading stops at the cap.
+const MAX_LIST_BYTES = 16 * 1024 * 1024;
 
-async function loadFilters() {
+// Upstream error text goes into single-line log entries: bounded, one line.
+function oneLine(text) {
+  const s = String(text).replace(/\s+/g, " ").trim();
+  return s.length > 200 ? `${s.slice(0, 200)}…` : s;
+}
+
+async function readCapped(res, limit) {
+  if (!res.body) return "";
+  const reader = res.body.getReader();
+  const chunks = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > limit) {
+      await reader.cancel().catch(() => {});
+      throw new Error(`list exceeds ${limit} bytes`);
+    }
+    chunks.push(value);
+  }
+  return Buffer.concat(chunks).toString("utf8");
+}
+
+// The rule set in use. `engine` stays null until a load yields at least one
+// network filter, and a refused load leaves the rule-set fields as they were:
+// an empty engine filters nothing, so swapping one in would turn a working
+// proxy into a pass-through that still reports success. `lastAttemptAt` and
+// `lastAttemptOk` record every load, refused ones included, so /health can say
+// a refresh is failing while the old rule set still serves.
+const state = {
+  engine: null,
+  networkFilters: 0,
+  cosmeticFilters: 0,
+  loadedAt: null,
+  listsFetched: 0,
+  listsTotal: 0,
+  lists: [],
+  lastAttemptAt: null,
+  lastAttemptOk: null,
+};
+
+/**
+ * Fetch every list, parse them into one engine, and install it only if it has
+ * network filters and, on a refresh, came from every list the rule set it
+ * replaces came from. Returns true when the engine was replaced.
+ *
+ * `fetchImpl` and `urls` are parameters so the tests can load fixture lists
+ * without a network.
+ */
+async function loadFilters({
+  urls = FILTERS_URLS,
+  fetchImpl = globalThis.fetch,
+  maxListBytes = MAX_LIST_BYTES,
+} = {}) {
   let combined = "";
-  for (const url of FILTERS_URLS) {
+  const fetchedUrls = [];
+  for (const url of urls) {
     try {
-      // Use global fetch (Node 18+)
-      const res = await fetch(url, {
+      const res = await fetchImpl(url, {
         headers: { "User-Agent": "adblock-proxy/1.0" },
         signal: AbortSignal.timeout(30000),
       });
@@ -50,32 +112,132 @@ async function loadFilters() {
         console.error(`[adblock-proxy] filter fetch failed: ${url} status=${res.status}`);
         continue;
       }
-      const text = await res.text();
+      const text = await readCapped(res, maxListBytes);
+      console.log(`[adblock-proxy] fetched ${url} (${Buffer.byteLength(text)} bytes)`);
       combined += text + "\n";
+      fetchedUrls.push(url);
     } catch (err) {
-      console.error(`[adblock-proxy] filter fetch error: ${url} ${err.message}`);
+      console.error(`[adblock-proxy] filter fetch error: ${url} ${oneLine(err.message)}`);
     }
   }
-  const newEngine = FiltersEngine.parse(combined, { debug: false });
-  const count = newEngine.filters ? newEngine.filters.size : "unknown";
-  engine = newEngine;
-  if (!engine) {
-    console.error("[adblock-proxy] WARNING: no filters loaded — all requests will pass through unfiltered");
+
+  const fetched = fetchedUrls.length;
+  state.lastAttemptAt = new Date().toISOString();
+  state.lastAttemptOk = false;
+
+  // A refresh that lacks a list the rule set in use came from would drop that
+  // list from filtering until the next refresh. Compared by URL, not by count:
+  // an EasyPrivacy-only refresh is the same size as an EasyList-only rule set
+  // and would swap one for the other. At startup a partial set is better than
+  // none, so only a refresh is refused.
+  const missing = state.lists.filter((u) => !fetchedUrls.includes(u));
+  if (state.engine && fetched > 0 && missing.length > 0) {
+    console.error(
+      `[adblock-proxy] WARNING: refresh fetched ${fetched}/${urls.length} list(s), missing ` +
+        `${missing.length} of the ${state.lists.length} the current rule set came from ` +
+        `(${missing.join(", ")}) — keeping it ` +
+        `(${state.networkFilters} network, ${state.cosmeticFilters} cosmetic, loaded ${state.loadedAt})`,
+    );
+    return false;
   }
-  console.log(`[adblock-proxy] loaded filters from ${FILTERS_URLS.length} list(s) (${count} rules)`);
+
+  // FiltersEngine.parse("") returns a valid, empty engine rather than null, so
+  // "every list failed" has to be detected from the count.
+  const newEngine = FiltersEngine.parse(combined, { debug: false });
+  const { networkFilters, cosmeticFilters } = newEngine.getFilters();
+
+  if (networkFilters.length === 0) {
+    if (state.engine) {
+      console.error(
+        `[adblock-proxy] WARNING: refresh produced 0 network filters ` +
+          `(${fetched}/${urls.length} list(s) fetched) — keeping the previous rule set ` +
+          `(${state.networkFilters} network, ${state.cosmeticFilters} cosmetic, loaded ${state.loadedAt})`,
+      );
+    } else {
+      console.error(
+        `[adblock-proxy] WARNING: no filters loaded (${fetched}/${urls.length} list(s) fetched) — ` +
+          "all requests will pass through unfiltered and /health reports 503",
+      );
+    }
+    return false;
+  }
+
+  state.engine = newEngine;
+  state.networkFilters = networkFilters.length;
+  state.cosmeticFilters = cosmeticFilters.length;
+  state.loadedAt = state.lastAttemptAt;
+  state.listsFetched = fetched;
+  state.listsTotal = urls.length;
+  state.lists = fetchedUrls;
+  state.lastAttemptOk = true;
+  console.log(
+    `[adblock-proxy] loaded ${state.networkFilters} network and ${state.cosmeticFilters} cosmetic ` +
+      `filters from ${fetched}/${urls.length} list(s)`,
+  );
+  return true;
 }
 
 function isBlocked(url, sourceUrl = "") {
-  if (!engine) return false;
+  if (!state.engine) return false;
   try {
     const req = Request.fromRawDetails({ url, sourceUrl, type: "other" });
-    return engine.match(req).match;
+    return state.engine.match(req).match;
   } catch {
     return false;
   }
 }
 
-const server = http.createServer((req, res) => {
+// A rule set older than two refresh intervals means refreshes have been
+// failing (or refused) for at least two attempts in a row. It still filters,
+// but /health turns 503 so the HEALTHCHECK and anything watching it notice.
+//
+// A rule set missing some configured lists reports "partial", never "ok". It
+// stays 200: it filters, and a one-list outage at startup should not mark the
+// container unhealthy for a whole refresh interval. Only the status says so,
+// and a partial set that keeps reinstalling (which keeps loaded_at fresh, so
+// it never goes stale) is still reported.
+function healthBody({ now = Date.now(), refreshHours = REFRESH_HOURS } = {}) {
+  const loaded = state.engine !== null && state.networkFilters > 0;
+  const stale =
+    loaded &&
+    refreshHours > 0 &&
+    now - Date.parse(state.loadedAt) > 2 * refreshHours * 60 * 60 * 1000;
+  const partial = loaded && state.listsFetched < state.listsTotal;
+  const status = !loaded ? "no_filters" : stale ? "stale" : partial ? "partial" : "ok";
+  return {
+    code: status === "ok" || status === "partial" ? 200 : 503,
+    body: {
+      status,
+      network_filters: state.networkFilters,
+      cosmetic_filters: state.cosmeticFilters,
+      loaded_at: state.loadedAt,
+      lists_fetched: state.listsFetched,
+      lists_total: state.listsTotal,
+      last_attempt_at: state.lastAttemptAt,
+      last_attempt_ok: state.lastAttemptOk,
+    },
+  };
+}
+
+function handleRequest(req, res) {
+  // Health check. A forward proxy's real requests are absolute-form
+  // (`GET http://host/path`) or CONNECT, so an ORIGIN-form request for exactly
+  // `/health` cannot be a proxied request and is answered here. `http://x/health`
+  // is absolute-form, does not match, and takes the proxy path below with its
+  // SSRF guard. Every other origin-form path is unchanged (400 from the URL
+  // parse): this is a health route, not a local web server.
+  if (req.method === "GET" && req.url === "/health") {
+    const { code, body } = healthBody();
+    const payload = JSON.stringify(body);
+    res.writeHead(code, {
+      "Content-Type": "application/json",
+      "Content-Length": Buffer.byteLength(payload),
+      "Cache-Control": "no-store",
+    });
+    res.end(payload);
+    return;
+  }
+
   // Plain HTTP proxy request
   const targetUrl = req.url;
 
@@ -134,7 +296,7 @@ const server = http.createServer((req, res) => {
 
     req.pipe(proxy, { end: true });
   });
-});
+}
 
 // HTTPS CONNECT — TCP tunnel, no interception
 //
@@ -145,7 +307,7 @@ const server = http.createServer((req, res) => {
 // net.connect(port, host), which re-resolved with no rebinding protection).
 // Now resolved and validated before connecting, and pinned to the validated
 // address so there is no window to race.
-server.on("connect", (req, clientSocket, head) => {
+function handleConnect(req, clientSocket, head) {
   const [host, portStr] = (req.url ?? "").split(":");
   const port = parseInt(portStr ?? "443", 10);
 
@@ -185,14 +347,22 @@ server.on("connect", (req, clientSocket, head) => {
       serverSocket.destroy();
     });
   });
-});
+}
 
-server.on("error", (err) => {
-  console.error(`[adblock-proxy] server error: ${err.message}`);
-  process.exit(1);
-});
+function createServer() {
+  const server = http.createServer(handleRequest);
+  server.on("connect", handleConnect);
+  return server;
+}
 
 async function start() {
+  const server = createServer();
+
+  server.on("error", (err) => {
+    console.error(`[adblock-proxy] server error: ${err.message}`);
+    process.exit(1);
+  });
+
   await loadFilters();
 
   // Periodic filter refresh
@@ -200,7 +370,7 @@ async function start() {
     const ms = REFRESH_HOURS * 60 * 60 * 1000;
     setInterval(() => {
       loadFilters().catch((err) =>
-        console.error(`[adblock-proxy] filter refresh error: ${err.message}`)
+        console.error(`[adblock-proxy] filter refresh error: ${oneLine(err.message)}`)
       );
     }, ms);
   }
@@ -208,16 +378,22 @@ async function start() {
   server.listen(PORT, "0.0.0.0", () => {
     console.log(`[adblock-proxy] listening on 0.0.0.0:${PORT}`);
   });
+
+  process.on("SIGTERM", () => {
+    server.close(() => process.exit(0));
+  });
+  process.on("SIGINT", () => {
+    server.close(() => process.exit(0));
+  });
 }
 
-process.on("SIGTERM", () => {
-  server.close(() => process.exit(0));
-});
-process.on("SIGINT", () => {
-  server.close(() => process.exit(0));
-});
+// Started only when run directly (`node proxy.js`), so the tests can require
+// this module without opening a port or fetching lists.
+if (require.main === module) {
+  start().catch((err) => {
+    console.error(`[adblock-proxy] startup error: ${err.message}`);
+    process.exit(1);
+  });
+}
 
-start().catch((err) => {
-  console.error(`[adblock-proxy] startup error: ${err.message}`);
-  process.exit(1);
-});
+module.exports = { createServer, loadFilters, isBlocked, healthBody, state };

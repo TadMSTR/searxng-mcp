@@ -13,8 +13,8 @@
 # ⚠ init-adblock.js sits in front of Firecrawl's in-browser SSRF guard. Read
 #   its header before changing the route handler.
 #
-# Base image pinned by digest (security check DC-01). This is the digest the
-# forge deployment runs, verified 2026-09-06. To bump:
+# Base image pinned by digest (security check DC-01). This digest was verified
+# against a running deployment on 2026-09-06. To bump:
 #   docker pull ghcr.io/firecrawl/playwright-service:<NEW_TAG>
 #   docker inspect ... --format '{{index .RepoDigests 0}}'
 # and re-check api.ts's route ordering — the guard this hook chains into is

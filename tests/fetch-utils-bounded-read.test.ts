@@ -1,6 +1,11 @@
 import { createServer, type Server } from "node:http";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { RAW_HTML_MAX_BYTES, readBoundedText } from "../src/fetch-utils.js";
+import {
+  boundRelayedText,
+  MAX_RELAYED_TEXT_CHARS,
+  RAW_HTML_MAX_BYTES,
+  readBoundedText,
+} from "../src/fetch-utils.js";
 
 // A stub that streams far more than any cap the tests set, and records how
 // many bytes it actually pushed onto the wire before the client went away.
@@ -148,5 +153,66 @@ describe("readBoundedText — truncation is byte-based, not character-based", ()
     expect(
       await readBoundedText(new Response("plenty of content here"), 0),
     ).toBe("");
+  });
+});
+
+describe("boundRelayedText", () => {
+  it("collapses whitespace runs, newlines included, to one space", () => {
+    expect(boundRelayedText("  a\n\nb\r\n\tc  ")).toBe("a b c");
+  });
+
+  it("bounds after collapsing, so the cap counts what is shown", () => {
+    const out = boundRelayedText(`${"y\n".repeat(300)}`);
+    expect(out).not.toContain("\n");
+    expect(out).toHaveLength(MAX_RELAYED_TEXT_CHARS + 1);
+    expect(out.endsWith("…")).toBe(true);
+  });
+
+  it("leaves short single-line text unchanged", () => {
+    expect(boundRelayedText("poll 503")).toBe("poll 503");
+  });
+});
+
+// A credentialed service URL (FIRECRAWL_URL=http://user:pass@host) makes Node's
+// fetch() throw with the whole URL in the message, and every relay of upstream
+// error text goes through boundRelayedText: crawl logs, domain_stats'
+// last_fail_reason, the fetch tiers' reasons.
+describe("boundRelayedText scrubs URL credentials", () => {
+  const SECRET = "s3cr3tPassw0rd";
+  const NODE_MSG = (u: string) =>
+    `start error: Request cannot be constructed from a URL that includes credentials: ${u}/v1/crawl`;
+
+  it.each([
+    ["user:pass", `http://fc:${SECRET}@firecrawl:3002`],
+    ["token only", `http://${SECRET}@firecrawl:3002`],
+    ["https", `https://u:${SECRET}@fc.example`],
+    ["redis", `redis://:${SECRET}@cache:6379`],
+    ["upper-case scheme", `HTTP://u:${SECRET}@fc`],
+  ])("%s", (_name, url) => {
+    const out = boundRelayedText(NODE_MSG(url));
+    expect(out).not.toContain(SECRET);
+    expect(out).toContain("<redacted>@");
+  });
+
+  it("scrubs before collapsing whitespace, so a newline next to the URL changes nothing", () => {
+    const out = boundRelayedText(`error:\nhttp://u:${SECRET}@fc:3002/x`);
+    expect(out).toBe("error: http://<redacted>@fc:3002/x");
+  });
+
+  it("stays fast on large adversarial upstream text (the scrub runs before the cut)", () => {
+    const t0 = performance.now();
+    const out = boundRelayedText("a.".repeat(100_000));
+    expect(performance.now() - t0).toBeLessThan(1000);
+    expect(out).toHaveLength(MAX_RELAYED_TEXT_CHARS + 1);
+  });
+
+  it("scrubs before truncating, so a cut cannot leave part of a password", () => {
+    // The cap lands inside the password and the '@' falls past it, so
+    // truncate-then-scrub would leave a prefix with no '@' for the pattern to
+    // anchor on: 180 + " http://u:" (10) puts the password at 190-203.
+    const lead = "x".repeat(MAX_RELAYED_TEXT_CHARS - 20);
+    const out = boundRelayedText(`${lead} http://u:${SECRET}@fc/`);
+    expect(out).not.toContain(SECRET.slice(0, 6));
+    expect(out).toContain("http://<redacted>@");
   });
 });

@@ -4,6 +4,7 @@
 
 import { isIP } from "node:net";
 import type { Dispatcher } from "undici";
+import { redactUrlCredentialsInText } from "./redact.js";
 import {
   isPrivateOrReservedAddress,
   ssrfGuardedDispatcher,
@@ -67,9 +68,15 @@ export function assertPublicUrl(url: string): void {
 // Bound on any text relayed from an upstream service into a log line or a value
 // returned to a caller.
 //
-// SECURITY[control]: length bound only; content needs no filter because
-// SsrfBlockedError omits the resolved address and raw.ts's redirect throw omits
-// Location, both deliberately. Audit finding OE-02 (Low), Ted 2026-09-06.
+// SECURITY[control]: URL userinfo is scrubbed, then length is bounded. The
+// scrub comes first so a cut can't split a credential past the pattern. Node's
+// fetch() rejects a credentialed URL (a FIRECRAWL_URL with `user:pass@`, say)
+// with an error message that holds the whole URL. The scrub covers only text
+// that passes through this function: a sink handed the raw message is not
+// covered, which is why runTier bounds its reason once before every sink and
+// events.ts scrubs every published string itself. No other content filter:
+// SsrfBlockedError omits the resolved address and raw.ts's redirect throw
+// omits Location, both deliberately. Audit finding OE-02 (Low), Ted 2026-09-06.
 //
 // Lives here rather than in fetch.ts because fetch.ts imports hister.ts, so a
 // hister.ts -> fetch.ts import would be circular. It was a private helper in
@@ -77,12 +84,18 @@ export function assertPublicUrl(url: string): void {
 // upstream text without it (audit 2026-09-20/searxng-mcp-hygiene-probes-2026-09,
 // finding F-01). A pattern with one call site and no shared home is one the next
 // module will skip too, so it moved rather than being copied.
+//
+// Whitespace runs, newlines included, collapse to one space first. Every sink
+// is a single line (a log line, `domain_stats`' "| last fail: …" row), and a
+// relayed newline could fake a second line there. Same rule as ollama.ts's
+// sanitizeFailureDetail.
 export const MAX_RELAYED_TEXT_CHARS = 200;
 
 export function boundRelayedText(text: string): string {
-  return text.length > MAX_RELAYED_TEXT_CHARS
-    ? `${text.slice(0, MAX_RELAYED_TEXT_CHARS)}…`
-    : text;
+  const oneLine = redactUrlCredentialsInText(text).replace(/\s+/g, " ").trim();
+  return oneLine.length > MAX_RELAYED_TEXT_CHARS
+    ? `${oneLine.slice(0, MAX_RELAYED_TEXT_CHARS)}…`
+    : oneLine;
 }
 
 export interface FetchTuning {

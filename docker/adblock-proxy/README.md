@@ -84,5 +84,51 @@ services:
   No content interception. Ad domains accessible only over HTTPS are not blocked.
 
 - **Filter refresh**: Filter lists are downloaded at startup and reloaded every
-  `ADBLOCK_REFRESH_HOURS`. The server continues using the previous engine if a refresh
-  fails.
+  `ADBLOCK_REFRESH_HOURS`. A load that yields no network filters (every list failed,
+  or every list was empty) is treated as failed: at startup the proxy runs with no
+  engine and `/health` reports `503`; on a refresh it keeps the previous rule set and
+  logs a `WARNING`. The startup log line reports the network and cosmetic filter
+  counts and how many lists were fetched.
+
+## Health endpoint
+
+`GET /health` on `PORT` (default `8118`) reports whether a rule set is loaded and
+whether it is current:
+
+| Code | `status` | Meaning |
+|------|----------|---------|
+| `200` | `ok` | A rule set with network filters is loaded from every configured list, and it is newer than two refresh intervals (`2 × ADBLOCK_REFRESH_HOURS`) |
+| `200` | `partial` | As `ok`, but some configured lists are missing from the rule set (`lists_fetched < lists_total`). It filters, so the healthcheck passes; watch `status` to alert on it |
+| `503` | `stale` | A rule set is loaded and still filters, but it is older than two refresh intervals: refreshes have been failing or refused. Never reported when `ADBLOCK_REFRESH_HOURS` is `0` |
+| `503` | `no_filters` | No rule set has loaded. Requests pass through unfiltered |
+
+Every response carries the same fields:
+
+```json
+{"status":"ok","network_filters":N,"cosmetic_filters":M,"loaded_at":"<ISO 8601>",
+ "lists_fetched":2,"lists_total":2,"last_attempt_at":"<ISO 8601>","last_attempt_ok":true}
+```
+
+`loaded_at`, `lists_fetched` and `lists_total` describe the rule set in use.
+`last_attempt_at` and `last_attempt_ok` describe the latest load, including a refused
+one. A refresh is refused, and the rule set in use kept, when it yields no network
+filters or lacks any list that rule set came from (compared by URL, so a refresh
+that fetched a different list of the same count is refused too). At startup a partial
+set is installed, since it beats none, and `/health` reports `partial` until a refresh
+fetches every list.
+
+Only an **origin-form** request for exactly `/health` is answered locally
+(`curl http://adblock-proxy:8118/health`). A proxied request for
+`http://<host>/health` is an ordinary proxy request and goes through the SSRF guard.
+Other origin-form paths return `400`, as before.
+
+The image has a `HEALTHCHECK` that probes this endpoint with Node (the image has no
+curl):
+
+```dockerfile
+HEALTHCHECK --interval=30s --timeout=5s --start-period=90s --retries=3 \
+  CMD ["node", "-e", "require('http').get({host:'127.0.0.1',port:process.env.PORT||8118,path:'/health',timeout:4000},(r)=>process.exit(r.statusCode===200?0:1)).on('timeout',function(){this.destroy()}).on('error',()=>process.exit(1))"]
+```
+
+The start period covers the startup list fetch, which runs before the port opens.
+`docker-compose.yml` beside this file repeats the same check as a `healthcheck:`.

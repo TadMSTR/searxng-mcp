@@ -1,8 +1,8 @@
 # yaml-language-server: $schema=https://storage.googleapis.com/coderabbit_public_assets/schema.v2.json
 #
-# CodeRabbit review configuration — forge.
+# CodeRabbit review configuration.
 #
-# Deliberately minimal. Every key here is a standing claim about how forge wants its code
+# Deliberately minimal. Every key here is a standing claim about how this repo wants its code
 # reviewed, and an over-configured reviewer is harder to reason about than a default one.
 # Add a key only when a default has actually cost a build something.
 
@@ -10,11 +10,11 @@ reviews:
   auto_review:
     # Off. Every review of this repo is an explicit `@coderabbitai full review`.
     #
-    # forge's build flow asks for a review at a fixed point: after the PR is open and
+    # The maintainer's build flow asks for a review at a fixed point: after the PR is open and
     # before the security audit is dispatched. That review's findings go to the audit to be
     # verified, so it has to be finished and bound to the head the audit reads. A review
     # that starts by itself on every push races that sequence, and each push after the
-    # first spends a review from an hourly allowance that every forge agent shares under
+    # first spends a review from an hourly allowance shared by every repo under
     # one account.
     #
     # This key is set here, not only in the organization settings, because a repository
@@ -33,16 +33,16 @@ reviews:
     docstrings:
       # Disabled, not lowered.
       #
-      # forge puts the rationale for a piece of code in a block comment above the thing it
+      # This repo puts the rationale for a piece of code in a block comment above the thing it
       # explains — the table, the guard, the constant — rather than in a per-function
       # docstring. The docstring-coverage check reads that as missing documentation. It
-      # fired on both part-1 PRs of agent-build-workflow-2026-09 and was declined both
-      # times for this same reason, costing two hand-written rebuttals in PR comments.
+      # fired on two PRs in a row and was declined both times for this same reason,
+      # costing two hand-written rebuttals in PR comments.
       # Settled here rather than re-argued per build.
       #
       # This turns off a *coverage metric*, not review of documentation. CodeRabbit still
       # comments on docstrings that are wrong, stale or misleading — which is the failure
-      # mode forge actually has.
+      # mode this repo actually has.
       #
       # QUOTED DELIBERATELY. YAML 1.1 parses a bare `off` as the boolean false, which is
       # not a member of this field's string enum (`off`/`warning`/`error`) — the value is

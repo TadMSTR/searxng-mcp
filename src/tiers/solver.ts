@@ -1,5 +1,5 @@
 // Challenge-solving tier. Hands a challenged URL to a headless-browser solver
-// (Byparr on forge), then replays the solved session through the normal reader.
+// (Byparr, for example), then replays the solved session through the normal reader.
 //
 // Built against the FlareSolverr v1 contract — POST /v1 taking
 // {cmd, url, maxTimeout} and returning {solution: {url, status, cookies,

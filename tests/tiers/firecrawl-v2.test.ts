@@ -3,7 +3,7 @@
 // The load-bearing assertion here is the absence of `actions`. Upstream
 // self-hosted Firecrawl implements actions in Fire-engine alone, which is
 // closed-source and cloud-only; every engine a self-host deployment can reach
-// reports `actions: false`. Verified live against firecrawl 2.11.162 on forge:
+// reports `actions: false`. Verified live against self-hosted firecrawl 2.11.162:
 // a scrape carrying an actions array returns HTTP 400
 // SCRAPE_ACTIONS_NOT_SUPPORTED and the whole request fails, so re-introducing
 // it would turn every wait_for_selector call into a hard tier-1 miss rather

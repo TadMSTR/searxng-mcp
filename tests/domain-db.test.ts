@@ -116,6 +116,41 @@ describe("recordTierAttempt", () => {
     expect(written.tier_stats_30d.tier1.last_fail_reason).toBe("timeout");
   });
 
+  it("stores a fail reason with URL credentials scrubbed", async () => {
+    // domain_stats returns last_fail_reason to every MCP caller.
+    const { getStored } = setupAtomicMock(null);
+    await recordTierAttempt(
+      "https://example.com/p",
+      "tier1_firecrawl",
+      "error",
+      "Request cannot be constructed from a URL that includes credentials: http://fc:hunter2@firecrawl:3002/v1/scrape",
+    );
+    const reason = String(
+      lastWrittenRecord(getStored()).tier_stats_30d.tier1.last_fail_reason,
+    );
+    expect(reason).not.toContain("hunter2");
+    expect(reason).toContain("http://<redacted>@firecrawl:3002");
+  });
+
+  it("stores a fail reason bounded and on one line, whichever tier sent it", async () => {
+    // domain_stats shows last_fail_reason on one "| last fail: …" line, and
+    // tiers pass upstream err.message here.
+    const { getStored } = setupAtomicMock(null);
+    await recordTierAttempt(
+      "https://example.com/p",
+      "tier2_crawl4ai",
+      "error",
+      `first\n${"q".repeat(400)}\r\nlast`,
+    );
+    const reason = String(
+      lastWrittenRecord(getStored()).tier_stats_30d.tier2.last_fail_reason,
+    );
+    expect(reason).not.toMatch(/[\r\n]/);
+    expect(reason.startsWith("first q")).toBe(true);
+    expect(reason.length).toBe(201);
+    expect(reason.endsWith("…")).toBe(true);
+  });
+
   it("resets window counters when window_start_ms is older than 30 days", async () => {
     const oldWindowMs = Date.now() - 31 * 24 * 60 * 60 * 1000;
     const seed: DomainRecord = {
