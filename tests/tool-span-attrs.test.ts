@@ -67,6 +67,21 @@ vi.mock("../src/observability.js", () => ({
   withSpan: vi.fn().mockImplementation((_n, _a, fn) => fn()),
 }));
 
+const cfg = { expandDefault: false };
+
+vi.mock("../src/config.js", async () => {
+  const actual =
+    await vi.importActual<typeof import("../src/config.js")>(
+      "../src/config.js",
+    );
+  return {
+    ...actual,
+    get EXPAND_QUERIES_DEFAULT() {
+      return cfg.expandDefault;
+    },
+  };
+});
+
 vi.mock("../src/context.js", () => ({
   newRequestId: vi.fn().mockReturnValue("req"),
   withRequestId: vi.fn().mockImplementation((_id, fn) => fn()),
@@ -88,6 +103,7 @@ const spanAttrs = (name: string) =>
     .map((c) => c[1] as Record<string, unknown>);
 
 beforeEach(() => {
+  cfg.expandDefault = false;
   vi.mocked(withSpan).mockClear();
   vi.mocked(crawlSite).mockClear();
 });
@@ -123,6 +139,18 @@ describe("search tools", () => {
     expect(spanAttrs(`tool.${name}`).map((a) => a["search.expand"])).toEqual([
       true,
       false,
+      false,
+    ]);
+  });
+});
+
+describe("search.expand with EXPAND_QUERIES=true", () => {
+  it("records the server default when expand is omitted", async () => {
+    cfg.expandDefault = true;
+    await handleSearch({ query: "q", num_results: 3 });
+    await handleSearch({ query: "q", num_results: 3, expand: false });
+    expect(spanAttrs("tool.search").map((a) => a["search.expand"])).toEqual([
+      true,
       false,
     ]);
   });

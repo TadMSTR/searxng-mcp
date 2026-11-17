@@ -1,6 +1,7 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { cacheClear } from "./cache.js";
+import { EXPAND_QUERIES_DEFAULT } from "./config.js";
 import { newRequestId, withRequestId } from "./context.js";
 import { crawlSite, formatCrawlManifest } from "./crawl.js";
 import {
@@ -151,7 +152,9 @@ async function instrumentSearchTool<T>(
   }>,
 ): Promise<T> {
   return instrumentTool(toolName, () => withSearchEvents(toolName, ctx, fn), {
-    "search.expand": ctx.expand === true,
+    // The value searxSearch acts on: an omitted `expand` takes the server
+    // default, so `=== true` reported false whenever the default expanded.
+    "search.expand": ctx.expand ?? EXPAND_QUERIES_DEFAULT,
   });
 }
 
