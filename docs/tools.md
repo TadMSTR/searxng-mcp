@@ -51,7 +51,7 @@ Direct `raw.githubusercontent.com` and `api.github.com` URLs previously matched 
 
 Any other `github.com` page — issues, pull requests, commits, wiki, owner pages, release asset downloads — is not handled here and takes the normal fetch cascade, which renders the page. Until 3.30.x those were claimed by the fast path too and answered with the **repo-root README**, with nothing in the result to say it was not the requested page.
 
-Unauthenticated requests are rate-limited to 60/hour. Set `GITHUB_TOKEN` to raise this to 5,000/hour. The token is sent only for the fast path's repository endpoints (README, contents, releases, ref lookup, raw files); any other api.github.com URL is fetched without it.
+Unauthenticated requests are rate-limited to 60/hour. Set `GITHUB_TOKEN` to raise this to 5,000/hour. The token is sent only for URLs shaped like the fast path's repository endpoints (README, contents, releases, ref lookup, raw files); any other api.github.com URL is fetched without it. The match is by URL shape, not by who built the URL, so a caller-supplied URL of those shapes gets the token for any repository it can read, including private-repo files and draft releases. Scope the token accordingly (see [configuration](configuration.md)).
 
 ---
 

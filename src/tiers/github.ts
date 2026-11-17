@@ -129,7 +129,9 @@ function encodePath(segments: string[]): string {
  *
  * A caller can name any api.github.com URL. Any URL not listed here is
  * fetched without the token, so public API data still works and private data
- * gets GitHub's 401 or 404.
+ * gets GitHub's 401 or 404. The match is by shape, not by who built the URL:
+ * a caller-named URL of a listed shape gets the token for any repository the
+ * token can read.
  */
 export function githubAuthAllowed(url: URL): boolean {
   if (

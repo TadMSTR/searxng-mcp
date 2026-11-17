@@ -26,17 +26,28 @@ hardens the release workflow.
 
 ### Changed
 
-- **`GITHUB_TOKEN` is sent only with the GitHub fast path's own repository endpoints:** README,
-  contents, releases, the ref lookup for `tree` URLs, and `raw.githubusercontent.com` files.
+- **`GITHUB_TOKEN` is sent only with URLs shaped like the GitHub fast path's repository
+  endpoints:** README, contents, releases, the ref lookup for `tree` URLs, and
+  `raw.githubusercontent.com` files.
   - **Behaviour change:** any other `api.github.com` URL a caller passes to `fetch_url` is now
-    fetched without the token. Public data still comes back; private data gets GitHub's
-    401 or 404.
+    fetched without the token. Public data still comes back; private data at those URLs gets
+    GitHub's 401 or 404.
+  - **The match is by URL shape, not by who built the URL.** A URL of one of those shapes
+    passed to `fetch_url` gets the token for any repository the token can read: private-repo
+    files, and on `releases`, draft releases of repositories the token can push to. For agent
+    use, give the server a fine-grained token limited to public repositories, or read-only on
+    selected repositories.
+  - A `raw.githubusercontent.com` URL whose ref writes a slash as `%2F` (`feat%2Fx`) is not
+    matched and goes without the token. Write the slash literally (`feat/x`).
 
 ### Security
 
 - github.com path segments are validated before they go into an API request. Owner and
   repository must be plain GitHub names (`A-Z a-z 0-9 _ . -`), and a release tag, directory or
-  file segment that decodes to a path separator is refused. Each segment is encoded on its own.
+  file segment that decodes to a path separator (`/` or `\`) is refused. Each segment is encoded
+  on its own. So a file or directory whose name contains a backslash, and a release-tag URL that
+  writes a slash as `%2F`, are refused by the fast path; the same tag URL with a literal `/` is
+  not.
 - Release workflow: the `actions/setup-node` steps set `package-manager-cache: false`, so no
   dependency cache can feed the job that builds the published tarball or the one that holds
   `id-token: write`. The `actions/checkout` steps in the release and CodeQL workflows set
