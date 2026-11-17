@@ -200,10 +200,12 @@ describe("boundRelayedText scrubs URL credentials", () => {
   });
 
   it("scrubs before truncating, so a cut cannot leave part of a password", () => {
-    // The cap lands inside the password: truncate-then-scrub would leave a
-    // prefix with no '@' for the pattern to anchor on.
-    const lead = "x".repeat(MAX_RELAYED_TEXT_CHARS - 12);
+    // The cap lands inside the password and the '@' falls past it, so
+    // truncate-then-scrub would leave a prefix with no '@' for the pattern to
+    // anchor on: 180 + " http://u:" (10) puts the password at 190-203.
+    const lead = "x".repeat(MAX_RELAYED_TEXT_CHARS - 20);
     const out = boundRelayedText(`${lead} http://u:${SECRET}@fc/`);
-    expect(out).not.toContain(SECRET.slice(0, 4));
+    expect(out).not.toContain(SECRET.slice(0, 6));
+    expect(out).toContain("http://<redacted>@");
   });
 });
