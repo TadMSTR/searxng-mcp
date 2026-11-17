@@ -84,5 +84,33 @@ services:
   No content interception. Ad domains accessible only over HTTPS are not blocked.
 
 - **Filter refresh**: Filter lists are downloaded at startup and reloaded every
-  `ADBLOCK_REFRESH_HOURS`. The server continues using the previous engine if a refresh
-  fails.
+  `ADBLOCK_REFRESH_HOURS`. A load that yields no network filters (every list failed,
+  or every list was empty) is treated as failed: at startup the proxy runs with no
+  engine and `/health` reports `503`; on a refresh it keeps the previous rule set and
+  logs a `WARNING`. The startup log line reports the network and cosmetic filter
+  counts and how many lists were fetched.
+
+## Health endpoint
+
+`GET /health` on `PORT` (default `8118`) reports whether a rule set is loaded:
+
+| Status | Body |
+|--------|------|
+| `200` | `{"status":"ok","network_filters":N,"cosmetic_filters":M,"loaded_at":"<ISO 8601>"}` (N > 0) |
+| `503` | `{"status":"no_filters","network_filters":0,"cosmetic_filters":0,"loaded_at":null}` |
+
+Only an **origin-form** request for exactly `/health` is answered locally
+(`curl http://adblock-proxy:8118/health`). A proxied request for
+`http://<host>/health` is an ordinary proxy request and goes through the SSRF guard.
+Other origin-form paths return `400`, as before.
+
+The image has a `HEALTHCHECK` that probes this endpoint with Node (the image has no
+curl):
+
+```dockerfile
+HEALTHCHECK --interval=30s --timeout=5s --start-period=90s --retries=3 \
+  CMD ["node", "-e", "require('http').get({host:'127.0.0.1',port:process.env.PORT||8118,path:'/health',timeout:4000},(r)=>process.exit(r.statusCode===200?0:1)).on('timeout',function(){this.destroy()}).on('error',()=>process.exit(1))"]
+```
+
+The start period covers the startup list fetch, which runs before the port opens.
+`docker-compose.yml` beside this file repeats the same check as a `healthcheck:`.

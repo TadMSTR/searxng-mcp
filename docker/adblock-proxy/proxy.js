@@ -10,6 +10,9 @@
  * ad/tracker domains are not filtered at content level (acceptable tradeoff
  * vs. certificate complexity — see docker/adblock-proxy/README.md).
  *
+ * GET /health (origin-form only): 200 when a rule set with at least one network
+ * filter is loaded, 503 otherwise. See README.md, "Health endpoint".
+ *
  * Environment:
  *   PORT                  Listen port (default: 8118)
  *   ADBLOCK_FILTERS_URL   Comma-separated filter list URLs
@@ -35,14 +38,30 @@ const FILTERS_URLS = (
 const REFRESH_HOURS = parseInt(process.env.ADBLOCK_REFRESH_HOURS ?? "168", 10);
 const LOG_BLOCKED = process.env.LOG_BLOCKED === "true";
 
-let engine = null;
+// The rule set in use. `engine` stays null until a load yields at least one
+// network filter, and a later load that yields none leaves all four fields as
+// they were: an empty engine filters nothing, so swapping one in would turn a
+// working proxy into a pass-through that still reports success.
+const state = {
+  engine: null,
+  networkFilters: 0,
+  cosmeticFilters: 0,
+  loadedAt: null,
+};
 
-async function loadFilters() {
+/**
+ * Fetch every list, parse them into one engine, and install it only if it has
+ * network filters. Returns true when the engine was replaced.
+ *
+ * `fetchImpl` and `urls` are parameters so the tests can load fixture lists
+ * without a network.
+ */
+async function loadFilters({ urls = FILTERS_URLS, fetchImpl = globalThis.fetch } = {}) {
   let combined = "";
-  for (const url of FILTERS_URLS) {
+  let fetched = 0;
+  for (const url of urls) {
     try {
-      // Use global fetch (Node 18+)
-      const res = await fetch(url, {
+      const res = await fetchImpl(url, {
         headers: { "User-Agent": "adblock-proxy/1.0" },
         signal: AbortSignal.timeout(30000),
       });
@@ -51,31 +70,88 @@ async function loadFilters() {
         continue;
       }
       const text = await res.text();
+      console.log(`[adblock-proxy] fetched ${url} (${Buffer.byteLength(text)} bytes)`);
       combined += text + "\n";
+      fetched++;
     } catch (err) {
       console.error(`[adblock-proxy] filter fetch error: ${url} ${err.message}`);
     }
   }
+
+  // FiltersEngine.parse("") returns a valid, empty engine rather than null, so
+  // "every list failed" has to be detected from the count.
   const newEngine = FiltersEngine.parse(combined, { debug: false });
-  const count = newEngine.filters ? newEngine.filters.size : "unknown";
-  engine = newEngine;
-  if (!engine) {
-    console.error("[adblock-proxy] WARNING: no filters loaded — all requests will pass through unfiltered");
+  const { networkFilters, cosmeticFilters } = newEngine.getFilters();
+
+  if (networkFilters.length === 0) {
+    if (state.engine) {
+      console.error(
+        `[adblock-proxy] WARNING: refresh produced 0 network filters ` +
+          `(${fetched}/${urls.length} list(s) fetched) — keeping the previous rule set ` +
+          `(${state.networkFilters} network, ${state.cosmeticFilters} cosmetic, loaded ${state.loadedAt})`,
+      );
+    } else {
+      console.error(
+        `[adblock-proxy] WARNING: no filters loaded (${fetched}/${urls.length} list(s) fetched) — ` +
+          "all requests will pass through unfiltered and /health reports 503",
+      );
+    }
+    return false;
   }
-  console.log(`[adblock-proxy] loaded filters from ${FILTERS_URLS.length} list(s) (${count} rules)`);
+
+  state.engine = newEngine;
+  state.networkFilters = networkFilters.length;
+  state.cosmeticFilters = cosmeticFilters.length;
+  state.loadedAt = new Date().toISOString();
+  console.log(
+    `[adblock-proxy] loaded ${state.networkFilters} network and ${state.cosmeticFilters} cosmetic ` +
+      `filters from ${fetched}/${urls.length} list(s)`,
+  );
+  return true;
 }
 
 function isBlocked(url, sourceUrl = "") {
-  if (!engine) return false;
+  if (!state.engine) return false;
   try {
     const req = Request.fromRawDetails({ url, sourceUrl, type: "other" });
-    return engine.match(req).match;
+    return state.engine.match(req).match;
   } catch {
     return false;
   }
 }
 
-const server = http.createServer((req, res) => {
+function healthBody() {
+  const ok = state.engine !== null && state.networkFilters > 0;
+  return {
+    code: ok ? 200 : 503,
+    body: {
+      status: ok ? "ok" : "no_filters",
+      network_filters: state.networkFilters,
+      cosmetic_filters: state.cosmeticFilters,
+      loaded_at: state.loadedAt,
+    },
+  };
+}
+
+function handleRequest(req, res) {
+  // Health check. A forward proxy's real requests are absolute-form
+  // (`GET http://host/path`) or CONNECT, so an ORIGIN-form request for exactly
+  // `/health` cannot be a proxied request and is answered here. `http://x/health`
+  // is absolute-form, does not match, and takes the proxy path below with its
+  // SSRF guard. Every other origin-form path is unchanged (400 from the URL
+  // parse): this is a health route, not a local web server.
+  if (req.method === "GET" && req.url === "/health") {
+    const { code, body } = healthBody();
+    const payload = JSON.stringify(body);
+    res.writeHead(code, {
+      "Content-Type": "application/json",
+      "Content-Length": Buffer.byteLength(payload),
+      "Cache-Control": "no-store",
+    });
+    res.end(payload);
+    return;
+  }
+
   // Plain HTTP proxy request
   const targetUrl = req.url;
 
@@ -134,7 +210,7 @@ const server = http.createServer((req, res) => {
 
     req.pipe(proxy, { end: true });
   });
-});
+}
 
 // HTTPS CONNECT — TCP tunnel, no interception
 //
@@ -145,7 +221,7 @@ const server = http.createServer((req, res) => {
 // net.connect(port, host), which re-resolved with no rebinding protection).
 // Now resolved and validated before connecting, and pinned to the validated
 // address so there is no window to race.
-server.on("connect", (req, clientSocket, head) => {
+function handleConnect(req, clientSocket, head) {
   const [host, portStr] = (req.url ?? "").split(":");
   const port = parseInt(portStr ?? "443", 10);
 
@@ -185,14 +261,22 @@ server.on("connect", (req, clientSocket, head) => {
       serverSocket.destroy();
     });
   });
-});
+}
 
-server.on("error", (err) => {
-  console.error(`[adblock-proxy] server error: ${err.message}`);
-  process.exit(1);
-});
+function createServer() {
+  const server = http.createServer(handleRequest);
+  server.on("connect", handleConnect);
+  return server;
+}
 
 async function start() {
+  const server = createServer();
+
+  server.on("error", (err) => {
+    console.error(`[adblock-proxy] server error: ${err.message}`);
+    process.exit(1);
+  });
+
   await loadFilters();
 
   // Periodic filter refresh
@@ -208,16 +292,22 @@ async function start() {
   server.listen(PORT, "0.0.0.0", () => {
     console.log(`[adblock-proxy] listening on 0.0.0.0:${PORT}`);
   });
+
+  process.on("SIGTERM", () => {
+    server.close(() => process.exit(0));
+  });
+  process.on("SIGINT", () => {
+    server.close(() => process.exit(0));
+  });
 }
 
-process.on("SIGTERM", () => {
-  server.close(() => process.exit(0));
-});
-process.on("SIGINT", () => {
-  server.close(() => process.exit(0));
-});
+// Started only when run directly (`node proxy.js`), so the tests can require
+// this module without opening a port or fetching lists.
+if (require.main === module) {
+  start().catch((err) => {
+    console.error(`[adblock-proxy] startup error: ${err.message}`);
+    process.exit(1);
+  });
+}
 
-start().catch((err) => {
-  console.error(`[adblock-proxy] startup error: ${err.message}`);
-  process.exit(1);
-});
+module.exports = { createServer, loadFilters, isBlocked, healthBody, state };

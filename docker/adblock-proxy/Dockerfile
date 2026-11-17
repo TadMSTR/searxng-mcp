@@ -29,4 +29,11 @@ ENV LOG_BLOCKED="false"
 
 EXPOSE 8118
 
+# /health is 200 only once a rule set with network filters is loaded (proxy.js).
+# Node, not curl: the image has no curl, and busybox wget's exit codes are not
+# worth depending on. The start period covers the startup list fetch, which
+# runs before the port opens (up to 30 s per list).
+HEALTHCHECK --interval=30s --timeout=5s --start-period=90s --retries=3 \
+  CMD ["node", "-e", "require('http').get({host:'127.0.0.1',port:process.env.PORT||8118,path:'/health',timeout:4000},(r)=>process.exit(r.statusCode===200?0:1)).on('timeout',function(){this.destroy()}).on('error',()=>process.exit(1))"]
+
 CMD ["node", "proxy.js"]

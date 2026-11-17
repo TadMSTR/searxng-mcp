@@ -385,7 +385,10 @@ jobs:
           set -euo pipefail
 
           docker network create smoke-net >/dev/null
+          # The health interval is shortened so the image's own HEALTHCHECK
+          # command is exercised inside this step; the command is the image's.
           docker run -d --name smoke-proxy --network smoke-net \
+            --health-interval=2s --health-start-period=5s \
             -e LOG_BLOCKED=true "$PROXY_IMAGE:candidate" >/dev/null
 
           for i in $(seq 1 60); do
@@ -394,6 +397,29 @@ jobs:
             sleep 1
           done
           docker logs smoke-proxy
+
+          # 0. The startup line carries a real network-filter count. It printed
+          #    "(undefined rules)" for every release before 3.32.0.
+          docker logs smoke-proxy 2>&1 \
+            | grep -Eq 'loaded [1-9][0-9]* network and [0-9]+ cosmetic filters' \
+            || { echo "FAIL: no numeric network-filter count in the startup log"; exit 1; }
+
+          # 0b. /health (origin-form, not through the proxy) is 200 with filters,
+          #     and Docker runs the image's HEALTHCHECK to "healthy".
+          health="$(docker run --rm --network smoke-net curlimages/curl:latest \
+            -s -w '\n%{http_code}' -m 10 http://smoke-proxy:8118/health)"
+          echo "health: $health"
+          [ "$(printf '%s' "$health" | tail -1)" = "200" ] \
+            || { echo "FAIL: /health was not 200"; exit 1; }
+          printf '%s' "$health" | grep -Eq '"network_filters":[1-9][0-9]*' \
+            || { echo "FAIL: /health reports no network filters"; exit 1; }
+          for i in $(seq 1 30); do
+            hs="$(docker inspect -f '{{.State.Health.Status}}' smoke-proxy)"
+            [ "$hs" = "healthy" ] && break
+            if [ "$i" = 30 ]; then echo "FAIL: container health is $hs"; exit 1; fi
+            sleep 1
+          done
+          echo "container health: healthy"
 
           via() {
             docker run --rm --network smoke-net curlimages/curl:latest \
@@ -434,7 +460,7 @@ jobs:
           docker logs smoke-proxy 2>&1 | grep -q 'refused non-public target 127.0.0.1' \
             || { echo "FAIL: no SSRF refusal log line"; exit 1; }
 
-          echo "adblock-proxy contract OK — forwards, adblocks, tunnels, and refuses internal targets"
+          echo "adblock-proxy contract OK — counts rules, reports health, forwards, adblocks, tunnels, and refuses internal targets"
           docker rm -f smoke-proxy >/dev/null
           docker network rm smoke-net >/dev/null
 
