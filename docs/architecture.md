@@ -366,7 +366,7 @@ Standard OTEL env vars apply (`OTEL_SERVICE_NAME` defaults to `searxng-mcp`).
 | `searxng.cache.hit` / `.miss` | On every Valkey lookup |
 | `searxng.error` | Stage-tagged errors |
 
-Each envelope includes `request_id` and (when OTel is enabled) `trace_id` so subscribers can join the two streams. Subject prefix overridable via `NATS_SUBJECT_PREFIX`. Before publishing, URL credentials (`scheme://user:pass@`) are scrubbed from every string in every event, error text included. Nothing else is scrubbed: search queries flow through `search.*` events, and downstream consumers are responsible for any PII scrubbing.
+Each envelope includes `request_id` and (when OTel is enabled) `trace_id` so subscribers can join the two streams. Subject prefix overridable via `NATS_SUBJECT_PREFIX`. Before publishing, every string in every event, error text included, goes through the same URL-credential scrub as log lines (`scheme://user:pass@` becomes `scheme://<redacted>@`). That scrub has limits: credentials it cannot tell from a `host[:port]`, or a password holding a space, are not redacted. The CHANGELOG 3.32.0 entry states the rule. Percent-encode `@`, `/`, `:` and spaces in configured credentials. Nothing else is scrubbed: search queries flow through `search.*` events, and downstream consumers are responsible for any PII scrubbing.
 
 ## Politeness
 
