@@ -469,11 +469,24 @@ describe("crawlSite default scope", () => {
     );
   });
 
-  it("keeps a root crawl's cache key unchanged", async () => {
-    const rootKey = `crawl:${createHash("sha256").update("https://example.com/|20|true||").digest("hex")}`;
+  it("keys a root crawl on its arguments under the current policy", async () => {
+    const digest = createHash("sha256")
+      .update("https://example.com/|20|true||")
+      .digest("hex");
     mockSitemapSite(SCOPE_SITEMAP_LOCS);
     await crawlSite("https://example.com/", 20, true);
-    expect(cacheGetMock.mock.calls[0][0]).toBe(rootKey);
+    expect(cacheGetMock.mock.calls[0][0]).toBe(`crawl:p2:${digest}`);
+  });
+
+  it("does not reuse a manifest cached before the same_domain_only host filter", async () => {
+    // 3.31 keyed this crawl as crawl:<digest>, and a manifest cached then can
+    // hold off-host pages that 3.32.0's filter would drop. A hit returns before
+    // the filter runs, so the old key must not be read.
+    const preFilterKey = `crawl:${createHash("sha256").update("https://example.com/|20|true||").digest("hex")}`;
+    mockSitemapSite(SCOPE_SITEMAP_LOCS);
+    await crawlSite("https://example.com/", 20, true);
+    expect(cacheGetMock.mock.calls[0][0]).not.toBe(preFilterKey);
+    expect(cacheGetMock.mock.calls[0][0]).toMatch(/^crawl:/);
   });
 
   it('applies the default scope when a client sends include_path: ""', async () => {

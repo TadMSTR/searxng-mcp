@@ -190,6 +190,78 @@ describe("firecrawlCrawl failures are logged and counted, not swallowed", () => 
     );
   });
 
+  it("scrubs URL credentials from a start error before logging and storing it", async () => {
+    mockFetch.mockRejectedValueOnce(
+      new TypeError(
+        "Request cannot be constructed from a URL that includes credentials: http://fc:hunter2@fc:3002/v1/crawl",
+      ),
+    );
+    expect(await firecrawlCrawl(SITE, 5)).toBeNull();
+    const reason = recordTierAttemptMock.mock.calls[0][3] as string;
+    expect(reason).toContain("http://<redacted>@fc:3002");
+    expect(reason).not.toContain("hunter2");
+    expect(logWarnMock.mock.calls.flat().join("\n")).not.toContain("hunter2");
+  });
+
+  it("logs the crawl URL on one line", async () => {
+    mockFetch.mockResolvedValueOnce(
+      new Response("Cannot POST", { status: 404 }),
+    );
+    await firecrawlCrawl("https://example.com/a\nFAKE second line", 5);
+    const line = logWarnMock.mock.calls.flat().join("");
+    expect(line).not.toMatch(/[\r\n]/);
+    expect(line).toContain("url=https://example.com/a FAKE second line");
+  });
+
+  it("returns null, so crawlSite can fall back, when every page is off-host", async () => {
+    mockFetch
+      .mockResolvedValueOnce(json({ success: true, id: "job1" }))
+      .mockResolvedValueOnce(
+        json({
+          status: "completed",
+          data: [
+            {
+              markdown: "www page",
+              metadata: { sourceURL: "https://www.example.com/1" },
+            },
+          ],
+        }),
+      );
+    const filter = { host: "example.com", dropped: 0 };
+    expect(
+      await firecrawlCrawl(SITE, 5, undefined, undefined, filter),
+    ).toBeNull();
+    expect(filter.dropped).toBe(1);
+    expect(recordTierAttemptMock).toHaveBeenCalledWith(
+      SITE,
+      "crawl_firecrawl",
+      "miss",
+      "every page off-host (1 dropped)",
+    );
+  });
+
+  it("keeps the manifest when some pages survive the host filter", async () => {
+    mockFetch
+      .mockResolvedValueOnce(json({ success: true, id: "job1" }))
+      .mockResolvedValueOnce(
+        json({
+          status: "completed",
+          data: [
+            {
+              markdown: "a",
+              metadata: { sourceURL: "https://www.example.com/1" },
+            },
+            { markdown: "b", metadata: { sourceURL: `${SITE}/2` } },
+          ],
+        }),
+      );
+    const m = await firecrawlCrawl(SITE, 5, undefined, undefined, {
+      host: "example.com",
+      dropped: 0,
+    });
+    expect(m?.pages.map((p) => p.url)).toEqual([`${SITE}/2`]);
+  });
+
   it("records a miss when the start response carries no job id", async () => {
     mockFetch.mockResolvedValueOnce(json({ success: true }));
     expect(await firecrawlCrawl(SITE, 5)).toBeNull();

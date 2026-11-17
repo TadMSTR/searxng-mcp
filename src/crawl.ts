@@ -42,10 +42,16 @@ export interface CrawlManifest {
 
 /**
  * `scope` is the default scope crawlSite applies (see defaultCrawlScope). It is
- * part of the key only when set, so a root crawl keeps its key, while a path
- * crawl no longer shares one with the site-wide manifest an earlier version
- * cached for the same arguments.
+ * part of the key only when set, so a path crawl doesn't share a key with a
+ * root crawl of the same arguments.
+ *
+ * CRAWL_KEY_POLICY names the rules a cached manifest was built under. Bump it
+ * whenever a change means an older manifest could hold pages the current rules
+ * would drop: a cache hit returns before any filter runs. p2 is 3.32.0's
+ * same_domain_only host filter, which applies to every strategy.
  */
+const CRAWL_KEY_POLICY = "p2";
+
 function crawlManifestCacheKey(
   url: string,
   maxPages: number,
@@ -56,7 +62,7 @@ function crawlManifestCacheKey(
 ): string {
   let raw = `${url}|${maxPages}|${sameDomainOnly}|${includePath ?? ""}|${excludePath ?? ""}`;
   if (scope) raw += `|scope=${scope}`;
-  return `crawl:${createHash("sha256").update(raw).digest("hex")}`;
+  return `crawl:${CRAWL_KEY_POLICY}:${createHash("sha256").update(raw).digest("hex")}`;
 }
 
 function makeSnippet(text: string): string {
@@ -99,7 +105,9 @@ function recordCrawlOutcome(
   const reason =
     rawReason === undefined ? undefined : boundRelayedText(rawReason);
   if (outcome === "miss") {
-    logWarn(`crawl_site firecrawl phase miss: ${reason} url=${url}`);
+    logWarn(
+      `crawl_site firecrawl phase miss: ${reason} url=${boundRelayedText(url)}`,
+    );
   }
   incCounter("crawl", { strategy: "firecrawl", outcome });
   recordTierAttempt(url, "crawl_firecrawl", outcome, reason).catch(() => {});
@@ -268,6 +276,18 @@ export async function firecrawlCrawl(
       pages.push({ url: pageUrl, title, snippet });
     }
 
+    // Every page Firecrawl returned was off-host (a www. crawl for a bare
+    // domain, say). An empty manifest here would be cached and would skip the
+    // map, sitemap and BFS strategies, which may well find on-host pages.
+    if (hostFilter && hostFilter.dropped > 0 && pages.length === 0) {
+      recordCrawlOutcome(
+        url,
+        "miss",
+        `every page off-host (${hostFilter.dropped} dropped)`,
+      );
+      return null;
+    }
+
     recordCrawlOutcome(url, "hit");
     return {
       strategy: "firecrawl",
@@ -333,21 +353,25 @@ export async function firecrawlMapUrls(url: string): Promise<string[] | null> {
     if (!res.ok) {
       // Counted and logged for the same reason the crawl start is: a silent
       // non-2xx here would put us straight back in #644.
-      logWarn(`crawl_site map phase miss: map ${res.status} url=${url}`);
+      logWarn(
+        `crawl_site map phase miss: map ${res.status} url=${boundRelayedText(url)}`,
+      );
       incCounter("crawl", { strategy: "map", outcome: "miss" });
       return null;
     }
     const body = JSON.parse(await readBoundedText(res)) as FirecrawlMapResponse;
     const urls = extractMapUrls(body);
     if (urls.length === 0) {
-      logWarn(`crawl_site map phase miss: map returned no links url=${url}`);
+      logWarn(
+        `crawl_site map phase miss: map returned no links url=${boundRelayedText(url)}`,
+      );
       incCounter("crawl", { strategy: "map", outcome: "miss" });
       return null;
     }
     return urls;
   } catch (err) {
     logWarn(
-      `crawl_site map phase miss: ${boundRelayedText(err instanceof Error ? err.message : String(err))} url=${url}`,
+      `crawl_site map phase miss: ${boundRelayedText(err instanceof Error ? err.message : String(err))} url=${boundRelayedText(url)}`,
     );
     incCounter("crawl", { strategy: "map", outcome: "miss" });
     return null;
