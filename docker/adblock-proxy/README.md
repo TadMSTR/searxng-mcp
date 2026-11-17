@@ -97,7 +97,8 @@ whether it is current:
 
 | Code | `status` | Meaning |
 |------|----------|---------|
-| `200` | `ok` | A rule set with network filters is loaded, and it is newer than two refresh intervals (`2 × ADBLOCK_REFRESH_HOURS`) |
+| `200` | `ok` | A rule set with network filters is loaded from every configured list, and it is newer than two refresh intervals (`2 × ADBLOCK_REFRESH_HOURS`) |
+| `200` | `partial` | As `ok`, but some configured lists are missing from the rule set (`lists_fetched < lists_total`). It filters, so the healthcheck passes; watch `status` to alert on it |
 | `503` | `stale` | A rule set is loaded and still filters, but it is older than two refresh intervals: refreshes have been failing or refused. Never reported when `ADBLOCK_REFRESH_HOURS` is `0` |
 | `503` | `no_filters` | No rule set has loaded. Requests pass through unfiltered |
 
@@ -111,8 +112,10 @@ Every response carries the same fields:
 `loaded_at`, `lists_fetched` and `lists_total` describe the rule set in use.
 `last_attempt_at` and `last_attempt_ok` describe the latest load, including a refused
 one. A refresh is refused, and the rule set in use kept, when it yields no network
-filters or fetches fewer lists than that rule set came from. At startup a partial
-set is installed, since it beats none.
+filters or lacks any list that rule set came from (compared by URL, so a refresh
+that fetched a different list of the same count is refused too). At startup a partial
+set is installed, since it beats none, and `/health` reports `partial` until a refresh
+fetches every list.
 
 Only an **origin-form** request for exactly `/health` is answered locally
 (`curl http://adblock-proxy:8118/health`). A proxied request for

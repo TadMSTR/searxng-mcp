@@ -27,6 +27,7 @@ interface ProxyState {
   loadedAt: string | null;
   listsFetched: number;
   listsTotal: number;
+  lists: string[];
   lastAttemptAt: string | null;
   lastAttemptOk: boolean | null;
 }
@@ -72,6 +73,7 @@ beforeEach(() => {
     loadedAt: null,
     listsFetched: 0,
     listsTotal: 0,
+    lists: [],
     lastAttemptAt: null,
     lastAttemptOk: null,
   });
@@ -143,7 +145,7 @@ describe("loadFilters — partial refreshes", () => {
     expect(proxy.state.lastAttemptOk).toBe(false);
     expect(proxy.isBlocked("http://second.example.org/x.js")).toBe(true);
     expect(logged(errSpy)).toMatch(
-      /WARNING: refresh fetched 1\/2 list\(s\), fewer than the 2 .* keeping it/,
+      /WARNING: refresh fetched 1\/2 list\(s\), missing 1 of the 2 .*\(https:\/\/lists\.test\/down\.txt\) — keeping it/,
     );
   });
 
@@ -154,6 +156,25 @@ describe("loadFilters — partial refreshes", () => {
       await proxy.loadFilters({ urls: [LIST, DOWN], fetchImpl: firstOnly }),
     ).toBe(true);
     expect(proxy.state.lastAttemptOk).toBe(true);
+  });
+
+  it("a partial refresh of a DIFFERENT list is refused, though it is the same size", async () => {
+    // Counts alone let EasyPrivacy-only replace EasyList-only: 1 is not below 1.
+    const secondOnly: FetchImpl = async (url) =>
+      url === DOWN ? serve(SECOND)(url) : status503(url);
+    await proxy.loadFilters({ urls: [LIST, DOWN], fetchImpl: firstOnly });
+    const before = { ...proxy.state };
+
+    expect(
+      await proxy.loadFilters({ urls: [LIST, DOWN], fetchImpl: secondOnly }),
+    ).toBe(false);
+
+    expect(proxy.state.engine).toBe(before.engine);
+    expect(proxy.state.lists).toEqual([LIST]);
+    expect(proxy.isBlocked("http://ads.example.com/x.js")).toBe(true);
+    expect(logged(errSpy)).toMatch(
+      /missing 1 of the 1 .*\(https:\/\/lists\.test\/fixture\.txt\) — keeping it/,
+    );
   });
 
   it("a full refresh after a partial startup set installs it", async () => {
@@ -192,6 +213,35 @@ describe("healthBody — staleness", () => {
     expect(h.body.status).toBe("stale");
     expect(h.body.last_attempt_ok).toBe(false);
     expect(proxy.isBlocked("http://ads.example.com/x.js")).toBe(true);
+  });
+
+  it("reports a partial rule set as partial, not ok, while it keeps reinstalling", async () => {
+    // A restart during a one-list outage: each 1/2 refresh installs and moves
+    // loaded_at forward, so stale never trips. The status must still say so.
+    await proxy.loadFilters({ urls: [LIST, DOWN], fetchImpl: firstOnly });
+    await proxy.loadFilters({ urls: [LIST, DOWN], fetchImpl: firstOnly });
+    const h = proxy.healthBody({
+      now: Date.parse(proxy.state.loadedAt as string),
+      refreshHours: 168,
+    });
+    expect(h.code).toBe(200);
+    expect(h.body.status).toBe("partial");
+    expect(h.body.lists_fetched).toBe(1);
+    expect(h.body.lists_total).toBe(2);
+
+    await proxy.loadFilters({ urls: [LIST, DOWN], fetchImpl: twoLists });
+    expect(proxy.healthBody({ refreshHours: 168 }).body.status).toBe("ok");
+  });
+
+  it("stale wins over partial", async () => {
+    await proxy.loadFilters({ urls: [LIST, DOWN], fetchImpl: firstOnly });
+    const loaded = Date.parse(proxy.state.loadedAt as string);
+    const h = proxy.healthBody({
+      now: loaded + 2 * 168 * HOUR + 1,
+      refreshHours: 168,
+    });
+    expect(h.code).toBe(503);
+    expect(h.body.status).toBe("stale");
   });
 
   it("never goes stale with refresh disabled", async () => {

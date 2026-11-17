@@ -11,7 +11,8 @@
  * vs. certificate complexity — see docker/adblock-proxy/README.md).
  *
  * GET /health (origin-form only): 200 when a rule set with at least one network
- * filter is loaded, 503 otherwise. See README.md, "Health endpoint".
+ * filter is loaded (status "partial" if some lists are missing from it), 503
+ * otherwise. See README.md, "Health endpoint".
  *
  * Environment:
  *   PORT                  Listen port (default: 8118)
@@ -81,14 +82,15 @@ const state = {
   loadedAt: null,
   listsFetched: 0,
   listsTotal: 0,
+  lists: [],
   lastAttemptAt: null,
   lastAttemptOk: null,
 };
 
 /**
  * Fetch every list, parse them into one engine, and install it only if it has
- * network filters and, on a refresh, came from at least as many lists as the
- * rule set it replaces. Returns true when the engine was replaced.
+ * network filters and, on a refresh, came from every list the rule set it
+ * replaces came from. Returns true when the engine was replaced.
  *
  * `fetchImpl` and `urls` are parameters so the tests can load fixture lists
  * without a network.
@@ -99,7 +101,7 @@ async function loadFilters({
   maxListBytes = MAX_LIST_BYTES,
 } = {}) {
   let combined = "";
-  let fetched = 0;
+  const fetchedUrls = [];
   for (const url of urls) {
     try {
       const res = await fetchImpl(url, {
@@ -113,22 +115,27 @@ async function loadFilters({
       const text = await readCapped(res, maxListBytes);
       console.log(`[adblock-proxy] fetched ${url} (${Buffer.byteLength(text)} bytes)`);
       combined += text + "\n";
-      fetched++;
+      fetchedUrls.push(url);
     } catch (err) {
       console.error(`[adblock-proxy] filter fetch error: ${url} ${oneLine(err.message)}`);
     }
   }
 
+  const fetched = fetchedUrls.length;
   state.lastAttemptAt = new Date().toISOString();
   state.lastAttemptOk = false;
 
-  // A refresh where some lists failed would swap the full rule set for a
-  // partial one (EasyList without EasyPrivacy, say) until the next refresh. At
-  // startup a partial set is better than none, so only a refresh is refused.
-  if (state.engine && fetched > 0 && fetched < urls.length && fetched < state.listsFetched) {
+  // A refresh that lacks a list the rule set in use came from would drop that
+  // list from filtering until the next refresh. Compared by URL, not by count:
+  // an EasyPrivacy-only refresh is the same size as an EasyList-only rule set
+  // and would swap one for the other. At startup a partial set is better than
+  // none, so only a refresh is refused.
+  const missing = state.lists.filter((u) => !fetchedUrls.includes(u));
+  if (state.engine && fetched > 0 && missing.length > 0) {
     console.error(
-      `[adblock-proxy] WARNING: refresh fetched ${fetched}/${urls.length} list(s), fewer than the ` +
-        `${state.listsFetched} the current rule set came from — keeping it ` +
+      `[adblock-proxy] WARNING: refresh fetched ${fetched}/${urls.length} list(s), missing ` +
+        `${missing.length} of the ${state.lists.length} the current rule set came from ` +
+        `(${missing.join(", ")}) — keeping it ` +
         `(${state.networkFilters} network, ${state.cosmeticFilters} cosmetic, loaded ${state.loadedAt})`,
     );
     return false;
@@ -161,6 +168,7 @@ async function loadFilters({
   state.loadedAt = state.lastAttemptAt;
   state.listsFetched = fetched;
   state.listsTotal = urls.length;
+  state.lists = fetchedUrls;
   state.lastAttemptOk = true;
   console.log(
     `[adblock-proxy] loaded ${state.networkFilters} network and ${state.cosmeticFilters} cosmetic ` +
@@ -182,15 +190,22 @@ function isBlocked(url, sourceUrl = "") {
 // A rule set older than two refresh intervals means refreshes have been
 // failing (or refused) for at least two attempts in a row. It still filters,
 // but /health turns 503 so the HEALTHCHECK and anything watching it notice.
+//
+// A rule set missing some configured lists reports "partial", never "ok". It
+// stays 200: it filters, and a one-list outage at startup should not mark the
+// container unhealthy for a whole refresh interval. Only the status says so,
+// and a partial set that keeps reinstalling (which keeps loaded_at fresh, so
+// it never goes stale) is still reported.
 function healthBody({ now = Date.now(), refreshHours = REFRESH_HOURS } = {}) {
   const loaded = state.engine !== null && state.networkFilters > 0;
   const stale =
     loaded &&
     refreshHours > 0 &&
     now - Date.parse(state.loadedAt) > 2 * refreshHours * 60 * 60 * 1000;
-  const status = !loaded ? "no_filters" : stale ? "stale" : "ok";
+  const partial = loaded && state.listsFetched < state.listsTotal;
+  const status = !loaded ? "no_filters" : stale ? "stale" : partial ? "partial" : "ok";
   return {
-    code: status === "ok" ? 200 : 503,
+    code: status === "ok" || status === "partial" ? 200 : 503,
     body: {
       status,
       network_filters: state.networkFilters,

@@ -17,7 +17,8 @@ endpoint, and checks the compose examples in CI.
   a rule set with network filters is loaded, `503` with `"status":"no_filters"` otherwise, and
   `503` with `"status":"stale"` once the rule set in use is older than two refresh intervals
   (refreshes keep failing). The body also reports how many lists the rule set came from and
-  whether the latest load succeeded. Only an origin-form request for exactly `/health` is
+  whether the latest load succeeded. A rule set missing some configured lists reports `200` with
+  `"status":"partial"`, never `ok`. Only an origin-form request for exactly `/health` is
   answered locally. A proxied `http://<host>/health` is an ordinary proxy request. The image has
   a `HEALTHCHECK` on it (Node, since the image has no curl), and the standalone compose file
   repeats it. See `docker/adblock-proxy/README.md`.
@@ -32,8 +33,8 @@ endpoint, and checks the compose examples in CI.
   failed, it passed all traffic while reporting a successful load. A load with no network
   filters is now treated as failed: at startup the proxy runs without an engine and `/health`
   reports `503`, and on a refresh it keeps the previous rule set and logs a warning. A refresh
-  that fetches fewer lists than the rule set in use came from is refused the same way, so one
-  list's outage no longer drops it from filtering until the next refresh.
+  that lacks any list the rule set in use came from is refused the same way, so one list's
+  outage no longer drops it from filtering until the next refresh.
 - **`crawl_site` `same_domain_only` was ignored by the Firecrawl, map and sitemap
   strategies.** Only BFS received it. `true` now drops URLs off the start URL's hostname on
   every strategy, and the result notes how many were dropped. `false` follows off-site links
