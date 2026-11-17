@@ -199,6 +199,13 @@ describe("boundRelayedText scrubs URL credentials", () => {
     expect(out).toBe("error: http://<redacted>@fc:3002/x");
   });
 
+  it("stays fast on large adversarial upstream text (the scrub runs before the cut)", () => {
+    const t0 = performance.now();
+    const out = boundRelayedText("a.".repeat(100_000));
+    expect(performance.now() - t0).toBeLessThan(1000);
+    expect(out).toHaveLength(MAX_RELAYED_TEXT_CHARS + 1);
+  });
+
   it("scrubs before truncating, so a cut cannot leave part of a password", () => {
     // The cap lands inside the password and the '@' falls past it, so
     // truncate-then-scrub would leave a prefix with no '@' for the pattern to

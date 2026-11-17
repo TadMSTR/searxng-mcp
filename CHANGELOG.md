@@ -48,7 +48,8 @@ endpoint, and checks the compose examples in CI.
 - **Error text relayed from upstream could include credentials from a configured service
   URL.** Node's `fetch()` rejects a URL with `user:password@` and puts the whole URL in its
   error message, which reached log lines and `domain_stats`. URL userinfo is now scrubbed from
-  all relayed text before it is bounded.
+  all relayed text before it is bounded. The redaction pattern now caps the scheme it scans
+  for, so long crafted text can no longer make it take seconds.
 - **`crawl_site` cached an empty manifest when `same_domain_only` dropped every Firecrawl
   page** (a `www.` crawl for a bare domain, say), and skipped the map, sitemap and BFS
   strategies. It now falls back to them.

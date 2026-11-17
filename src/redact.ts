@@ -33,5 +33,16 @@ export function redactUrlCredentialsInText(text: string): string {
   // reached without crossing a '/', so those are left alone. Covered by controls
   // in tests/log.test.ts — without them a regex that redacted every '@' would
   // satisfy every positive case here.
-  return text.replace(/\b([a-z][a-z0-9+.-]*:\/\/)[^\s/@]+@/gi, "$1<redacted>@");
+  //
+  // The scheme run is capped at 63 characters. Unbounded, it scanned from every
+  // word-boundary start to the end of the text looking for `://`, which is
+  // quadratic on dotted text (160 KB of "a." took 6 s), and boundRelayedText
+  // runs this over upstream error text before it truncates. The run after
+  // `://` needs no cap: it stops at the first '/', '@' or whitespace, and
+  // every `://` contains a '/', so those runs never overlap. Real schemes are
+  // far shorter (`postgresql+asyncpg` is 18). Timing test in tests/log.test.ts.
+  return text.replace(
+    /\b([a-z][a-z0-9+.-]{0,62}:\/\/)[^\s/@]+@/gi,
+    "$1<redacted>@",
+  );
 }

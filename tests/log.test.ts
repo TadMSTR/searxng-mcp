@@ -156,3 +156,28 @@ describe("redactUrlCredentialsInText — every userinfo shape, not just the colo
     expect(out).toContain("connect to");
   });
 });
+
+// IV-78: the scheme run used to be unbounded, so dotted text with no `://`
+// was quadratic: 160 KB took about 6 s. boundRelayedText runs this over
+// upstream error text before truncating, so the input size is the upstream's.
+describe("redactUrlCredentialsInText — linear on adversarial text", () => {
+  it.each([
+    ["dots, no scheme separator", "a.".repeat(100_000)],
+    [
+      "a long scheme-looking run before ://",
+      `${"a.".repeat(100_000)}x://${"b".repeat(1000)}`,
+    ],
+    ["many short schemes", "a.a.a.a.x://bbbb ".repeat(12_000)],
+  ])("%s: 200 KB in well under a second", (_name, input) => {
+    const t0 = performance.now();
+    redactUrlCredentialsInText(input);
+    expect(performance.now() - t0).toBeLessThan(1000);
+  });
+
+  it("still redacts a scheme at the 63-character cap", () => {
+    const scheme = `s${"x".repeat(62)}`;
+    expect(redactUrlCredentialsInText(`${scheme}://u:pw@h`)).toBe(
+      `${scheme}://<redacted>@h`,
+    );
+  });
+});
