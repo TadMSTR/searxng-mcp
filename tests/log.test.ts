@@ -227,6 +227,12 @@ describe("redactUrlCredentialsInText — every userinfo shape, not just the colo
     "https://host.example:8080?password=a@b",
     "https://host.example#frag@x",
     "https://host.example?password=a@b/path",
+    // With credentials too: a '?' or '#' between the first '@' and a later
+    // one may be a query or fragment value holding '@'.
+    "https://u:p@host.example?x=a@b",
+    "https://u:p@host.example/p?q=a@b",
+    "https://u:pa/ss@host.example#f@x",
+    "https://u:p@ss?x@host.example",
   ])("redacts all of %s (ambiguous '@' after '?' or '#')", (input) => {
     const out = redactUrlCredentialsInText(input);
     expect(out).toBe("https://<redacted>");

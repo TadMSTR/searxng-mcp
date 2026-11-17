@@ -58,8 +58,17 @@ export function redactUrlCredentialsInText(text: string): string {
     }
     const cut = credentialCut(text, start, segEnd, segLastAt);
     if (cut < 0) continue; // a later scheme in this run may still hold one
+    // A '?' or '#' between the run's first '@' and the cut's '@' makes the cut
+    // ambiguous: it may be a query or fragment value holding '@'
+    // (`u:p@host?x=a@b`), whose tail would be left as the host, or a password
+    // holding '@' and then '?' or '#'. Either way the whole run is redacted.
+    // Scanned once per cut, and a cut ends the segment's scan.
+    const end =
+      cut < segEnd && /[?#]/.test(text.slice(text.indexOf("@", start) + 1, cut))
+        ? segEnd
+        : cut;
     out += `${text.slice(copied, start)}<redacted>`;
-    copied = cut;
+    copied = end;
     scheme.lastIndex = segEnd;
   }
   return out + text.slice(copied);

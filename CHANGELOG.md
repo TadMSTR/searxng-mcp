@@ -52,8 +52,8 @@ endpoint, and checks the compose examples in CI.
   URL userinfo is now scrubbed from that text before it is bounded, and every string in every
   NATS event is scrubbed before it is published. Passwords that hold an unencoded `@`, `/` or
   `://` are now scrubbed whole, up to the last `@` before the next whitespace. An `@` after a
-  host's `?` or `#`, with no `/` before it, may be a query or fragment value, so that whole URL
-  is redacted. The rule has limits. When the text before the first unencoded `/` reads as
+  `?` or `#` that follows the host or an earlier `@` may be a query or fragment value, so that
+  whole URL is redacted. The rule has limits. When the text before the first unencoded `/` reads as
   `host[:port]` (`user:1234/rest@host`, `user:/rest@host`, a username or token holding a
   `/`), it is taken as a host and the rest as a path, so nothing is scrubbed. Node parses those URLs the same way: as a host with no
   credentials, so its error names only the host. A password holding a space is cut at the
