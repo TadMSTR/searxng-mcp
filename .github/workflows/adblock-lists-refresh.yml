@@ -145,6 +145,9 @@ jobs:
 
           git config --local user.name "github-actions[bot]"
           git config --local user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          # Single quotes on purpose: the helper expands $GITHUB_TOKEN when git
+          # runs it, so the token is never written into .git/config.
+          # shellcheck disable=SC2016
           git config --local credential.helper \
             '!f() { echo username=x-access-token; echo "password=$GITHUB_TOKEN"; }; f'
 
@@ -192,3 +195,42 @@ jobs:
 
           Expect header-only churn in the diff even when no rules moved — upstream
           regenerates \`! Version\`/\`! Last modified\`/\`! Commit\` roughly every ten minutes."
+
+  # A red scheduled run is invisible unless someone opens the Actions tab: this
+  # workflow failed every Monday for two months (createPullRequest refused by a
+  # repository setting) and nobody saw it. So a failure opens one tracking issue,
+  # or comments on it if it is already open.
+  #
+  # A separate job rather than a step in `refresh`, so `issues: write` is held by
+  # a job that runs no third-party content: `refresh` parses downloaded filter
+  # lists and keeps its own token at contents + pull-requests.
+  alert-on-failure:
+    name: Open or update the failure issue
+    needs: refresh
+    if: failure()
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - name: Open or comment on "Adblock list refresh failing"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          TITLE: Adblock list refresh failing
+        # The run has already failed. A second failure here (API outage, rate
+        # limit) must not hide the first, so this step only warns.
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          # --search is fuzzy; keep only an exact title match.
+          number="$(gh issue list --state open --search "in:title \"$TITLE\"" \
+            --json number,title --jq "map(select(.title == env.TITLE)) | .[0].number // empty")"
+          if [ -n "$number" ]; then
+            gh issue comment "$number" --body "Failed again: $RUN_URL"
+            echo "commented on #$number"
+          else
+            gh issue create --title "$TITLE" --body "The scheduled adblock list refresh failed: $RUN_URL
+
+          The vendored lists in \`docker/playwright-adblock/lists/\` are not being refreshed until this is fixed. Read the failing step in the run above. Close this issue once a run succeeds."
+          fi
