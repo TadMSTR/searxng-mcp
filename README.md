@@ -128,7 +128,7 @@ differentiators here are in what happens *after* the search:
 | Full-page content retrieval | three-tier cascade — Firecrawl, Crawl4AI, in-process raw fetch + Readability | none, or a single raw fetch |
 | Per-domain routing | domain capability database learns which tier works per domain and skips the ones that do not | none |
 | Summarisation | Ollama, with citations back to source URLs | none |
-| Site crawling | `crawl_site` — Firecrawl crawl, sitemap fallback, optional BFS | none |
+| Site crawling | `crawl_site` — Firecrawl crawl, sitemap fallback, optional BFS, kept under the start URL's path | none |
 | Caching | persistent, shared across clients (Valkey/Redis) | in-process or none |
 | Challenge handling | detection-gated solver tier, plus a Wayback fallback | none |
 | Observability | OpenTelemetry traces and metrics, NATS events, structured logs | none |
@@ -146,7 +146,7 @@ verified, and what's off — see [Quick Start](#quick-start) above.
 | `search_and_fetch` | Search, rerank, then fetch full content of the top result(s) through the fetch cascade. |
 | `search_and_summarize` | Search, fetch, then synthesize a cited summary via Ollama. On failure, falls back to raw fetched content led by an explicit `summarization unavailable (<kind>: <detail>)` marker — no marker means a real synthesis. |
 | `fetch_url` | Fetch and extract readable markdown from any public URL, via fast paths or the fetch cascade. |
-| `crawl_site` | Crawl a site and return a URL/title/snippet manifest. Page content is cached, so follow-up `fetch_url` calls are free. |
+| `crawl_site` | Crawl a site and return a URL/title/snippet manifest. Every strategy stays under the start URL's path (`/docs` covers `/docs/install`, not `/docs-old`); pass `include_path: "/"` for the whole site. Page content is cached, so follow-up `fetch_url` calls are free. |
 | `clear_cache` | Purge the search, fetch or crawl cache. |
 | `domain_stats` | Read-only view of the domain capability database — per-tier success rates, as structured output. |
 
@@ -187,7 +187,7 @@ flowchart TD
     entry["fetchPage(url)"]
     cache{"Valkey cache hit?"}
     cached["→ return cached { title, url, text }"]
-    github{"GitHub fast-path URL?\nraw · api · repo root · blob · tree · releases"}
+    github{"GitHub fast-path URL?\nraw · api · repo root · blob · tree · releases\n(repo root / releases with a ?query → cascade)"}
     gh_fetch["GitHub API / raw.githubusercontent.com / api.github.com\n→ return"]
     llms{"llms.txt domain?"}
     llms_fetch["Probe /llms-full.txt\nextract matching section\n→ return"]

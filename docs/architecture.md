@@ -251,12 +251,14 @@ Both rely on **unofficial, undocumented endpoints** (YouTube's timedtext API, Re
 
 ## Site crawling
 
-`crawl_site` crawls an entire site and returns a manifest of URL/title/snippet for each page found. It uses a four-phase strategy cascade:
+`crawl_site` crawls a site and returns a manifest of URL/title/snippet for each page found. It uses a four-phase strategy cascade.
+
+**Scope.** Since v3.31.0, every phase stays under the start URL's path, on a segment boundary: a crawl started at `https://example.com/docs` covers `/docs/install` but not `/docs-old` or `/blog/docs`. A start URL at the site root crawls the whole site. Any explicit `include_path` replaces the default scope, and `include_path: "/"` restores the whole-site crawl from a subpath; `include_path: ""` counts as omitted and gets the default scope. An explicit `include_path` also widens the Firecrawl phase: under `FIRECRAWL_API_VERSION=v2` the crawl request sends `crawlEntireDomain`. That option is not verified for v1, so under v1 the Firecrawl phase is skipped when `include_path` is given. A scope that matches nothing returns an error manifest whose note names the scope and the opt-out, not pages from elsewhere on the site. The manifest cache key includes the default scope, so a site-wide manifest cached by an earlier version is never served as a scoped result.
 
 1. **Firecrawl crawl** — sends a crawl job to Firecrawl (`/crawl`), polls until complete, and returns the full page list. Targets `/v1/crawl` or `/v2/crawl` per `FIRECRAWL_API_VERSION`. Controlled by `FIRECRAWL_CRAWL_POLL_INTERVAL_MS` and `FIRECRAWL_CRAWL_MAX_WAIT_MS`.
 2. **Firecrawl map** (`v2` only) — asks `/v2/map` for the site's URLs, then fetches them. Purpose-built for exactly what phase 3 hand-rolls, and it copes with sites whose sitemap is absent, stale or split across nested indexes. Skipped entirely under `v1`, where the endpoint does not exist.
 3. **Sitemap parsing** — fetches `/sitemap.xml` (and linked sitemaps) and extracts URLs with titles/snippets. Uses `fast-xml-parser` for sitemap XML parsing.
-4. **BFS crawl** (opt-in) — if sitemap parsing also fails, performs a breadth-first crawl starting from the given URL up to `CRAWL_BFS_MAX_DEPTH` link hops. Only runs when `CRAWL_BFS_ENABLED=true` or the `bfs` tool parameter is `true`.
+4. **BFS crawl** (opt-in) — if sitemap parsing also fails, performs a breadth-first crawl starting from the given URL up to `CRAWL_BFS_MAX_DEPTH` link hops. Only runs when the server-side `CRAWL_BFS_ENABLED=true` is set; the tool has no `bfs` parameter.
 
 Each phase falls through to the next, but **no longer silently**: a non-2xx from the crawl
 start, the crawl poll or the map endpoint is logged and recorded against the `crawl` slot in
