@@ -92,12 +92,27 @@ services:
 
 ## Health endpoint
 
-`GET /health` on `PORT` (default `8118`) reports whether a rule set is loaded:
+`GET /health` on `PORT` (default `8118`) reports whether a rule set is loaded and
+whether it is current:
 
-| Status | Body |
-|--------|------|
-| `200` | `{"status":"ok","network_filters":N,"cosmetic_filters":M,"loaded_at":"<ISO 8601>"}` (N > 0) |
-| `503` | `{"status":"no_filters","network_filters":0,"cosmetic_filters":0,"loaded_at":null}` |
+| Code | `status` | Meaning |
+|------|----------|---------|
+| `200` | `ok` | A rule set with network filters is loaded, and it is newer than two refresh intervals (`2 × ADBLOCK_REFRESH_HOURS`) |
+| `503` | `stale` | A rule set is loaded and still filters, but it is older than two refresh intervals: refreshes have been failing or refused. Never reported when `ADBLOCK_REFRESH_HOURS` is `0` |
+| `503` | `no_filters` | No rule set has loaded. Requests pass through unfiltered |
+
+Every response carries the same fields:
+
+```json
+{"status":"ok","network_filters":N,"cosmetic_filters":M,"loaded_at":"<ISO 8601>",
+ "lists_fetched":2,"lists_total":2,"last_attempt_at":"<ISO 8601>","last_attempt_ok":true}
+```
+
+`loaded_at`, `lists_fetched` and `lists_total` describe the rule set in use.
+`last_attempt_at` and `last_attempt_ok` describe the latest load, including a refused
+one. A refresh is refused, and the rule set in use kept, when it yields no network
+filters or fetches fewer lists than that rule set came from. At startup a partial
+set is installed, since it beats none.
 
 Only an **origin-form** request for exactly `/health` is answered locally
 (`curl http://adblock-proxy:8118/health`). A proxied request for

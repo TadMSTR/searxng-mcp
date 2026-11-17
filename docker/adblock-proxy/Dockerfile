@@ -29,7 +29,8 @@ ENV LOG_BLOCKED="false"
 
 EXPOSE 8118
 
-# /health is 200 only once a rule set with network filters is loaded (proxy.js).
+# /health is 200 only while a rule set with network filters is loaded and is
+# newer than two refresh intervals (proxy.js healthBody).
 # Node, not curl: the image has no curl, and busybox wget's exit codes are not
 # worth depending on. The start period covers the startup list fetch, which
 # runs before the port opens (up to 30 s per list).

@@ -69,19 +69,26 @@ async function readCapped(res, limit) {
 }
 
 // The rule set in use. `engine` stays null until a load yields at least one
-// network filter, and a later load that yields none leaves all four fields as
-// they were: an empty engine filters nothing, so swapping one in would turn a
-// working proxy into a pass-through that still reports success.
+// network filter, and a refused load leaves the rule-set fields as they were:
+// an empty engine filters nothing, so swapping one in would turn a working
+// proxy into a pass-through that still reports success. `lastAttemptAt` and
+// `lastAttemptOk` record every load, refused ones included, so /health can say
+// a refresh is failing while the old rule set still serves.
 const state = {
   engine: null,
   networkFilters: 0,
   cosmeticFilters: 0,
   loadedAt: null,
+  listsFetched: 0,
+  listsTotal: 0,
+  lastAttemptAt: null,
+  lastAttemptOk: null,
 };
 
 /**
  * Fetch every list, parse them into one engine, and install it only if it has
- * network filters. Returns true when the engine was replaced.
+ * network filters and, on a refresh, came from at least as many lists as the
+ * rule set it replaces. Returns true when the engine was replaced.
  *
  * `fetchImpl` and `urls` are parameters so the tests can load fixture lists
  * without a network.
@@ -112,6 +119,21 @@ async function loadFilters({
     }
   }
 
+  state.lastAttemptAt = new Date().toISOString();
+  state.lastAttemptOk = false;
+
+  // A refresh where some lists failed would swap the full rule set for a
+  // partial one (EasyList without EasyPrivacy, say) until the next refresh. At
+  // startup a partial set is better than none, so only a refresh is refused.
+  if (state.engine && fetched > 0 && fetched < urls.length && fetched < state.listsFetched) {
+    console.error(
+      `[adblock-proxy] WARNING: refresh fetched ${fetched}/${urls.length} list(s), fewer than the ` +
+        `${state.listsFetched} the current rule set came from — keeping it ` +
+        `(${state.networkFilters} network, ${state.cosmeticFilters} cosmetic, loaded ${state.loadedAt})`,
+    );
+    return false;
+  }
+
   // FiltersEngine.parse("") returns a valid, empty engine rather than null, so
   // "every list failed" has to be detected from the count.
   const newEngine = FiltersEngine.parse(combined, { debug: false });
@@ -136,7 +158,10 @@ async function loadFilters({
   state.engine = newEngine;
   state.networkFilters = networkFilters.length;
   state.cosmeticFilters = cosmeticFilters.length;
-  state.loadedAt = new Date().toISOString();
+  state.loadedAt = state.lastAttemptAt;
+  state.listsFetched = fetched;
+  state.listsTotal = urls.length;
+  state.lastAttemptOk = true;
   console.log(
     `[adblock-proxy] loaded ${state.networkFilters} network and ${state.cosmeticFilters} cosmetic ` +
       `filters from ${fetched}/${urls.length} list(s)`,
@@ -154,15 +179,27 @@ function isBlocked(url, sourceUrl = "") {
   }
 }
 
-function healthBody() {
-  const ok = state.engine !== null && state.networkFilters > 0;
+// A rule set older than two refresh intervals means refreshes have been
+// failing (or refused) for at least two attempts in a row. It still filters,
+// but /health turns 503 so the HEALTHCHECK and anything watching it notice.
+function healthBody({ now = Date.now(), refreshHours = REFRESH_HOURS } = {}) {
+  const loaded = state.engine !== null && state.networkFilters > 0;
+  const stale =
+    loaded &&
+    refreshHours > 0 &&
+    now - Date.parse(state.loadedAt) > 2 * refreshHours * 60 * 60 * 1000;
+  const status = !loaded ? "no_filters" : stale ? "stale" : "ok";
   return {
-    code: ok ? 200 : 503,
+    code: status === "ok" ? 200 : 503,
     body: {
-      status: ok ? "ok" : "no_filters",
+      status,
       network_filters: state.networkFilters,
       cosmetic_filters: state.cosmeticFilters,
       loaded_at: state.loadedAt,
+      lists_fetched: state.listsFetched,
+      lists_total: state.listsTotal,
+      last_attempt_at: state.lastAttemptAt,
+      last_attempt_ok: state.lastAttemptOk,
     },
   };
 }

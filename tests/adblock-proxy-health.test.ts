@@ -25,6 +25,10 @@ interface ProxyState {
   networkFilters: number;
   cosmeticFilters: number;
   loadedAt: string | null;
+  listsFetched: number;
+  listsTotal: number;
+  lastAttemptAt: string | null;
+  lastAttemptOk: boolean | null;
 }
 type FetchImpl = (url: string, init?: unknown) => Promise<Response>;
 
@@ -36,6 +40,10 @@ const proxy = require_("../docker/adblock-proxy/proxy.js") as {
     maxListBytes?: number;
   }) => Promise<boolean>;
   isBlocked: (url: string) => boolean;
+  healthBody: (opts?: { now?: number; refreshHours?: number }) => {
+    code: number;
+    body: Record<string, unknown>;
+  };
   state: ProxyState;
 };
 
@@ -62,6 +70,10 @@ beforeEach(() => {
     networkFilters: 0,
     cosmeticFilters: 0,
     loadedAt: null,
+    listsFetched: 0,
+    listsTotal: 0,
+    lastAttemptAt: null,
+    lastAttemptOk: null,
   });
   logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
   errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
@@ -91,7 +103,7 @@ describe("loadFilters — counts", () => {
     expect(proxy.state.cosmeticFilters).toBe(1);
   });
 
-  it("counts a partial load from the lists that did arrive", async () => {
+  it("at startup, counts a partial load from the lists that did arrive", async () => {
     const mixed: FetchImpl = async (url) =>
       url === LIST ? serve(FIXTURE)(url) : status503(url);
     expect(
@@ -104,6 +116,90 @@ describe("loadFilters — counts", () => {
     expect(logged(errSpy)).toMatch(
       /filter fetch failed: https:\/\/lists\.test\/down\.txt status=503/,
     );
+  });
+});
+
+const DOWN = "https://lists.test/down.txt";
+const SECOND = "||second.example.org^\n";
+// Both lists up, or only the first.
+const twoLists: FetchImpl = async (url) =>
+  url === LIST ? serve(FIXTURE)(url) : serve(SECOND)(url);
+const firstOnly: FetchImpl = async (url) =>
+  url === LIST ? serve(FIXTURE)(url) : status503(url);
+
+describe("loadFilters — partial refreshes", () => {
+  it("a refresh with fewer lists than the current rule set keeps it", async () => {
+    await proxy.loadFilters({ urls: [LIST, DOWN], fetchImpl: twoLists });
+    const before = { ...proxy.state };
+    expect(proxy.isBlocked("http://second.example.org/x.js")).toBe(true);
+
+    expect(
+      await proxy.loadFilters({ urls: [LIST, DOWN], fetchImpl: firstOnly }),
+    ).toBe(false);
+
+    expect(proxy.state.engine).toBe(before.engine);
+    expect(proxy.state.loadedAt).toBe(before.loadedAt);
+    expect(proxy.state.listsFetched).toBe(2);
+    expect(proxy.state.lastAttemptOk).toBe(false);
+    expect(proxy.isBlocked("http://second.example.org/x.js")).toBe(true);
+    expect(logged(errSpy)).toMatch(
+      /WARNING: refresh fetched 1\/2 list\(s\), fewer than the 2 .* keeping it/,
+    );
+  });
+
+  it("a partial startup set is replaced by a later partial refresh of the same size", async () => {
+    await proxy.loadFilters({ urls: [LIST, DOWN], fetchImpl: firstOnly });
+    expect(proxy.state.listsFetched).toBe(1);
+    expect(
+      await proxy.loadFilters({ urls: [LIST, DOWN], fetchImpl: firstOnly }),
+    ).toBe(true);
+    expect(proxy.state.lastAttemptOk).toBe(true);
+  });
+
+  it("a full refresh after a partial startup set installs it", async () => {
+    await proxy.loadFilters({ urls: [LIST, DOWN], fetchImpl: firstOnly });
+    expect(
+      await proxy.loadFilters({ urls: [LIST, DOWN], fetchImpl: twoLists }),
+    ).toBe(true);
+    expect(proxy.state.listsFetched).toBe(2);
+    expect(proxy.isBlocked("http://second.example.org/x.js")).toBe(true);
+  });
+});
+
+describe("healthBody — staleness", () => {
+  const HOUR = 60 * 60 * 1000;
+
+  it("is ok within two refresh intervals of the last good load", async () => {
+    await proxy.loadFilters({ urls: [LIST], fetchImpl: serve(FIXTURE) });
+    const loaded = Date.parse(proxy.state.loadedAt as string);
+    const h = proxy.healthBody({
+      now: loaded + 2 * 168 * HOUR,
+      refreshHours: 168,
+    });
+    expect(h.code).toBe(200);
+    expect(h.body.status).toBe("ok");
+  });
+
+  it("is 503 stale past two refresh intervals, while the old rule set still filters", async () => {
+    await proxy.loadFilters({ urls: [LIST], fetchImpl: serve(FIXTURE) });
+    await proxy.loadFilters({ urls: [LIST], fetchImpl: failing });
+    const loaded = Date.parse(proxy.state.loadedAt as string);
+    const h = proxy.healthBody({
+      now: loaded + 2 * 168 * HOUR + 1,
+      refreshHours: 168,
+    });
+    expect(h.code).toBe(503);
+    expect(h.body.status).toBe("stale");
+    expect(h.body.last_attempt_ok).toBe(false);
+    expect(proxy.isBlocked("http://ads.example.com/x.js")).toBe(true);
+  });
+
+  it("never goes stale with refresh disabled", async () => {
+    await proxy.loadFilters({ urls: [LIST], fetchImpl: serve(FIXTURE) });
+    const loaded = Date.parse(proxy.state.loadedAt as string);
+    expect(
+      proxy.healthBody({ now: loaded + 10_000 * HOUR, refreshHours: 0 }).code,
+    ).toBe(200);
   });
 });
 
@@ -266,6 +362,10 @@ describe("GET /health", () => {
       network_filters: 2,
       cosmetic_filters: 1,
       loaded_at: proxy.state.loadedAt,
+      lists_fetched: 1,
+      lists_total: 1,
+      last_attempt_at: proxy.state.loadedAt,
+      last_attempt_ok: true,
     });
     expect(Number.isNaN(Date.parse(body.loaded_at))).toBe(false);
   });
@@ -279,6 +379,10 @@ describe("GET /health", () => {
       network_filters: 0,
       cosmetic_filters: 0,
       loaded_at: null,
+      lists_fetched: 0,
+      lists_total: 0,
+      last_attempt_at: proxy.state.lastAttemptAt,
+      last_attempt_ok: false,
     });
   });
 
