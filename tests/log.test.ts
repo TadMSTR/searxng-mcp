@@ -160,6 +160,69 @@ describe("redactUrlCredentialsInText — every userinfo shape, not just the colo
     expect(out).toContain("://<redacted>@host.example/search?q=x");
   });
 
+  // A password holding '@' and then '/', or a `x://`. The first cut at the
+  // password's own '@' and left the rest; the second started a new URL at the
+  // inner scheme and left everything before it.
+  it.each([
+    ["https://u:ab@cd.ef/gh@host.example/x", "ab@cd.ef/gh", "'@' then '/'"],
+    ["https://u:ab@cd/ef@gh@host.example/x", "ab@cd/ef@gh", "'@', '/', '@'"],
+    ["https://u:abx://cd@host.example/x", "abx://cd", "a `x://` inside"],
+    ["https://u:ab:x://cd@host.example/x", "ab:x://cd", "':' then `x://`"],
+  ])("redacts %s (%s)", (input) => {
+    expect(redactUrlCredentialsInText(input)).toBe(
+      "https://<redacted>@host.example/x",
+    );
+  });
+
+  it.each([
+    "https://u:ab@cd.ef/gh@host.example/search?q=x",
+    "https://u:abx://cd@host.example/search?q=x",
+  ])("redacts Node's own fetch() error for %s", async (url) => {
+    const err = await fetch(url).then(
+      () => new Error("fetch unexpectedly succeeded"),
+      (e: unknown) => e as Error,
+    );
+    expect(err.message).toContain(url); // Node echoes the URL as written
+    const out = redactUrlCredentialsInText(err.message);
+    // From the outer scheme on: an inner `x://` must not restart the scrub.
+    expect(out).toContain("https://<redacted>@host.example/search?q=x");
+    expect(out).not.toContain("u:ab");
+  });
+
+  it("still scrubs a credentialed URL nested in a clean one", () => {
+    // Judging a run from its first scheme must not hide a second URL inside
+    // it: the outer URL has nothing to redact, so the inner one is judged.
+    expect(
+      redactUrlCredentialsInText(
+        "https://a.example/r?to=https://u:pw@b.example/x",
+      ),
+    ).toBe("https://a.example/r?to=https://<redacted>@b.example/x");
+  });
+
+  // Over-redaction, accepted: with credentials in the authority, a later '@'
+  // in the path moves the cut to it, since the password may hold '@' + '/'.
+  it("redacts to a path '@' when the authority has credentials", () => {
+    expect(redactUrlCredentialsInText("https://u:pw@host.example/a/@b/c")).toBe(
+      "https://<redacted>@b/c",
+    );
+  });
+
+  // Known shapes, pinned so a change to them is a decision. With no '/', an
+  // '@' in a query value is taken as the userinfo end: the value's tail is
+  // left as the host. A space ends the URL, so a password holding one is not
+  // scrubbed (CHANGELOG 3.32.0 says so).
+  it("treats a query '@' with no '/' as the userinfo end", () => {
+    expect(
+      redactUrlCredentialsInText("https://host.example?password=a@b"),
+    ).toBe("https://<redacted>@b");
+  });
+
+  it("leaves a password holding a space (documented limit)", () => {
+    expect(redactUrlCredentialsInText("https://u:pa ss@host.example/x")).toBe(
+      "https://u:pa ss@host.example/x",
+    );
+  });
+
   // Controls for the ambiguous-authority rule: an authority that is a real
   // host[:port] keeps its path '@', so ports, IPv6 and paths stay readable.
   it.each([
@@ -170,6 +233,10 @@ describe("redactUrlCredentialsInText — every userinfo shape, not just the colo
     // The documented limit (CHANGELOG 3.32.0): digits before an unencoded '/'
     // read as a port, so this password shape is not scrubbed.
     "https://u:1234/rest@host.example",
+    // The same rule: an empty password, or a token holding '/', reads as a
+    // host, and Node parses it as one, with no credentials.
+    "https://u:/rest@host.example",
+    "https://to/ken@host.example",
   ])("leaves %s untouched", (input) => {
     expect(redactUrlCredentialsInText(input)).toBe(input);
   });
@@ -216,6 +283,10 @@ describe("redactUrlCredentialsInText — linear on adversarial text", () => {
     ["schemes back to back, no whitespace", "x://".repeat(50_000)],
     ["one token of '@' and '/'", `x://u:${"a/@".repeat(66_000)}`],
     ["ambiguous authority, long token", `x://u:p${"/a@".repeat(66_000)}`],
+    ["back-to-back schemes ending in '@'", `${"x://".repeat(50_000)}@`],
+    ["nested clean URLs ending in '@'", `${"x://h/".repeat(33_000)}@`],
+    ["many '@' segments", "x://u:a@b/c@d ".repeat(14_000)],
+    ["inner schemes in a password", `x://u:${"ax://".repeat(40_000)}@h`],
   ])("%s: 200 KB in well under a second", (_name, input) => {
     const t0 = performance.now();
     redactUrlCredentialsInText(input);
