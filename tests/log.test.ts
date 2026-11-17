@@ -129,6 +129,48 @@ describe("redactUrlCredentialsInText — every userinfo shape, not just the colo
     expect(redactUrlCredentialsInText(input)).toBe(input);
   });
 
+  // Passwords pasted unencoded. Node echoes the configured URL as written, so
+  // a raw '@' or '/' in a password reaches the error text intact. Stopping at
+  // the first '@' left the tail of the first shape; stopping at the first '/'
+  // left all of the second.
+  it.each([
+    ["https://u:p@ss@host.example/x", "p@ss", "raw '@' in the password"],
+    ["https://u:pa/ss@host.example/x", "pa/ss", "raw '/' in the password"],
+    ["https://u:a/b@c@host.example/x", "a/b@c", "raw '/' and '@'"],
+    ["https://u:pa/ss@host.example", "pa/ss", "raw '/', no path after"],
+  ])("redacts %s (%s)", (input, secret) => {
+    const out = redactUrlCredentialsInText(input);
+    expect(out).not.toContain(secret);
+    expect(out).not.toContain(secret.slice(-2));
+    expect(out).toContain("@host.example");
+  });
+
+  it.each([
+    "https://u:p@ss@host.example/search?q=x",
+    "https://u:pa/ss@host.example/search?q=x",
+  ])("redacts Node's own fetch() error for %s", async (url) => {
+    // The text that actually reaches the sinks, not a hand-written copy of it.
+    const err = await fetch(url).then(
+      () => new Error("fetch unexpectedly succeeded"),
+      (e: unknown) => e as Error,
+    );
+    expect(err.message).toContain("ss@host.example");
+    const out = redactUrlCredentialsInText(err.message);
+    // Nothing of the password survives: the redaction runs to the host.
+    expect(out).toContain("://<redacted>@host.example/search?q=x");
+  });
+
+  // Controls for the ambiguous-authority rule: an authority that is a real
+  // host[:port] keeps its path '@', so ports, IPv6 and paths stay readable.
+  it.each([
+    "http://localhost:8080/users/@me",
+    "http://[::1]:8080/@x",
+    "https://host.example:/a@b",
+    "https://github.com/o/r/blob/main/@scope/pkg.json",
+  ])("leaves %s untouched", (input) => {
+    expect(redactUrlCredentialsInText(input)).toBe(input);
+  });
+
   it("redacts every URL in a message, not only the first", () => {
     const out = redactUrlCredentialsInText(
       "tried redis://:pw1@h1:6379 then https://u:pw2@h2/x",
@@ -158,7 +200,7 @@ describe("redactUrlCredentialsInText — every userinfo shape, not just the colo
 });
 
 // IV-78: the scheme run used to be unbounded, so dotted text with no `://`
-// was quadratic: 160 KB took about 6 s. boundRelayedText runs this over
+// was quadratic on long dotted text. boundRelayedText runs this over
 // upstream error text before truncating, so the input size is the upstream's.
 describe("redactUrlCredentialsInText — linear on adversarial text", () => {
   it.each([
@@ -168,6 +210,9 @@ describe("redactUrlCredentialsInText — linear on adversarial text", () => {
       `${"a.".repeat(100_000)}x://${"b".repeat(1000)}`,
     ],
     ["many short schemes", "a.a.a.a.x://bbbb ".repeat(12_000)],
+    ["schemes back to back, no whitespace", "x://".repeat(50_000)],
+    ["one token of '@' and '/'", `x://u:${"a/@".repeat(66_000)}`],
+    ["ambiguous authority, long token", `x://u:p${"/a@".repeat(66_000)}`],
   ])("%s: 200 KB in well under a second", (_name, input) => {
     const t0 = performance.now();
     redactUrlCredentialsInText(input);
