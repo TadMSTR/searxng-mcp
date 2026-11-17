@@ -145,11 +145,10 @@ jobs:
 
           git config --local user.name "github-actions[bot]"
           git config --local user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          # Single quotes on purpose: the helper expands $GITHUB_TOKEN when git
+          # \$GITHUB_TOKEN is escaped on purpose: the helper expands it when git
           # runs it, so the token is never written into .git/config.
-          # shellcheck disable=SC2016
           git config --local credential.helper \
-            '!f() { echo username=x-access-token; echo "password=$GITHUB_TOKEN"; }; f'
+            "!f() { echo username=x-access-token; echo \"password=\$GITHUB_TOKEN\"; }; f"
 
           git checkout -B "$BRANCH"
           git add docker/playwright-adblock/lists

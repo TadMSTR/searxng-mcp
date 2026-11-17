@@ -465,6 +465,16 @@ describe("crawl error reasons are bounded and single-line", () => {
     expectBounded(lastReason(), "crawl error: first line x");
   });
 
+  it("map phase: the log line is bounded and single-line", async () => {
+    cfg.version = "v2";
+    mockFetch.mockRejectedValueOnce(new Error(LONG));
+    expect(await firecrawlMapUrls(SITE)).toBeNull();
+    const line = String(logWarnMock.mock.calls.at(-1)?.[0]);
+    expect(line).toMatch(/^crawl_site map phase miss: first line x/);
+    expect(line).not.toMatch(/[\r\n\t]/);
+    expect(line).toContain("… url=https://example.com");
+  });
+
   it("the log line carries the same bounded reason", async () => {
     mockFetch.mockRejectedValueOnce(new Error(LONG));
     await firecrawlCrawl(SITE, 5);

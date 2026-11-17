@@ -38,6 +38,36 @@ const FILTERS_URLS = (
 const REFRESH_HOURS = parseInt(process.env.ADBLOCK_REFRESH_HOURS ?? "168", 10);
 const LOG_BLOCKED = process.env.LOG_BLOCKED === "true";
 
+// Per-list byte cap. EasyList is about 2.0 MB and EasyPrivacy about 1.5 MB
+// (measured 2026-11-17), so 16 MiB is wide headroom for list growth while a
+// misconfigured or hostile URL can't make the proxy buffer without limit. A
+// list over the cap is a failed fetch, and reading stops at the cap.
+const MAX_LIST_BYTES = 16 * 1024 * 1024;
+
+// Upstream error text goes into single-line log entries: bounded, one line.
+function oneLine(text) {
+  const s = String(text).replace(/\s+/g, " ").trim();
+  return s.length > 200 ? `${s.slice(0, 200)}…` : s;
+}
+
+async function readCapped(res, limit) {
+  if (!res.body) return "";
+  const reader = res.body.getReader();
+  const chunks = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > limit) {
+      await reader.cancel().catch(() => {});
+      throw new Error(`list exceeds ${limit} bytes`);
+    }
+    chunks.push(value);
+  }
+  return Buffer.concat(chunks).toString("utf8");
+}
+
 // The rule set in use. `engine` stays null until a load yields at least one
 // network filter, and a later load that yields none leaves all four fields as
 // they were: an empty engine filters nothing, so swapping one in would turn a
@@ -56,7 +86,11 @@ const state = {
  * `fetchImpl` and `urls` are parameters so the tests can load fixture lists
  * without a network.
  */
-async function loadFilters({ urls = FILTERS_URLS, fetchImpl = globalThis.fetch } = {}) {
+async function loadFilters({
+  urls = FILTERS_URLS,
+  fetchImpl = globalThis.fetch,
+  maxListBytes = MAX_LIST_BYTES,
+} = {}) {
   let combined = "";
   let fetched = 0;
   for (const url of urls) {
@@ -69,12 +103,12 @@ async function loadFilters({ urls = FILTERS_URLS, fetchImpl = globalThis.fetch }
         console.error(`[adblock-proxy] filter fetch failed: ${url} status=${res.status}`);
         continue;
       }
-      const text = await res.text();
+      const text = await readCapped(res, maxListBytes);
       console.log(`[adblock-proxy] fetched ${url} (${Buffer.byteLength(text)} bytes)`);
       combined += text + "\n";
       fetched++;
     } catch (err) {
-      console.error(`[adblock-proxy] filter fetch error: ${url} ${err.message}`);
+      console.error(`[adblock-proxy] filter fetch error: ${url} ${oneLine(err.message)}`);
     }
   }
 
@@ -284,7 +318,7 @@ async function start() {
     const ms = REFRESH_HOURS * 60 * 60 * 1000;
     setInterval(() => {
       loadFilters().catch((err) =>
-        console.error(`[adblock-proxy] filter refresh error: ${err.message}`)
+        console.error(`[adblock-proxy] filter refresh error: ${oneLine(err.message)}`)
       );
     }, ms);
   }

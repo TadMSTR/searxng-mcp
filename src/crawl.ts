@@ -347,7 +347,7 @@ export async function firecrawlMapUrls(url: string): Promise<string[] | null> {
     return urls;
   } catch (err) {
     logWarn(
-      `crawl_site map phase miss: ${err instanceof Error ? err.message : String(err)} url=${url}`,
+      `crawl_site map phase miss: ${boundRelayedText(err instanceof Error ? err.message : String(err))} url=${url}`,
     );
     incCounter("crawl", { strategy: "map", outcome: "miss" });
     return null;

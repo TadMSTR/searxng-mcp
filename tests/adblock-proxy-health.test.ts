@@ -26,18 +26,14 @@ interface ProxyState {
   cosmeticFilters: number;
   loadedAt: string | null;
 }
-type FakeResponse = {
-  ok: boolean;
-  status: number;
-  text: () => Promise<string>;
-};
-type FetchImpl = (url: string, init?: unknown) => Promise<FakeResponse>;
+type FetchImpl = (url: string, init?: unknown) => Promise<Response>;
 
 const proxy = require_("../docker/adblock-proxy/proxy.js") as {
   createServer: () => http.Server;
   loadFilters: (opts?: {
     urls?: string[];
     fetchImpl?: FetchImpl;
+    maxListBytes?: number;
   }) => Promise<boolean>;
   isBlocked: (url: string) => boolean;
   state: ProxyState;
@@ -50,15 +46,12 @@ const LIST = "https://lists.test/fixture.txt";
 
 const serve =
   (body: string): FetchImpl =>
-  async () => ({ ok: true, status: 200, text: async () => body });
+  async () =>
+    new Response(body, { status: 200 });
 const failing: FetchImpl = async () => {
   throw new Error("getaddrinfo ENOTFOUND lists.test");
 };
-const status503: FetchImpl = async () => ({
-  ok: false,
-  status: 503,
-  text: async () => "",
-});
+const status503: FetchImpl = async () => new Response("", { status: 503 });
 
 let logSpy: ReturnType<typeof vi.spyOn>;
 let errSpy: ReturnType<typeof vi.spyOn>;
@@ -111,6 +104,57 @@ describe("loadFilters — counts", () => {
     expect(logged(errSpy)).toMatch(
       /filter fetch failed: https:\/\/lists\.test\/down\.txt status=503/,
     );
+  });
+});
+
+describe("loadFilters — bounded reads", () => {
+  it("a list over the byte cap is a failed fetch, and reading stops", async () => {
+    let pulled = 0;
+    // An endless stream: only a reader that stops at the cap returns.
+    const endless: FetchImpl = async () =>
+      new Response(
+        new ReadableStream({
+          pull(controller) {
+            pulled++;
+            controller.enqueue(
+              new TextEncoder().encode(`||a${pulled}.example.com^\n`),
+            );
+          },
+        }),
+        { status: 200 },
+      );
+    expect(
+      await proxy.loadFilters({
+        urls: [LIST],
+        fetchImpl: endless,
+        maxListBytes: 4096,
+      }),
+    ).toBe(false);
+    expect(logged(errSpy)).toMatch(
+      /filter fetch error: https:\/\/lists\.test\/fixture\.txt list exceeds 4096 bytes/,
+    );
+    expect(pulled).toBeLessThan(1000);
+  });
+
+  it("a list under the cap loads", async () => {
+    expect(
+      await proxy.loadFilters({
+        urls: [LIST],
+        fetchImpl: serve(FIXTURE),
+        maxListBytes: 4096,
+      }),
+    ).toBe(true);
+  });
+
+  it("logs upstream error text bounded and on one line", async () => {
+    const noisy: FetchImpl = async () => {
+      throw new Error(`line one\n${"z".repeat(500)}\r\nline three`);
+    };
+    await proxy.loadFilters({ urls: [LIST], fetchImpl: noisy });
+    const line = String(errSpy.mock.calls[0]?.[0]);
+    expect(line).not.toMatch(/[\r\n]/);
+    expect(line).toContain("line one z");
+    expect(line.endsWith("…")).toBe(true);
   });
 });
 
