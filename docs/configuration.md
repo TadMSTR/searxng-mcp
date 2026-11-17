@@ -16,7 +16,7 @@ All service URLs are configurable via environment variables.
 | `FIRECRAWL_ENABLED` | `true` | Set to `false` when no Firecrawl is deployed — tier 1 is then skipped with `reason: not_configured` instead of attempting a connection on every fetch |
 | `RERANKER_URL` | `http://localhost:8787` | Reranker instance URL |
 | `FIRECRAWL_API_KEY` | `placeholder-local` | Firecrawl API key (if required) |
-| `GITHUB_TOKEN` | *(unset)* | GitHub personal access token — increases rate limit from 60 to 5,000 req/hour |
+| `GITHUB_TOKEN` | *(unset)* | GitHub personal access token — increases rate limit from 60 to 5,000 req/hour. Sent only with URLs shaped like the GitHub fast path's repository endpoints (README, contents, releases, ref lookup, raw files); any other api.github.com URL is fetched without it. The match is by URL shape: a caller-supplied URL of those shapes gets the token for any repository the token can read, including private-repo files and draft releases. For agent use, prefer a fine-grained token limited to public repositories (or read-only on selected repositories) |
 | `OLLAMA_URL` | *(unset)* | Ollama API base URL — required for `expand` and `search_and_summarize` |
 | `OLLAMA_API_KEY` | *(unset)* | Bearer token for authenticated Ollama proxies — adds `Authorization: Bearer <key>` header when set |
 | `OLLAMA_EXPAND_MODEL` | `qwen3:4b` | Model used by query expansion (`expand` parameter). Override without rebuilding. |

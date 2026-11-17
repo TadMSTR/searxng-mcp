@@ -6,6 +6,55 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [3.31.1] - 2026-11-17
+
+Fixes a 3.31.0 regression in boolean arguments, narrows where `GITHUB_TOKEN` is sent, and
+hardens the release workflow.
+
+### Fixed
+
+- **Boolean arguments read the string `"false"` as `true` in 3.31.0.** The #79 fix parsed
+  `expand` (on `search`, `search_and_fetch` and `search_and_summarize`) and `crawl_site`'s
+  `same_domain_only` with `z.coerce.boolean()`, which is `Boolean(input)`: every non-empty
+  string was `true`. `same_domain_only: "false"` quietly kept the crawl on one domain, and
+  `expand: "false"` turned query expansion on (about 3 s and an LLM call). These arguments now
+  accept `true`/`false` and the strings `"true"`/`"false"` (any case), still treat `""` and
+  `null` as omitted, and reject anything else (`"0"`, `"1"`, `"yes"`, numbers). The published
+  tool schemas are unchanged.
+- **A `tree` URL that names a file** (GitHub redirects such a page to the blob) failed with a
+  `TypeError` from the directory listing. It is now fetched as its `blob` URL would be.
+
+### Changed
+
+- **`GITHUB_TOKEN` is sent only with URLs shaped like the GitHub fast path's repository
+  endpoints:** README, contents, releases, the ref lookup for `tree` URLs, and
+  `raw.githubusercontent.com` files.
+  - **Behaviour change:** any other `api.github.com` URL a caller passes to `fetch_url` is now
+    fetched without the token. Public data still comes back; private data at those URLs gets
+    GitHub's 401 or 404.
+  - **The match is by URL shape, not by who built the URL.** A URL of one of those shapes
+    passed to `fetch_url` gets the token for any repository the token can read: private-repo
+    files, and on `releases`, draft releases of repositories the token can push to. For agent
+    use, give the server a fine-grained token limited to public repositories, or read-only on
+    selected repositories.
+  - A `raw.githubusercontent.com` URL whose ref writes a slash as `%2F` (`feat%2Fx`) is not
+    matched and goes without the token. Write the slash literally (`feat/x`).
+
+### Security
+
+- github.com path segments are validated before they go into an API request. Owner and
+  repository must be plain GitHub names (`A-Z a-z 0-9 _ . -`), and a release tag, directory or
+  file segment that decodes to a path separator (`/` or `\`) is refused. Each segment is encoded
+  on its own. So a file or directory whose name contains a backslash, and a release-tag URL that
+  writes a slash as `%2F`, are refused by the fast path; the same tag URL with a literal `/` is
+  not.
+- Release workflow: the `actions/setup-node` steps set `package-manager-cache: false`, so no
+  dependency cache can feed the job that builds the published tarball or the one that holds
+  `id-token: write`. The `actions/checkout` steps in the release and CodeQL workflows set
+  `persist-credentials: false`. `npm publish` names `./*.tgz`.
+- Dependabot groups the `@opentelemetry/*` packages (version and security updates), so
+  packages that pin each other arrive in one PR.
+
 ## [3.31.0] - 2026-11-16
 
 Two contributed fixes from @blakemartz (#89, #90), empty optional arguments accepted as omitted
