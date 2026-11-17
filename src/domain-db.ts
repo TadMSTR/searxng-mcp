@@ -8,6 +8,7 @@
 // surface to the caller of fetchPage.
 
 import { cacheAtomicUpdate, cacheGet } from "./cache.js";
+import { boundRelayedText } from "./fetch-utils.js";
 
 export const DOMAIN_RECORD_TTL_SECONDS = 90 * 24 * 60 * 60;
 // Bumped 3->4 to add the `github` fast-path slot to tier_stats_30d (SXNG-10 —
@@ -318,7 +319,10 @@ export async function recordTierAttempt(
       stat.ok += 1;
     } else {
       stat.fail += 1;
-      if (failReason) stat.last_fail_reason = failReason;
+      // Reasons carry upstream error text, and domain_stats shows this field to
+      // callers on one line. Bounded here, at the sink, so every tier's caller
+      // is covered rather than each call site remembering to.
+      if (failReason) stat.last_fail_reason = boundRelayedText(failReason);
     }
   });
 }

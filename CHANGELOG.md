@@ -36,9 +36,11 @@ endpoint, and checks the compose examples in CI.
   only through BFS (`CRAWL_BFS_ENABLED`), where every page fetch is SSRF-guarded like
   `fetch_url`. Without BFS the crawl stays on the site and the result says so. Firecrawl is never
   asked to follow external links.
-- **Firecrawl crawl error reasons** (start, poll and crawl errors, shown by `domain_stats`) are
-  bounded to 200 characters and kept to one line. Relayed upstream error text in fetch failure
-  reasons is now also collapsed to one line.
+- **Failure reasons shown by `domain_stats`** (every fetch tier's and the Firecrawl crawl
+  phase's last failure) are bounded to 200 characters and kept to one line. They carry upstream
+  error text. Relayed upstream error text in fetch failure reasons and crawl log lines is
+  bounded the same way, and adblock-proxy caps each filter list at 16 MiB and bounds its error
+  log lines.
 
 ### Changed
 
