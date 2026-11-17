@@ -412,7 +412,7 @@ jobs:
 
           # 0b. /health (origin-form, not through the proxy) is 200 with filters,
           #     and Docker runs the image's HEALTHCHECK to "healthy".
-          health="$(docker run --rm --network smoke-net curlimages/curl:latest \
+          health="$(docker run --rm --network smoke-net curlimages/curl:8.23.0@sha256:3fb7e13e5d179a845c97d78204f3f1064d1907037f26a3ebf91710571151fd93 \
             -s -w '\n%{http_code}' -m 10 http://smoke-proxy:8118/health)"
           echo "health: $health"
           [ "$(printf '%s' "$health" | tail -1)" = "200" ] \
@@ -428,7 +428,7 @@ jobs:
           echo "container health: healthy"
 
           via() {
-            docker run --rm --network smoke-net curlimages/curl:latest \
+            docker run --rm --network smoke-net curlimages/curl:8.23.0@sha256:3fb7e13e5d179a845c97d78204f3f1064d1907037f26a3ebf91710571151fd93 \
               -s -o /dev/null -w '%{http_code} %{size_download}' -m 25 \
               --proxy http://smoke-proxy:8118 "$@"
           }

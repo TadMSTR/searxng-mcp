@@ -13,9 +13,11 @@ endpoint, and checks the compose examples in CI.
 
 ### Added
 
-- **adblock-proxy `GET /health`.** `200` with `{"status":"ok","network_filters":N,
-  "cosmetic_filters":M,"loaded_at":"..."}` once a rule set with network filters is loaded, `503`
-  with `"status":"no_filters"` otherwise. Only an origin-form request for exactly `/health` is
+- **adblock-proxy `GET /health`.** `200` with `{"status":"ok","network_filters":N,...}` once
+  a rule set with network filters is loaded, `503` with `"status":"no_filters"` otherwise, and
+  `503` with `"status":"stale"` once the rule set in use is older than two refresh intervals
+  (refreshes keep failing). The body also reports how many lists the rule set came from and
+  whether the latest load succeeded. Only an origin-form request for exactly `/health` is
   answered locally. A proxied `http://<host>/health` is an ordinary proxy request. The image has
   a `HEALTHCHECK` on it (Node, since the image has no curl), and the standalone compose file
   repeats it. See `docker/adblock-proxy/README.md`.
@@ -29,7 +31,9 @@ endpoint, and checks the compose examples in CI.
 - **adblock-proxy installed an empty rule set as if it were a good one.** If every list
   failed, it passed all traffic while reporting a successful load. A load with no network
   filters is now treated as failed: at startup the proxy runs without an engine and `/health`
-  reports `503`, and on a refresh it keeps the previous rule set and logs a warning.
+  reports `503`, and on a refresh it keeps the previous rule set and logs a warning. A refresh
+  that fetches fewer lists than the rule set in use came from is refused the same way, so one
+  list's outage no longer drops it from filtering until the next refresh.
 - **`crawl_site` `same_domain_only` was ignored by the Firecrawl, map and sitemap
   strategies.** Only BFS received it. `true` now drops URLs off the start URL's hostname on
   every strategy, and the result notes how many were dropped. `false` follows off-site links
@@ -41,6 +45,19 @@ endpoint, and checks the compose examples in CI.
   error text. Relayed upstream error text in fetch failure reasons and crawl log lines is
   bounded the same way, and adblock-proxy caps each filter list at 16 MiB and bounds its error
   log lines.
+- **Error text relayed from upstream could include credentials from a configured service
+  URL.** Node's `fetch()` rejects a URL with `user:password@` and puts the whole URL in its
+  error message, which reached log lines and `domain_stats`. URL userinfo is now scrubbed from
+  all relayed text before it is bounded.
+- **`crawl_site` cached an empty manifest when `same_domain_only` dropped every Firecrawl
+  page** (a `www.` crawl for a bare domain, say), and skipped the map, sitemap and BFS
+  strategies. It now falls back to them.
+- **A crawl manifest cached by an earlier version was served without the new
+  `same_domain_only` filter** until it expired. Manifest cache keys are versioned, so older
+  entries are no longer read.
+- **The `search.expand` span attribute read `false` when expansion ran by default**
+  (`EXPAND_QUERIES=true` with `expand` omitted). It now records the value the search used.
+- Crawl log lines put the crawl URL on one line.
 
 ### Changed
 
@@ -53,7 +70,11 @@ endpoint, and checks the compose examples in CI.
 - Every `actions/checkout` in the CI, image-publish and secret-scan workflows sets
   `persist-credentials: false`.
 - The vendored EasyList and EasyPrivacy lists for playwright-adblock are refreshed.
-- Comments and docs no longer name a particular deployment.
+- Comments, docs, earlier CHANGELOG entries and the CodeRabbit config no longer name a
+  particular deployment.
+- The image-publish smoke test pins `curlimages/curl` by digest.
+- `docs/architecture.md` says which signals a cache failure produces (stderr and an OTel
+  counter, no NATS event).
 
 ## [3.31.1] - 2026-11-17
 
@@ -348,7 +369,7 @@ Dependency release. No application code changed.
   `sha256sum -c`. Two builds of the same commit now produce the same image.
 
   This was not a theoretical reproducibility concern. **The v3.28.0 release failed on exactly
-  this step and needed a re-run** — `easylist.to` was reachable from forge at the time, so the
+  this step and needed a re-run** — `easylist.to` was reachable from a production host at the time, so the
   failure was specific to the runner's egress and not something to design around. The re-run
   is the part that mattered: this image sits in front of Firecrawl v2's renderer, its
   `verify-ssrf-guard.sh` step is a real security control, and a build that fails for unrelated
@@ -658,8 +679,8 @@ Dependency release. No application code changed.
   `thinking` field in 20.0s; top-level `think` returned none in 0.3s.
 
   This shipped because the only thinking-disabled assertion in the suite covered the
-  `LLM_BASE_URL` branch — the branch that worked — while the Ollama branch that forge
-  actually runs had none. The new regression tests assert the request body **exactly**, via
+  `LLM_BASE_URL` branch — the branch that worked — while the Ollama branch that production
+  deployments actually run had none. The new regression tests assert the request body **exactly**, via
   `toEqual` on the full object: a `toMatchObject`-style subset comparison passes on the buggy
   body too, because it cannot see the stray `options` key that is the entire defect.
 
@@ -1441,7 +1462,7 @@ A challenge-solving fetch tier backed by Byparr, fired **only when a Cloudflare-
 ### Added
 - **Challenge detection (`src/challenge.ts`)** — identifies a challenge from status and headers (403/503 from a Cloudflare edge; status alone is not sufficient, since honest 403s are common) or from interstitial markers in the body. A detected challenge is a **miss** carrying the distinct reason `challenge_detected` rather than the generic `empty_result` — the whole gate depends on that reason being distinguishable. Wired into tier1, tier2 and tier3: the plan named only the raw fetch and the tier2 Readability path, but tier1 runs first and reaches the origin through the same kind of external fetcher, so leaving it out would have left the identical defect live on the most-used path. The check sits at the tier boundary because `crawl4aiFetch` swallows every throw and would have erased the signal. The `Just a moment` marker is scoped to the `<title>` element: as a bare substring it is ordinary English prose, and over-matching — turning honest pages into misses — is a worse failure than the bug being fixed. A negative control asserts exactly that at both the detector and tier layers, and goes red if the marker is ever loosened.
 - **Challenge-solving tier (`src/tiers/solver.ts`)** — built against the FlareSolverr `POST /v1` contract, which Byparr implements, so adding FlareSolverr later is configuration rather than code. Byparr is the deployed solver because it ships fortnightly while FlareSolverr's last release is 2026-05-26 and its browser-and-wait approach is documented as failing on Turnstile and Managed Challenge. Inert unless both `SOLVER_ENABLED` and `SOLVER_URL` are set, mirroring `WAYBACK_ENABLED`. Configured by `SOLVER_URL`, `SOLVER_ENABLED`, `SOLVER_MAX_TIMEOUT_MS` (default 60000).
-- **Detection-gated dispatch** — the solver runs only when a tier reported `challenge_detected` for the URL *in the current request*, never on an unchallenged one. searxng-mcp already runs two browser-rendering tiers ahead of it, so solving unconditionally would re-render pages that were never challenged at seconds of latency and hundreds of MB each — measured on forge at 523 MiB peak for one solve, 810 MiB for three concurrent. The gate reads a plain local in `fetchPage`, so it is request-scoped by construction, and a test asserts a challenge in one request cannot arm the gate in the next. Dispatched after the tier3 cascade fails and before `tier4_wayback`, following the `tier4_wayback`/`github` precedent of a `TierName` with **no `TierSlot`** — which keeps it out of `computeTierSkips` and the `tier_skip` domain config entirely.
+- **Detection-gated dispatch** — the solver runs only when a tier reported `challenge_detected` for the URL *in the current request*, never on an unchallenged one. searxng-mcp already runs two browser-rendering tiers ahead of it, so solving unconditionally would re-render pages that were never challenged at seconds of latency and hundreds of MB each — measured on a production host at 523 MiB peak for one solve, 810 MiB for three concurrent. The gate reads a plain local in `fetchPage`, so it is request-scoped by construction, and a test asserts a challenge in one request cannot arm the gate in the next. Dispatched after the tier3 cascade fails and before `tier4_wayback`, following the `tier4_wayback`/`github` precedent of a `TierName` with **no `TierSlot`** — which keeps it out of `computeTierSkips` and the `tier_skip` domain config entirely.
 
 ### Security
 - **SSRF guard on the solver replay** — the solver fetches on our behalf and reports where it landed, so `solution.url` is a fresh address no guard has seen. It is validated with `assertPublicUrl` + `assertResolvedPublic` before the replay, whether or not the host changed. Solver-returned cookies are scoped to the solved host and never forwarded to another origin, and cookie and User-Agent values carrying control characters or cookie-pair separators are **refused rather than escaped** — the destination header does no escaping of its own. The replay goes through the existing bounded reader rather than returning `solution.response`, which would bypass the size bound, the content-type routing and the extraction path; it therefore re-runs detection, so a "solved" page that is still an interstitial is a miss rather than a cache write.
@@ -1497,7 +1518,7 @@ Cache-resilience + observability hardening (build `searxng-cache-resilience-2026
 - **The cache path now logs.** `src/cache.ts` was entirely silent (zero `console.*`; OTel/NATS sinks unset on the running process). Cache connect failures, client errors, unavailable, and per-command errors now emit a throttled `[searxng-mcp]` stderr line (deduped to one per interval per key so a sustained outage leaves a periodic breadcrumb, not a flood). stderr is the only telemetry sink wired on the running PM2 process.
 - **Process crash handlers** (`src/index.ts`) — `uncaughtException` logs then exits 1 (clean PM2 restart); `unhandledRejection` logs and continues. Previously a fault anywhere took searxng down for all agents with nothing logged (the 2026-07-16 crash-loop left 10 core dumps and zero log lines).
 - **`GET /health` endpoint** — pings Valkey through the new bounded command timeout (so it can never itself hang) and returns `200 {status:"ok",cache:"up"}` or `503 {status:"degraded",cache:"degraded"}`, plus the live session count. Gives sysadmin monitoring a way to detect a degraded cache from the MCP side.
-- **NATS username/password auth** (`src/events.ts`) — `initEvents()` now accepts `NATS_USER`/`NATS_PASSWORD` (`opts.user`/`opts.pass`) in addition to the existing `NATS_CREDS` JWT file (creds wins if both set). Forge's `searxng-mcp` NATS user is bcrypt username/password with no `.creds` file, so events could never authenticate before this — the reason NATS telemetry never fired.
+- **NATS username/password auth** (`src/events.ts`) — `initEvents()` now accepts `NATS_USER`/`NATS_PASSWORD` (`opts.user`/`opts.pass`) in addition to the existing `NATS_CREDS` JWT file (creds wins if both set). A NATS server that authenticates by username and password, with no `.creds` file, could never accept these events before this — the reason NATS telemetry never fired.
 - **Graceful-degradation warnings** — the reranker fallback (`src/reranker.ts`) and the ollama/LLM expand + summarize fallbacks (`src/ollama.ts`) now emit one throttled stderr line each when they silently degrade quality, so "why did ranking/summarize get worse" is answerable.
 
 ### Changed
