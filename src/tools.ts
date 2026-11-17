@@ -36,12 +36,18 @@ import {
   TimeRangeSchema,
 } from "./types.js";
 
+/**
+ * `attrs` carries PARSED argument values onto the tool span, so a check can
+ * read what the server understood (a boolean sent as the string "false", for
+ * example) from traces rather than from the caller's request.
+ */
 async function instrumentTool<T>(
   toolName: string,
   fn: () => Promise<T>,
+  attrs: Record<string, string | number | boolean> = {},
 ): Promise<T> {
   return withRequestId(newRequestId(), () =>
-    withSpan(`tool.${toolName}`, { "mcp.tool": toolName }, fn),
+    withSpan(`tool.${toolName}`, { "mcp.tool": toolName, ...attrs }, fn),
   );
 }
 
@@ -144,7 +150,9 @@ async function instrumentSearchTool<T>(
     rerankApplied: boolean;
   }>,
 ): Promise<T> {
-  return instrumentTool(toolName, () => withSearchEvents(toolName, ctx, fn));
+  return instrumentTool(toolName, () => withSearchEvents(toolName, ctx, fn), {
+    "search.expand": ctx.expand === true,
+  });
 }
 
 const DomainProfileSchema = optionalArg(z.string().optional()).describe(
@@ -564,32 +572,38 @@ export async function handleCrawlSite({
   include_path?: string;
   exclude_path?: string;
 }) {
-  return instrumentTool("crawl_site", async () => {
-    const t0 = Date.now();
-    events.crawlRequested({ url, max_pages, same_domain_only });
-    const manifest = await crawlSite(
-      url,
-      max_pages,
-      same_domain_only,
-      include_path,
-      exclude_path,
-    );
-    const latency_ms = Date.now() - t0;
-    events.crawlCompleted({
-      url,
-      strategy: manifest.strategy,
-      page_count: manifest.page_count,
-      latency_ms,
-      cached: manifest.cached,
-    });
-    incCounter("crawl", {
-      outcome: manifest.strategy === "error" ? "error" : "success",
-    });
-    recordHistogram("tool.crawl_site", latency_ms / 1000, {});
-    return {
-      content: [{ type: "text" as const, text: formatCrawlManifest(manifest) }],
-    };
-  });
+  return instrumentTool(
+    "crawl_site",
+    async () => {
+      const t0 = Date.now();
+      events.crawlRequested({ url, max_pages, same_domain_only });
+      const manifest = await crawlSite(
+        url,
+        max_pages,
+        same_domain_only,
+        include_path,
+        exclude_path,
+      );
+      const latency_ms = Date.now() - t0;
+      events.crawlCompleted({
+        url,
+        strategy: manifest.strategy,
+        page_count: manifest.page_count,
+        latency_ms,
+        cached: manifest.cached,
+      });
+      incCounter("crawl", {
+        outcome: manifest.strategy === "error" ? "error" : "success",
+      });
+      recordHistogram("tool.crawl_site", latency_ms / 1000, {});
+      return {
+        content: [
+          { type: "text" as const, text: formatCrawlManifest(manifest) },
+        ],
+      };
+    },
+    { "crawl.same_domain_only": same_domain_only },
+  );
 }
 
 export async function handleClearCache({ target }: { target: string }) {
@@ -995,7 +1009,9 @@ export function registerTools(server: McpServer): void {
         z.coerce.number().min(1).max(100).default(20),
       ).describe("Maximum pages to crawl (default 20, max 100)"),
       same_domain_only: optionalBool(true).describe(
-        "Restrict crawl to the same domain (default true)",
+        "Keep only pages on the start URL's hostname, for every strategy (default true). " +
+          "false follows off-site links only when the server has BFS crawling enabled; " +
+          "otherwise the crawl stays on the site and the result says so",
       ),
       include_path: optionalArg(z.string().optional()).describe(
         "Only include URLs matching this path prefix (e.g. '/docs'); replaces the start URL's default scope, '/' for the whole site",

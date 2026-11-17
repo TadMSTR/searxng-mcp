@@ -412,7 +412,7 @@
           "maximum": 100
         },
         "same_domain_only": {
-          "description": "Restrict crawl to the same domain (default true)",
+          "description": "Keep only pages on the start URL's hostname, for every strategy (default true). false follows off-site links only when the server has BFS crawling enabled; otherwise the crawl stays on the site and the result says so",
           "default": true,
           "type": "boolean"
         },

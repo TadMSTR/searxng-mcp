@@ -100,6 +100,33 @@ function recordCrawlOutcome(
   recordTierAttempt(url, "crawl_firecrawl", outcome, reason).catch(() => {});
 }
 
+/**
+ * `same_domain_only: true` as one test for every strategy: a URL is kept only
+ * when its hostname equals the start URL's, the same comparison bfsCrawl
+ * applies to the links it follows. `dropped` counts what the filter removed so
+ * crawlSite can say so: a sitemap that lists `www.` URLs for an apex start URL
+ * otherwise comes back empty with no reason given.
+ */
+export interface HostFilter {
+  host: string;
+  dropped: number;
+}
+
+function onHost(url: string, host: string): boolean {
+  try {
+    return new URL(url).hostname === host;
+  } catch {
+    return false;
+  }
+}
+
+export function keepSameHost(urls: string[], filter?: HostFilter): string[] {
+  if (!filter) return urls;
+  const kept = urls.filter((u) => onHost(u, filter.host));
+  filter.dropped += urls.length - kept.length;
+  return kept;
+}
+
 async function pollFirecrawlJob(
   jobId: string,
 ): Promise<{ body: FirecrawlPollResponse } | { error: string }> {
@@ -136,6 +163,7 @@ export async function firecrawlCrawl(
   maxPages: number,
   includePath?: string,
   excludePath?: string,
+  hostFilter?: HostFilter,
 ): Promise<CrawlManifest | null> {
   if (!FIRECRAWL_URL) return null;
 
@@ -156,6 +184,12 @@ export async function firecrawlCrawl(
         body.crawlEntireDomain = true;
     }
     if (excludePath) body.excludePaths = [excludePath];
+
+    // No allowExternalLinks, whatever same_domain_only says. Firecrawl fetches
+    // from inside the deployment's network and crawlSite guards only the start
+    // URL, so following off-site links here would let a crawled page steer
+    // Firecrawl at an internal address. same_domain_only: false is served by
+    // BFS instead, whose every fetch is SSRF-guarded (see crawlSite).
 
     // Versioned via firecrawlEndpoint rather than a hardcoded prefix. This line
     // read `/v2/crawl` against a v1-only backend for the life of the feature.
@@ -210,6 +244,11 @@ export async function firecrawlCrawl(
     for (const page of poll.body.data) {
       const pageUrl = page.metadata?.sourceURL;
       if (!pageUrl) continue;
+      // Filtered before the content is cached, not after.
+      if (hostFilter && !onHost(pageUrl, hostFilter.host)) {
+        hostFilter.dropped++;
+        continue;
+      }
       const title = page.metadata?.title ?? pageUrl;
       const text = page.markdown ?? "";
       const snippet = makeSnippet(text);
@@ -357,10 +396,12 @@ export async function mapCrawl(
   includePath?: string,
   excludePath?: string,
   scope?: string,
+  hostFilter?: HostFilter,
 ): Promise<CrawlManifest | null> {
   let urls = await firecrawlMapUrls(url);
   if (!urls || urls.length === 0) return null;
 
+  urls = keepSameHost(urls, hostFilter);
   if (includePath) urls = urls.filter((u) => u.includes(includePath));
   if (excludePath) urls = urls.filter((u) => !u.includes(excludePath));
   if (scope) urls = urls.filter((u) => inCrawlScope(u, scope));
@@ -514,11 +555,14 @@ export async function sitemapCrawl(
   includePath?: string,
   excludePath?: string,
   scope?: string,
+  hostFilter?: HostFilter,
 ): Promise<CrawlManifest | null> {
   try {
     const origin = new URL(url).origin;
     let urls = await discoverSitemapUrls(origin);
     if (urls.length === 0) return null;
+
+    urls = keepSameHost(urls, hostFilter);
 
     if (includePath) urls = urls.filter((u) => u.includes(includePath));
     if (excludePath) urls = urls.filter((u) => !u.includes(excludePath));
@@ -683,14 +727,38 @@ export async function crawlSite(
 
   let manifest: CrawlManifest | null = null;
 
+  // same_domain_only. true: every strategy drops URLs off the start host.
+  // false: only BFS can follow off-site links safely — each page it visits
+  // goes through fetchPage, the same SSRF guard as fetch_url (assertPublicUrl
+  // and assertResolvedPublic), and its link-extraction re-fetch through
+  // safeFetch. Firecrawl, map and sitemap are never widened (see
+  // firecrawlCrawl), so with BFS disabled the crawl stays on the site and the
+  // manifest says so rather than ignoring the flag.
+  const startHost = new URL(url).hostname;
+  const hostFilter: HostFilter | undefined = sameDomainOnly
+    ? { host: startHost, dropped: 0 }
+    : undefined;
+  const offSiteViaBfs = !sameDomainOnly && CRAWL_BFS_ENABLED;
+  const offSiteNote =
+    !sameDomainOnly && !CRAWL_BFS_ENABLED
+      ? "same_domain_only=false: off-site links were not followed, because BFS crawling is disabled on this server; pages come from the site's own crawl, map or sitemap."
+      : undefined;
+
   // Phase 1: Firecrawl (scopes itself to the start URL's subpaths). An
   // explicit include_path needs crawlEntireDomain to reach outside them; a
   // backend without it skips to the strategies that honour include_path.
   if (
+    !offSiteViaBfs &&
     FIRECRAWL_URL &&
     (includePath === undefined || firecrawlCapabilities().crawlEntireDomain)
   ) {
-    manifest = await firecrawlCrawl(url, maxPages, includePath, excludePath);
+    manifest = await firecrawlCrawl(
+      url,
+      maxPages,
+      includePath,
+      excludePath,
+      hostFilter,
+    );
     if (manifest) {
       incCounter("crawl", { strategy: "firecrawl", outcome: "success" });
     }
@@ -700,21 +768,29 @@ export async function crawlSite(
   // is purpose-built for the same job and copes with sites whose sitemap is
   // absent, stale or split across nested indexes. Under v1 firecrawlMapUrls
   // short-circuits, so this costs a predicate and no request.
-  if (!manifest && FIRECRAWL_URL && firecrawlSupportsMap()) {
-    manifest = await mapCrawl(url, maxPages, includePath, excludePath, scope);
+  if (!offSiteViaBfs && !manifest && FIRECRAWL_URL && firecrawlSupportsMap()) {
+    manifest = await mapCrawl(
+      url,
+      maxPages,
+      includePath,
+      excludePath,
+      scope,
+      hostFilter,
+    );
     if (manifest) {
       incCounter("crawl", { strategy: "map", outcome: "fallback_map" });
     }
   }
 
   // Phase 2: Sitemap
-  if (!manifest) {
+  if (!offSiteViaBfs && !manifest) {
     manifest = await sitemapCrawl(
       url,
       maxPages,
       includePath,
       excludePath,
       scope,
+      hostFilter,
     );
     if (manifest) {
       incCounter("crawl", { strategy: "sitemap", outcome: "fallback_sitemap" });
@@ -740,18 +816,24 @@ export async function crawlSite(
   const scopeNote = scope
     ? `Limited to pages under ${scope}/ (the start URL's path); pass include_path "/" to crawl the whole site.`
     : undefined;
+  const droppedNote =
+    hostFilter && hostFilter.dropped > 0
+      ? `same_domain_only: ${hostFilter.dropped} URL(s) not on ${startHost} were dropped; pass same_domain_only false to keep them.`
+      : undefined;
+  const flagNotes = [offSiteNote, droppedNote].filter(Boolean).join(" ");
 
   if (!manifest) {
     incCounter("crawl", { strategy: "none", outcome: "error" });
+    const base = scope
+      ? `All crawl strategies failed: no sitemap entries under ${scope}/${CRAWL_BFS_ENABLED ? "" : " and BFS is disabled"}. ${scopeNote}`
+      : "All crawl strategies failed. No sitemap found and BFS is disabled.";
     return {
       strategy: "error",
       base_url: url,
       page_count: 0,
       pages: [],
       cached: false,
-      note: scope
-        ? `All crawl strategies failed: no sitemap entries under ${scope}/${CRAWL_BFS_ENABLED ? "" : " and BFS is disabled"}. ${scopeNote}`
-        : "All crawl strategies failed. No sitemap found and BFS is disabled.",
+      note: flagNotes ? `${base} ${flagNotes}` : base,
     };
   }
 
@@ -759,6 +841,9 @@ export async function crawlSite(
     manifest.note = manifest.note
       ? `${manifest.note}. ${scopeNote}`
       : scopeNote;
+  }
+  if (flagNotes) {
+    manifest.note = manifest.note ? `${manifest.note} ${flagNotes}` : flagNotes;
   }
 
   // Cache the manifest
