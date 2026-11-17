@@ -6,6 +6,53 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [3.32.0] - 2026-11-17
+
+Fixes several places that reported success while doing nothing, gives adblock-proxy a health
+endpoint, and checks the compose examples in CI.
+
+### Added
+
+- **adblock-proxy `GET /health`.** `200` with `{"status":"ok","network_filters":N,
+  "cosmetic_filters":M,"loaded_at":"..."}` once a rule set with network filters is loaded, `503`
+  with `"status":"no_filters"` otherwise. Only an origin-form request for exactly `/health` is
+  answered locally. A proxied `http://<host>/health` is an ordinary proxy request. The image has
+  a `HEALTHCHECK` on it (Node, since the image has no curl), and the standalone compose file
+  repeats it. See `docker/adblock-proxy/README.md`.
+- **The adblock list refresh workflow opens an issue when it fails** ("Adblock list refresh
+  failing"), or comments on the open one. It failed every week for two months unnoticed.
+
+### Fixed
+
+- **adblock-proxy logged `(undefined rules)` on every start.** It now logs the network and
+  cosmetic filter counts and each list's fetched size.
+- **adblock-proxy installed an empty rule set as if it were a good one.** If every list
+  failed, it passed all traffic while reporting a successful load. A load with no network
+  filters is now treated as failed: at startup the proxy runs without an engine and `/health`
+  reports `503`, and on a refresh it keeps the previous rule set and logs a warning.
+- **`crawl_site` `same_domain_only` was ignored by the Firecrawl, map and sitemap
+  strategies.** Only BFS received it. `true` now drops URLs off the start URL's hostname on
+  every strategy, and the result notes how many were dropped. `false` follows off-site links
+  only through BFS (`CRAWL_BFS_ENABLED`), where every page fetch is SSRF-guarded like
+  `fetch_url`. Without BFS the crawl stays on the site and the result says so. Firecrawl is never
+  asked to follow external links.
+- **Firecrawl crawl error reasons** (start, poll and crawl errors, shown by `domain_stats`) are
+  bounded to 200 characters and kept to one line. Relayed upstream error text in fetch failure
+  reasons is now also collapsed to one line.
+
+### Changed
+
+- The `same_domain_only` description in `crawl_site`'s schema says what the flag does. This
+  is the only change to the published tool list.
+- Tool spans carry the parsed argument values: `crawl.same_domain_only` on `tool.crawl_site`
+  and `search.expand` on the three search tools.
+- CI parses every compose file in `examples/` in an empty environment and checks that the
+  local paths they name exist.
+- Every `actions/checkout` in the CI, image-publish and secret-scan workflows sets
+  `persist-credentials: false`.
+- The vendored EasyList and EasyPrivacy lists for playwright-adblock are refreshed.
+- Comments and docs no longer name a particular deployment.
+
 ## [3.31.1] - 2026-11-17
 
 Fixes a 3.31.0 regression in boolean arguments, narrows where `GITHUB_TOKEN` is sent, and
