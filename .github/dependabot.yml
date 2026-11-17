@@ -28,6 +28,15 @@ updates:
     groups:
       dev-dependencies:
         dependency-type: "development"
+      # The @opentelemetry/* packages release together and pin each other, so
+      # one PR per package can leave each unmergeable alone: the shatter the
+      # github-actions entry below describes. Two groups, for the reason that
+      # entry gives (security updates are never grouped with version ones).
+      opentelemetry:
+        patterns: ["@opentelemetry/*"]
+      opentelemetry-security:
+        applies-to: security-updates
+        patterns: ["@opentelemetry/*"]
     ignore:
       - dependency-name: "*"
         update-types: ["version-update:semver-major"]
