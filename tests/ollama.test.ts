@@ -398,7 +398,7 @@ describe("F-01: cleartext LLM credential warning", () => {
 // `options: { think: false }` therefore never suppressed a single reasoning
 // trace. This shipped because the only thinking-disabled assertion in this file
 // covered the LLM_BASE_URL branch — the branch that worked — while the Ollama
-// branch that forge actually runs had none.
+// branch most deployments actually run had none.
 //
 // These assert the body EXACTLY, via toEqual on the full parsed object. A
 // toMatchObject/subset comparison passes on the buggy body too, because it

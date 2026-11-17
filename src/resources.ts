@@ -18,7 +18,8 @@
 // unhandled primitive could fall through.
 //
 // Consequence: these two Resources are reachable from direct MCP clients
-// (Claude Desktop, LibreChat) and NOT from forge agents behind scoped-mcp.
+// (Claude Desktop, LibreChat) and NOT from agents behind an MCP proxy that
+// forwards tools only.
 // Related to but distinct from the known issue that the proxy freezes the tool
 // list at start — this is a primitive that is not proxied at all.
 //
@@ -42,8 +43,8 @@
 // credential-shaped env var is missing from it. Add new credentials THERE.
 //
 // Every URL that is emitted goes through `redactUrlCredentials`, because we
-// accept Basic Auth in SEARXNG_URL and forge's CACHE_URL carries an inline
-// password. An unredacted config Resource hands those to every connected
+// accept Basic Auth in SEARXNG_URL and a deployment's CACHE_URL may carry an
+// inline password. An unredacted config Resource hands those to every connected
 // client, which is a wider audience than a log file.
 
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";

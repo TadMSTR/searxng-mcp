@@ -206,7 +206,7 @@ function resultToTier(
  * The route was `/task/{id}`, which does not exist on 0.8.6 — it 404s, the
  * `!resp.ok` guard returned null, and the tier recorded an ordinary miss. That
  * spelling is still printed in upstream's own installation doc, which is
- * probably why two forge repos wrote it independently; the deployed
+ * probably why two independent integrations wrote it; the deployed
  * /openapi.json is the only authority.
  *
  * The response shape was also wrong, and repointing the route alone would not
@@ -335,11 +335,11 @@ export async function crawl4aiFetch(
       // ADBLOCK_PROXY_URL and it works there — but the two are not the same
       // thing. Tier 3 resolves the proxy hostname *in this process*; a
       // proxy_config in this body is resolved by *crawl4ai*, in its own
-      // container, and the containers are on disjoint networks:
+      // container, and in a typical deployment the two share no network:
       //
-      //   searxng-mcp    forge-net, searxng_fetch-net
-      //   crawl4ai       forge-net, jobsearch-deps
-      //   adblock-proxy  searxng_fetch-net ONLY
+      //   searxng-mcp    the shared network, and a fetch network
+      //   crawl4ai       the shared network, and its own
+      //   adblock-proxy  the fetch network ONLY
       //
       // So crawl4ai cannot resolve `adblock-proxy`, and every tier-2 crawl
       // returned net::ERR_PROXY_CONNECTION_FAILED — 100% failure, booked as an

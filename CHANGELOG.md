@@ -627,9 +627,8 @@ Dependency release. No application code changed.
 
   This is the third structurally identical OE-02 relay in this repo, after `src/fetch.ts`
   (Firecrawl's `data.error`) and `src/tiers/crawl4ai.ts` (Crawl4AI's `detail`/`error`). All
-  three are now recorded as accepted at Low in
-  `host-forge-build-reports/searxng-mcp-summarize-repair-2026-09/accepted-risks.md` — the
-  first two had been recommended by their own audits but never written down.
+  three are now recorded as accepted at Low in the project's security record — the first two
+  had been recommended by their own audits but never written down.
 
 ### Added
 
@@ -1056,7 +1055,7 @@ fetching worked for no one and now works** — the headline change is a deletion
   `pnpm audit --dev` runs as its own CI step — separate from `--prod`, so a red gate keeps
   meaning one thing.
 - Upstream error text relayed in the new per-tier failure reason is length-bounded. Accepted at
-  audit as `OE-02`; see `host-forge/security/accepted-risks.md`.
+  audit as `OE-02`.
 
 ### Internal
 - Coverage floor raised 72/65/74/74 → 84/77/83/86 against a measured

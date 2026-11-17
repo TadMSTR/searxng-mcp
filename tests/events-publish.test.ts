@@ -114,9 +114,9 @@ describe("publishEvent — connected", () => {
   });
 
   it("honours NATS_SUBJECT_PREFIX", async () => {
-    const m = await connected("forge");
+    const m = await connected("example");
     m.publishEvent("fetch.requested", {});
-    expect(h.state.published[0].subject).toBe("forge.fetch.requested");
+    expect(h.state.published[0].subject).toBe("example.fetch.requested");
   });
 
   it("never throws when publish itself throws", async () => {

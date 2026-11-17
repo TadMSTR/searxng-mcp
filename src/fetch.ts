@@ -130,7 +130,7 @@ interface TierOutcome {
  */
 // SECURITY[accepted]: relaying Firecrawl's upstream `data.error` verbatim, bounded
 // to 200 chars, is accepted rather than classified down to a canned reason. This
-// server is loopback-only and its callers are forge agents that already hold the
+// server is meant to be loopback-only and its callers already hold the
 // requested URL, so the text discloses nothing they do not have; every other
 // reason this path can carry is topology-safe by construction (see boundReason).
 // Dropping the upstream string would claw back the diagnostic value this whole

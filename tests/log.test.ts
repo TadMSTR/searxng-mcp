@@ -98,8 +98,8 @@ describe("redactUrlCredentialsInText — every userinfo shape, not just the colo
       "basic auth — SEARXNG_URL shape",
     ],
     // The gap the audit found. `scheme://TOKEN@host` has no colon in the userinfo,
-    // and the original regex required one. No credential on forge takes this shape
-    // today — but it is exactly how a bearer/PAT appears in a URL, and "no live
+    // and the original regex required one. No configured credential may take this
+    // shape today — but it is exactly how a bearer/PAT appears in a URL, and "no live
     // conduit today" is a fact about the present, not a property of the function.
     ["redis://tokenonly@cache.internal:6379", "tokenonly", "bare token"],
     [

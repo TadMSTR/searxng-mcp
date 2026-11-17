@@ -80,7 +80,7 @@ export function assertPublicUrl(url: string): void {
 //
 // Whitespace runs, newlines included, collapse to one space first. Every sink
 // is a single line (a log line, `domain_stats`' "| last fail: …" row), and a
-// relayed newline could forge a second line there. Same rule as ollama.ts's
+// relayed newline could fake a second line there. Same rule as ollama.ts's
 // sanitizeFailureDetail.
 export const MAX_RELAYED_TEXT_CHARS = 200;
 

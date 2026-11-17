@@ -50,9 +50,9 @@ export function resetLogThrottle(): void {
 }
 
 /**
- * Redact the password from a connection URL before logging it. Forge's cache
- * URL carries an inline password (`redis://:<pw>@host`), so logging it verbatim
- * would leak the secret into the PM2 log. Keeps host/port/db for diagnostics.
+ * Redact the password from a connection URL before logging it. A deployment's
+ * CACHE_URL may carry an inline password (`redis://:<pw>@host`), so logging it
+ * verbatim would leak the secret into the process log. Keeps host/port/db for diagnostics.
  */
 export function redactUrlCredentials(url: string): string {
   try {
@@ -89,8 +89,8 @@ export function redactUrlCredentialsInText(text: string): string {
   // that a bare `scheme://host@` was not a credential — but `scheme://TOKEN@host`
   // is precisely how a bearer token or a GitHub PAT appears in a URL, and that
   // form passed through unredacted (audit searxng-mcp-release-hygiene-2026-09,
-  // Low). No credential on forge takes that shape today; that is a fact about
-  // today, not a property of this function, and this function now backs five
+  // Low). That no configured credential takes that shape today is a fact about
+  // a deployment, not a property of this function, and this function now backs five
   // describeTransportFailure call sites, so a shape it misses leaks on all of
   // them at once.
   //

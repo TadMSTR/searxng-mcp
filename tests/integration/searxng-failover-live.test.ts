@@ -1,8 +1,9 @@
 /**
  * Failover against REAL HTTP servers, not a mocked `fetch`.
  *
- * forge runs exactly one SearXNG container, so preflight called for a stub
- * returning valid SearXNG JSON rather than skipping the multi-instance test.
+ * A single-instance deployment has no second SearXNG to fail over to, so this
+ * uses a stub returning valid SearXNG JSON rather than skipping the
+ * multi-instance test.
  * That stub is `startStubSearxng` below: a `node:http` server that answers
  * `/search` with a real SearXNG-shaped JSON body.
  *

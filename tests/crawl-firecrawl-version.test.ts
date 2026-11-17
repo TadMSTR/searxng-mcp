@@ -253,7 +253,7 @@ describe("firecrawlCrawl failures are logged and counted, not swallowed", () => 
 });
 
 describe("extractMapUrls", () => {
-  // Live shape from firecrawl 2.11.162 on forge: {url} objects with no title,
+  // Live shape from self-hosted firecrawl 2.11.162: {url} objects with no title,
   // which is NOT the {url, title} the migration plan assumed. Both are accepted
   // so the next shape change is not another silent dead path.
   it("reads the {url} objects the deployed backend actually returns", () => {
