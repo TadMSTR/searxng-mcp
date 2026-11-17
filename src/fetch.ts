@@ -123,16 +123,19 @@ interface TierOutcome {
  * to the caller rather than swallowing it. An error message is not a transport
  * for an arbitrary upstream payload.
  *
- * Only length is bounded, not content. Every reason this can carry is already
- * topology-safe by construction: SsrfBlockedError deliberately keeps the
+ * Content is filtered only for URL userinfo: a credentialed FIRECRAWL_URL makes
+ * Node's fetch() throw with the whole URL in the message. Otherwise the reasons
+ * are topology-safe by construction: SsrfBlockedError deliberately keeps the
  * resolved address off its message, raw.ts's redirect throw deliberately omits
  * the Location header, and the tier errors carry status codes rather than URLs.
  */
 // SECURITY[accepted]: relaying Firecrawl's upstream `data.error` verbatim, bounded
 // to 200 chars, is accepted rather than classified down to a canned reason. This
 // server is meant to be loopback-only and its callers already hold the
-// requested URL, so the text discloses nothing they do not have; every other
-// reason this path can carry is topology-safe by construction (see boundReason).
+// requested URL, so the text discloses nothing they do not have. Credentials in
+// a configured service URL are the exception, and boundRelayedText scrubs URL
+// userinfo before it bounds; every other reason this path can carry is
+// topology-safe by construction (see boundReason).
 // Dropping the upstream string would claw back the diagnostic value this whole
 // change exists to add — "All fetch tiers failed" telling an investigator nothing
 // is what cost weeks on vikunja#682. Audit: 2026-09-06/searxng-mcp-fix-pass-2026-09,
@@ -517,6 +520,11 @@ export async function fetchPage(
       // unchanged, only the set of URLs traversing it grew. Audit:
       // 2026-09-06/searxng-mcp-fix-pass-2026-09, finding SSRF-10 (Low) —
       // auditor's own disposition was "no action required from this build".
+      // Since 3.32.0 the URLs reaching tier 1 also include off-site links that
+      // a crawled page chose: crawl_site with same_domain_only false and BFS
+      // enabled sends them through fetchPage. So this residual covers URLs a
+      // third-party page author picked, not only URLs a caller supplied. BFS is
+      // off by default. Audit 2026-11-17, finding F-09 (Info).
       // SECURITY[control]: assertResolvedPublic runs once here, before any tier
       // dispatch, for every URL including PDFs.
 

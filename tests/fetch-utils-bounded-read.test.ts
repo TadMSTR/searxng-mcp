@@ -172,3 +172,38 @@ describe("boundRelayedText", () => {
     expect(boundRelayedText("poll 503")).toBe("poll 503");
   });
 });
+
+// A credentialed service URL (FIRECRAWL_URL=http://user:pass@host) makes Node's
+// fetch() throw with the whole URL in the message, and every relay of upstream
+// error text goes through boundRelayedText: crawl logs, domain_stats'
+// last_fail_reason, the fetch tiers' reasons.
+describe("boundRelayedText scrubs URL credentials", () => {
+  const SECRET = "s3cr3tPassw0rd";
+  const NODE_MSG = (u: string) =>
+    `start error: Request cannot be constructed from a URL that includes credentials: ${u}/v1/crawl`;
+
+  it.each([
+    ["user:pass", `http://fc:${SECRET}@firecrawl:3002`],
+    ["token only", `http://${SECRET}@firecrawl:3002`],
+    ["https", `https://u:${SECRET}@fc.example`],
+    ["redis", `redis://:${SECRET}@cache:6379`],
+    ["upper-case scheme", `HTTP://u:${SECRET}@fc`],
+  ])("%s", (_name, url) => {
+    const out = boundRelayedText(NODE_MSG(url));
+    expect(out).not.toContain(SECRET);
+    expect(out).toContain("<redacted>@");
+  });
+
+  it("scrubs before collapsing whitespace, so a newline next to the URL changes nothing", () => {
+    const out = boundRelayedText(`error:\nhttp://u:${SECRET}@fc:3002/x`);
+    expect(out).toBe("error: http://<redacted>@fc:3002/x");
+  });
+
+  it("scrubs before truncating, so a cut cannot leave part of a password", () => {
+    // The cap lands inside the password: truncate-then-scrub would leave a
+    // prefix with no '@' for the pattern to anchor on.
+    const lead = "x".repeat(MAX_RELAYED_TEXT_CHARS - 12);
+    const out = boundRelayedText(`${lead} http://u:${SECRET}@fc/`);
+    expect(out).not.toContain(SECRET.slice(0, 4));
+  });
+});
