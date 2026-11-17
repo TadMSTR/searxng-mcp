@@ -188,12 +188,16 @@ async function runTier<T extends TierResult | null>(
       onOutcome?.({ tier, reason: CHALLENGE_MISS_REASON });
       return null as T;
     }
-    const reason = err instanceof Error ? err.message : "error";
+    // Scrubbed and bounded once, before any sink: the NATS event, the
+    // domain-db record and the caller's outcome all get the same text.
+    const reason = boundRelayedText(
+      err instanceof Error ? err.message : "error",
+    );
     incCounter("fetch", { tier, outcome: "error" });
     recordHistogram("fetch", latency_ms / 1000, { tier, outcome: "error" });
     events.fetchTierMiss({ url, tier, reason, latency_ms });
     recordTierAttempt(url, tier, "error", reason).catch(() => {});
-    onOutcome?.({ tier, reason: boundRelayedText(reason) });
+    onOutcome?.({ tier, reason });
     return null as T;
   }
 }

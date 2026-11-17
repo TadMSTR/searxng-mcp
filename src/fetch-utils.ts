@@ -71,10 +71,12 @@ export function assertPublicUrl(url: string): void {
 // SECURITY[control]: URL userinfo is scrubbed, then length is bounded. The
 // scrub comes first so a cut can't split a credential past the pattern. Node's
 // fetch() rejects a credentialed URL (a FIRECRAWL_URL with `user:pass@`, say)
-// with an error message that holds the whole URL, and that message reaches
-// every caller of this function. No other content filter: SsrfBlockedError
-// omits the resolved address and raw.ts's redirect throw omits Location, both
-// deliberately. Audit finding OE-02 (Low), Ted 2026-09-06.
+// with an error message that holds the whole URL. The scrub covers only text
+// that passes through this function: a sink handed the raw message is not
+// covered, which is why runTier bounds its reason once before every sink and
+// events.ts scrubs every published string itself. No other content filter:
+// SsrfBlockedError omits the resolved address and raw.ts's redirect throw
+// omits Location, both deliberately. Audit finding OE-02 (Low), Ted 2026-09-06.
 //
 // Lives here rather than in fetch.ts because fetch.ts imports hister.ts, so a
 // hister.ts -> fetch.ts import would be circular. It was a private helper in

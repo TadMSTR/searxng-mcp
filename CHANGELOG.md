@@ -47,9 +47,11 @@ endpoint, and checks the compose examples in CI.
   log lines.
 - **Error text relayed from upstream could include credentials from a configured service
   URL.** Node's `fetch()` rejects a URL with `user:password@` and puts the whole URL in its
-  error message, which reached log lines and `domain_stats`. URL userinfo is now scrubbed from
-  all relayed text before it is bounded. The redaction pattern now caps the scheme it scans
-  for, so long crafted text can no longer make it take seconds.
+  error message, which reached log lines, `domain_stats` and the NATS `fetch.tier.miss` event.
+  URL userinfo is now scrubbed from that text before it is bounded, and every string in every
+  NATS event is scrubbed before it is published. Passwords that hold an unencoded `@` or `/`
+  are now scrubbed whole. The redaction pattern now caps the scheme it scans for, so long
+  crafted text can no longer make it take seconds.
 - **`crawl_site` cached an empty manifest when `same_domain_only` dropped every Firecrawl
   page** (a `www.` crawl for a bare domain, say), and skipped the map, sitemap and BFS
   strategies. It now falls back to them.
