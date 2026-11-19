@@ -1,0 +1,16 @@
+# Settings only: this is not a multi-package workspace. The docker/*
+# sub-projects are separate npm projects with their own lockfiles, and with no
+# `packages:` key pnpm treats only the root as a project.
+#
+# minimumReleaseAge (minutes): never resolve a version younger than three days.
+# Dependabot runs pnpm with its own release-age window, and since our lockfile
+# is re-checked against it, one lockfile entry younger than that window fails
+# the whole npm update job (ERR_PNPM_NO_MATURE_MATCHING_VERSION). That happened
+# 2026-11-16: a relock picked up a hono release nine hours old, and every
+# Dependabot npm run failed after it, including one 30 hours later. Holding our
+# own relocks to the same kind of window keeps the lockfile inside it, and is a
+# supply-chain delay in its own right.
+#
+# A security fix that cannot wait goes in minimumReleaseAgeExclude, pinned to
+# the exact patched version (`pkg@x.y.z`), and comes out once it has aged.
+minimumReleaseAge: 4320
