@@ -230,6 +230,14 @@ function retryStartupLoad({
 
   const run = async () => {
     timer = null;
+    // A scheduled refresh may have installed an engine since this retry was
+    // scheduled. Don't download and parse every list again.
+    if (state.engine) {
+      console.log(
+        `[adblock-proxy] startup retry ${attempt} not needed — filters already loaded`,
+      );
+      return;
+    }
     try {
       await load();
     } catch (err) {

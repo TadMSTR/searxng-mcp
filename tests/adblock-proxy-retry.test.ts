@@ -157,6 +157,21 @@ describe("retryStartupLoad", () => {
     expect(load).not.toHaveBeenCalled();
   });
 
+  it("a pending retry does nothing once a refresh has installed an engine", async () => {
+    const load = flakyLoad(Number.POSITIVE_INFINITY);
+    proxy.retryStartupLoad({ load, maxMinutes: 30 });
+    expect(vi.getTimerCount()).toBe(1);
+    // The periodic refresh recovers before the first retry fires.
+    await proxy.loadFilters({
+      urls: [LIST],
+      fetchImpl: async () => new Response(FIXTURE, { status: 200 }),
+    });
+    expect(proxy.state.engine).not.toBeNull();
+    await vi.advanceTimersByTimeAsync(MIN);
+    expect(load).not.toHaveBeenCalled();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
   it("a load that throws is logged and retried, not fatal", async () => {
     const load = vi.fn(async () => {
       throw new Error("boom\nsecond line");

@@ -97,7 +97,10 @@ services:
   next. Once a load succeeds the retries stop, and the regular
   `ADBLOCK_REFRESH_HOURS` refresh (counted from startup) carries on. A failed
   *scheduled* refresh is not retried early: the previous rule set still filters, and
-  `/health` turns `stale` only after two missed intervals.
+  `/health` turns `stale` only after two missed intervals. The retry covers only a
+  start with no rule set: a *partial* startup load (one list fetched, another failed)
+  installs an engine, so it is not retried, and it stays partial until the next
+  scheduled refresh fetches every list. `/health` reports `partial` meanwhile.
 
 ## Health endpoint
 
