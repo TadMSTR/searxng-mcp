@@ -8,7 +8,7 @@
     "start": "node proxy.js"
   },
   "dependencies": {
-    "@ghostery/adblocker": "^2.3.0"
+    "@ghostery/adblocker": "^2.20.3"
   },
   "engines": {
     "node": "^22.22.2 || >=24.15.0"
