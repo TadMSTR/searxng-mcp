@@ -72,6 +72,7 @@ services:
 | `PORT` | `8118` | Listen port (Privoxy conventional port) |
 | `ADBLOCK_FILTERS_URL` | EasyList + EasyPrivacy | Comma-separated filter list URLs |
 | `ADBLOCK_REFRESH_HOURS` | `168` | Filter refresh interval in hours (0 = no refresh) |
+| `ADBLOCK_RETRY_MAX_MINUTES` | `30` | Cap on the delay between retries after a failed startup load (see below). A value below 1 or not a number uses the default |
 | `LOG_BLOCKED` | `false` | Log blocked request URLs to stdout |
 
 ## How it works
@@ -89,6 +90,14 @@ services:
   engine and `/health` reports `503`; on a refresh it keeps the previous rule set and
   logs a `WARNING`. The startup log line reports the network and cosmetic filter
   counts and how many lists were fetched.
+
+- **Retry after a failed startup load**: with no engine, the proxy retries the load
+  after 1, 2, 4, 8 and 16 minutes, then every `ADBLOCK_RETRY_MAX_MINUTES` (30), until
+  one succeeds. Each retry logs one line with its attempt number and the delay to the
+  next. Once a load succeeds the retries stop, and the regular
+  `ADBLOCK_REFRESH_HOURS` refresh (counted from startup) carries on. A failed
+  *scheduled* refresh is not retried early: the previous rule set still filters, and
+  `/health` turns `stale` only after two missed intervals.
 
 ## Health endpoint
 
