@@ -207,3 +207,57 @@ describe("domains.ts — operator tier skips", () => {
     expect(m.getOperatorTierSkips("https://b.example/p")).toEqual(["tier2"]);
   });
 });
+
+// The image shipped without domains.json until 4.0.0 and the load failure was
+// silent. These pin the two log lines: the counts line CI's image smoke test
+// greps for, and the warning that names the path when the file is missing.
+describe("domains.ts — load logging", () => {
+  let errSpy: ReturnType<typeof vi.spyOn>;
+  beforeEach(() => {
+    errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+  });
+  afterEach(() => {
+    errSpy.mockRestore();
+  });
+  const lines = () => errSpy.mock.calls.map((c) => c.map(String).join(" "));
+
+  it("logs the counts for the repo's real domains.json", async () => {
+    const actualFs = await vi.importActual<typeof import("node:fs")>("node:fs");
+    const { fileURLToPath } = await import("node:url");
+    const repoFile = fileURLToPath(new URL("../domains.json", import.meta.url));
+    const real = JSON.parse(actualFs.readFileSync(repoFile, "utf-8"));
+    const m = await loadWith(real);
+    errSpy.mockClear();
+    m.loadDomainConfig(repoFile);
+    expect(lines()).toEqual([
+      `[searxng-mcp] domains: llms_txt=${real.llms_txt.length} boost=${real.boost.length} block=${real.block.length} profiles=${Object.keys(real.profiles).length}`,
+    ]);
+    // The smoke test's condition, against the shipped file.
+    expect(real.llms_txt.length).toBeGreaterThan(0);
+  });
+
+  it("warns, naming the path, when the file does not exist", async () => {
+    const m = await loadWith({ boost: ["kept.example"], block: [] });
+    errSpy.mockClear();
+    const err = Object.assign(new Error("ENOENT: no such file"), {
+      code: "ENOENT",
+    });
+    h.state.throwOnRead = err;
+    m.loadDomainConfig("/nonexistent/domains.json");
+    expect(lines()).toHaveLength(1);
+    expect(lines()[0]).toContain("WARNING");
+    expect(lines()[0]).toContain("/nonexistent/domains.json");
+    expect(lines()[0]).toContain("ENOENT");
+    // A failed reload keeps the last good config rather than emptying it.
+    expect(m.getBoostList()).toEqual(["kept.example"]);
+  });
+
+  it("rejects a top-level null or array without corrupting the config", async () => {
+    for (const bad of ["null", "[]", "42"]) {
+      const m = await loadWith(bad);
+      expect(lines().at(-1)).toContain("not valid JSON");
+      expect(m.getBlockList()).toEqual([]);
+      expect(m.applyDomainFilters([r("https://a.example/x")])).toHaveLength(1);
+    }
+  });
+});

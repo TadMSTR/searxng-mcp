@@ -103,6 +103,13 @@ jobs:
           echo "runtime uid -> $uid"
           [ "$uid" = 1000 ]
 
+          # domains.json ships in the image (4.0.0). Without it the llms.txt
+          # allowlist, boost/block lists and profiles are silently empty, which
+          # is how every image before 4.0.0 ran.
+          domains=$(docker logs sxng-publish 2>&1 | grep -oE 'domains: llms_txt=[0-9]+' | head -n 1 || true)
+          echo "domains config -> ${domains:-no domains: line}"
+          [ -n "$domains" ] && [ "${domains##*=}" -gt 0 ]
+
       - name: Container logs
         if: always()
         run: docker logs sxng-publish || true

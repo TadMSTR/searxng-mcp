@@ -2,9 +2,9 @@
 # Blocks plain-HTTP ad/tracker requests. HTTPS CONNECT is tunneled without MITM.
 #
 # Base image pinned by digest (security check DC-01). To update:
-#   docker pull node:20-alpine
-#   docker inspect node:20-alpine --format '{{index .RepoDigests 0}}'
-FROM node:20-alpine@sha256:fb4cd12c85ee03686f6af5362a0b0d56d50c58a04632e6c0fb8363f609372293
+#   docker pull node:24-alpine
+#   docker inspect node:24-alpine --format '{{index .RepoDigests 0}}'
+FROM node:24-alpine@sha256:116b800c3754b440ee0aa3ed2f20f5bf3d99a554bfd9adeea09ea8017f6e85f5
 
 RUN addgroup -S proxy && adduser -S proxy -G proxy
 

@@ -66,7 +66,7 @@ All service URLs are configurable via environment variables.
 
 # Prerequisites and service setup
 
-**Runtime:** Node.js 20+, and pnpm (or npm).
+**Runtime:** Node.js `^22.22.2` or `>=24.15.0` (the container images use Node 24), and pnpm (or npm).
 
 ## Required
 

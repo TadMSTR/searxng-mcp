@@ -1,10 +1,11 @@
 # syntax=docker/dockerfile:1
 
-# node:22-alpine, pinned by multi-arch index digest. alpine is safe here because
-# nothing in the dependency tree is native — jsdom and undici are pure JS — so
-# there is no build toolchain in either stage. If a future dependency needs one,
-# move to node:22-slim rather than adding build-essential to the runtime image.
-ARG NODE_IMAGE=node:22-alpine@sha256:c610fcdfb1d5b4740dd70c284ed3cb16bb857e0f7166196e36a5501df7a3aa32
+# node:24-alpine (Node 24 is LTS until 2028-04-30), pinned by multi-arch index
+# digest. alpine is safe here because nothing in the dependency tree is native —
+# jsdom and undici are pure JS — so there is no build toolchain in either stage.
+# If a future dependency needs one, move to node:24-slim rather than adding
+# build-essential to the runtime image.
+ARG NODE_IMAGE=node:24-alpine@sha256:116b800c3754b440ee0aa3ed2f20f5bf3d99a554bfd9adeea09ea8017f6e85f5
 
 FROM ${NODE_IMAGE} AS base
 # pnpm, not npm: package-lock.json is gitignored and only pnpm-lock.yaml is the
@@ -42,6 +43,11 @@ COPY --from=prod-deps /app/node_modules ./node_modules
 COPY --from=build /app/build ./build
 # Read at runtime by src/version.ts.
 COPY package.json ./
+# Read at runtime by src/domains.ts from the package root (/app): the llms.txt
+# allowlist, boost/block lists and profiles. Images before 4.0.0 shipped without
+# it and every list was silently empty. Bind-mount your own over
+# /app/domains.json to change it; the server hot-reloads it.
+COPY domains.json ./
 
 # uid/gid 1000, provided by the base image.
 USER node
