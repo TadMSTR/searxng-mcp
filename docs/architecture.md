@@ -355,7 +355,7 @@ Standard OTEL env vars apply (`OTEL_SERVICE_NAME` defaults to `searxng-mcp`).
 
 Every span and metric carries the resource attributes the SDK detects by default: `service.name`, the `host.*` and `process.*` sets and, since 4.0.0 (OpenTelemetry JS SDK 0.300+), `os.*` and a `service.instance.id`. That id is a fresh random UUID on every process start, so a restart shows up as a new instance. Group by `service.name` for continuity across restarts. Set `OTEL_RESOURCE_ATTRIBUTES=service.instance.id=<name>` if you need a stable one.
 
-**Proxy variables apply to OTLP export.** Since 4.0.0, on Node 22.21+ and 24.5+, the OTLP HTTP exporters honour `HTTP_PROXY`, `HTTPS_PROXY` and `NO_PROXY`. A deployment that sets a proxy variable for some other reason will send its traces and metrics through that proxy too. Add the collector's host to `NO_PROXY` if that is not what you want. `ADBLOCK_PROXY_URL` is read by this server's own code, not by Node, and does not affect OTLP.
+**Proxy variables do not apply to OTLP export.** The OTLP HTTP exporters connect through their own `http.Agent`, which ignores `HTTP_PROXY`, `HTTPS_PROXY` and `NO_PROXY` (and `NODE_USE_ENV_PROXY`). Traces and metrics always go straight to the collector, so a proxy variable cannot be used to route or restrict telemetry egress: control that at the network level. `ADBLOCK_PROXY_URL` is read by this server's own code and does not affect OTLP either.
 
 **NATS events** — set `NATS_URL` (e.g. `nats://localhost:4222`) and the server publishes a structured event on every search, fetch, cache hit/miss, robots skip, and error. Authenticates via `NATS_CREDS` (a JWT creds file) or `NATS_USER`/`NATS_PASSWORD` (bcrypt username/password) — creds-file auth wins if both are set. Subjects:
 

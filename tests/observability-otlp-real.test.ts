@@ -46,11 +46,11 @@ beforeEach(async () => {
   // fallback off means only the reader observability.ts passes can export.
   vi.stubEnv("OTEL_METRICS_EXPORTER", "none");
   vi.stubEnv("OTEL_TRACES_EXPORTER", "none");
-  // The OTLP HTTP exporters honour proxy variables since sdk 0.300 on recent
-  // Node. A developer machine or CI runner with HTTP_PROXY set would send this
-  // test's export to the proxy instead of the local server.
-  vi.stubEnv("NO_PROXY", "127.0.0.1");
-  vi.stubEnv("no_proxy", "127.0.0.1");
+  // A per-signal endpoint takes precedence over OTEL_EXPORTER_OTLP_ENDPOINT,
+  // so one set in the runner's environment would send the export elsewhere
+  // and fail these tests for a reason they don't guard.
+  vi.stubEnv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "");
+  vi.stubEnv("OTEL_EXPORTER_OTLP_METRICS_ENDPOINT", "");
   errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
   vi.resetModules();
 });
@@ -113,7 +113,7 @@ describe("emitGauges against the real SDK", () => {
     const ok = await emitGauges({
       domains_tracked: 7,
       domains_failing: 1,
-      tier_success_ratio: [{ tier: "raw", ratio: 0.5 }],
+      tier_success_ratio: [{ tier: "tier3", ratio: 0.5 }],
     });
 
     expect(ok).toBe(true);
