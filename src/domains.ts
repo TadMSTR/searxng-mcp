@@ -11,6 +11,46 @@ const DOMAINS_PATH = resolve(__dirname, "../../domains.json");
 
 let domainConfig: DomainConfig = { boost: [], block: [], profiles: {} };
 
+class DomainConfigShapeError extends Error {}
+
+const isStringList = (v: unknown): boolean =>
+  Array.isArray(v) && v.every((x) => typeof x === "string");
+const isPlainObject = (v: unknown): v is Record<string, unknown> =>
+  v !== null && typeof v === "object" && !Array.isArray(v);
+
+/**
+ * Why a parsed domains.json can't be used, or null when it can. The lists are
+ * read with `.some()` / spread on every search and fetch, so a wrong-shaped
+ * field (`"boost": 5`, a profile that is a string) used to load cleanly and
+ * then throw at request time. The whole file is refused instead, which keeps
+ * the previous config. tier_skip values are not checked here:
+ * getOperatorTierSkips already ignores a non-array one.
+ */
+function domainConfigShapeError(parsed: unknown): string | null {
+  if (!isPlainObject(parsed)) return "top level is not an object";
+  for (const key of ["boost", "block", "llms_txt", "adblock_skip"]) {
+    if (parsed[key] !== undefined && !isStringList(parsed[key])) {
+      return `"${key}" is not a list of strings`;
+    }
+  }
+  if (parsed.tier_skip !== undefined && !isPlainObject(parsed.tier_skip)) {
+    return `"tier_skip" is not an object`;
+  }
+  if (parsed.profiles !== undefined) {
+    if (!isPlainObject(parsed.profiles)) return `"profiles" is not an object`;
+    // Profile names are left out of the messages: they are free operator text.
+    for (const profile of Object.values(parsed.profiles)) {
+      if (!isPlainObject(profile)) return "a profile is not an object";
+      for (const key of ["boost", "block"]) {
+        if (profile[key] !== undefined && !isStringList(profile[key])) {
+          return `a profile's "${key}" is not a list of strings`;
+        }
+      }
+    }
+  }
+  return null;
+}
+
 /**
  * Read domains.json (default: the package root's copy). Logs one line with the
  * counts on success, and a WARNING naming the path when the file can't be read
@@ -28,13 +68,8 @@ export function loadDomainConfig(path: string = DOMAINS_PATH): void {
     // replace the live config and then throw on the first `??=`, leaving the
     // module with a null config that every later lookup crashed on.
     const parsed: unknown = JSON.parse(raw);
-    if (
-      parsed === null ||
-      typeof parsed !== "object" ||
-      Array.isArray(parsed)
-    ) {
-      throw new SyntaxError("top level is not an object");
-    }
+    const shapeError = domainConfigShapeError(parsed);
+    if (shapeError) throw new DomainConfigShapeError(shapeError);
     const next = parsed as DomainConfig;
     next.boost ??= [];
     next.block ??= [];
@@ -49,9 +84,11 @@ export function loadDomainConfig(path: string = DOMAINS_PATH): void {
     // Keep the previous config: empty at startup, the last good one on a hot
     // reload of a half-written file.
     const reason =
-      err instanceof SyntaxError
-        ? "not valid JSON"
-        : ((err as NodeJS.ErrnoException).code ?? "unreadable");
+      err instanceof DomainConfigShapeError
+        ? err.message
+        : err instanceof SyntaxError
+          ? "not valid JSON"
+          : ((err as NodeJS.ErrnoException).code ?? "unreadable");
     logWarn(
       `WARNING: domains config ${path} not loaded (${reason}); keeping the previous one (at startup: empty llms.txt allowlist, boost/block lists and profiles)`,
     );

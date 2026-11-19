@@ -20,6 +20,7 @@ interface Proxy {
   }) => Promise<boolean>;
   healthBody: () => { code: number; body: Record<string, unknown> };
   retryDelayMinutes: (attempt: number, maxMinutes?: number) => number;
+  parseRetryMaxMinutes: (raw: string | undefined) => number;
   retryStartupLoad: (opts?: {
     load?: () => Promise<unknown>;
     maxMinutes?: number;
@@ -171,6 +172,13 @@ describe("retryStartupLoad", () => {
 });
 
 describe("ADBLOCK_RETRY_MAX_MINUTES", () => {
+  it("never yields a delay setTimeout would clamp to 1 ms", () => {
+    for (const raw of ["999999999", "35792", "1441"]) {
+      const minutes = proxy.parseRetryMaxMinutes(raw);
+      expect(minutes * 60 * 1000).toBeLessThanOrEqual(2 ** 31 - 1);
+    }
+  });
+
   function freshProxy(value: string | undefined): Proxy {
     const resolved = require_.resolve(PROXY_PATH);
     delete require_.cache[resolved];
@@ -189,6 +197,14 @@ describe("ADBLOCK_RETRY_MAX_MINUTES", () => {
     ["0", 30],
     ["-3", 30],
     ["abc", 30],
+    ["1440", 1440],
+    [" 5 ", 5],
+    // Past one day is refused: above ~35,791 minutes setTimeout would clamp
+    // the delay to 1 ms and the retry would spin.
+    ["1441", 30],
+    ["36000", 30],
+    ["1e3", 30],
+    ["7.5", 30],
   ])("value %s caps the delay at %i minutes", (value, cap) => {
     const p = freshProxy(value);
     expect(p.retryDelayMinutes(20)).toBe(cap);

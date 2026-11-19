@@ -39,7 +39,9 @@
 # the matching release tag), under a scratch tag: <local-tag>-REGRESSION in
 # build mode, playwright-adblock:verify-control in --image mode.
 #
-# Exit codes: 0 PASS, 1 FAIL, 2 usage error or refused argument.
+# Exit codes: 0 PASS, 1 FAIL, 2 usage error or refused argument. Any other
+# non-zero status is an unexpected error from a command the script ran (set -e):
+# treat it as "not verified", never as a pass.
 #
 # -e is on, so the two `grep -c` calls below are explicitly guarded: grep exits
 # 1 when it matches nothing, and "matches nothing" is the EXPECTED result for
@@ -58,7 +60,10 @@ case "${1:-}" in
     exit 0
     ;;
   --image)
-    [ $# -eq 2 ] && [ -n "$2" ] || { echo "usage: $0 --image <repo:tag@sha256:...>" >&2; exit 2; }
+    if [ $# -ne 2 ] || [ -z "$2" ]; then
+      echo "usage: $0 --image <repo:tag@sha256:...>" >&2
+      exit 2
+    fi
     MODE=image
     IMAGE="$2"
     CONTROL=playwright-adblock:verify-control

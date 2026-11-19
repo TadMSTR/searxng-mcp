@@ -72,7 +72,7 @@ services:
 | `PORT` | `8118` | Listen port (Privoxy conventional port) |
 | `ADBLOCK_FILTERS_URL` | EasyList + EasyPrivacy | Comma-separated filter list URLs |
 | `ADBLOCK_REFRESH_HOURS` | `168` | Filter refresh interval in hours (0 = no refresh) |
-| `ADBLOCK_RETRY_MAX_MINUTES` | `30` | Cap on the delay between retries after a failed startup load (see below). A value below 1 or not a number uses the default |
+| `ADBLOCK_RETRY_MAX_MINUTES` | `30` | Cap, in minutes, on the delay between retries after a failed startup load (see below). A whole number from 1 to 1440; anything else uses the default and logs a warning |
 | `LOG_BLOCKED` | `false` | Log blocked request URLs to stdout |
 
 ## How it works

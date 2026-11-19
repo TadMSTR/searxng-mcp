@@ -49,9 +49,11 @@ failed startup load instead of running unfiltered for a week. The MCP tool surfa
   reason if the file can't be read or parsed. A missing file is still not fatal. The image smoke
   tests in CI and before publishing check for the counts line, so an image without the file
   can't be published.
-- **A `domains.json` whose top level is `null`, an array or a bare value** used to leave the
-  server with a null config that broke every later lookup. It is now rejected like any
-  unparseable file. A failed hot reload keeps the last good config.
+- **A malformed `domains.json` broke searches instead of being refused.** A top level that
+  is `null`, an array or a bare value left the server with a null config, and a wrong-typed
+  field (`"boost": 5`, a profile that isn't an object) loaded and then threw on every search.
+  Both are now refused at load with a `WARNING` naming the field, and the previous config is
+  kept (at startup, the empty one). A failed hot reload keeps the last good config.
 - **adblock-proxy ran unfiltered for up to a week after a failed startup load.** With no rule
   set, it now retries after 1, 2, 4, 8 and 16 minutes, then every `ADBLOCK_RETRY_MAX_MINUTES`,
   until a load succeeds, logging one line per retry. A failed scheduled refresh is unchanged:
@@ -60,12 +62,18 @@ failed startup load instead of running unfiltered for a week. The MCP tool surfa
 ### Added
 
 - **`ADBLOCK_RETRY_MAX_MINUTES`** (adblock-proxy, default `30`): the cap on the startup retry
-  delay.
+  delay. It must be a whole number from 1 to 1440. Anything else uses the default and logs a
+  warning.
 - **`verify-ssrf-guard.sh --image <ref>`** tests a published playwright-adblock image as
   pulled (`repo:tag@sha256:...`), without tagging anything onto it. Build mode now refuses a
   registry-qualified or digest reference, so a source build can't take the published image's
   local tag. The publish workflow builds under a plain local tag and tags it onto the registry
   name only at push.
+- **A test that sends the SSRF guard's dispatcher through Node's built-in `fetch`** against a
+  local server, directly and through a redirect hop, on every CI Node version. The guard is an
+  npm-undici `Agent`, and the built-in `fetch` is Node's own bundled undici, which changes with
+  the Node line. Before this, nothing would have noticed if a Node or undici upgrade stopped
+  `fetch` honouring the guard.
 - **A test that runs the OpenTelemetry setup against the real SDK** and a local OTLP endpoint.
   The other OTel tests mock the SDK, and a failed init is only logged, so before this an SDK
   change that broke the setup would have passed CI and turned tracing off.

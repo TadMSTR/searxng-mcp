@@ -40,12 +40,19 @@ const FILTERS_URLS = (
   .filter(Boolean);
 const REFRESH_HOURS = parseInt(process.env.ADBLOCK_REFRESH_HOURS ?? "168", 10);
 const LOG_BLOCKED = process.env.LOG_BLOCKED === "true";
-// A missing, non-numeric or non-positive value falls back to the default
-// rather than producing a zero-delay retry loop.
-const RETRY_MAX_MINUTES = (() => {
-  const n = parseInt(process.env.ADBLOCK_RETRY_MAX_MINUTES ?? "", 10);
-  return Number.isFinite(n) && n >= 1 ? n : 30;
-})();
+// Accepted range 1..1440 (one day). Anything else, missing, non-numeric, zero,
+// negative or larger, falls back to the default. Both ends fail closed:
+// below 1 would be a zero-delay retry loop, and above about 35,791 minutes the
+// millisecond delay passes setTimeout's 2^31-1 limit, which Node replaces with
+// 1 ms: the same tight loop.
+const RETRY_MAX_DEFAULT = 30;
+const RETRY_MAX_LIMIT = 1440;
+function parseRetryMaxMinutes(raw) {
+  if (raw === undefined || raw === "") return RETRY_MAX_DEFAULT;
+  const n = /^[0-9]+$/.test(raw.trim()) ? Number(raw.trim()) : Number.NaN;
+  return n >= 1 && n <= RETRY_MAX_LIMIT ? n : RETRY_MAX_DEFAULT;
+}
+const RETRY_MAX_MINUTES = parseRetryMaxMinutes(process.env.ADBLOCK_RETRY_MAX_MINUTES);
 
 // Per-list byte cap. EasyList is about 2.0 MB and EasyPrivacy about 1.5 MB
 // (measured 2026-11-17), so 16 MiB is wide headroom for list growth while a
@@ -434,6 +441,13 @@ async function start() {
     process.exit(1);
   });
 
+  const rawRetryMax = process.env.ADBLOCK_RETRY_MAX_MINUTES;
+  if (rawRetryMax !== undefined && rawRetryMax !== "" && String(RETRY_MAX_MINUTES) !== rawRetryMax.trim()) {
+    console.error(
+      `[adblock-proxy] WARNING: ADBLOCK_RETRY_MAX_MINUTES must be a whole number from 1 to ${RETRY_MAX_LIMIT}; using ${RETRY_MAX_MINUTES}`,
+    );
+  }
+
   await loadFilters();
   const startupRetry = retryStartupLoad();
 
@@ -475,6 +489,7 @@ module.exports = {
   loadFilters,
   isBlocked,
   healthBody,
+  parseRetryMaxMinutes,
   retryDelayMinutes,
   retryStartupLoad,
   state,

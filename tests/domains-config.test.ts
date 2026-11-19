@@ -252,10 +252,47 @@ describe("domains.ts — load logging", () => {
     expect(m.getBoostList()).toEqual(["kept.example"]);
   });
 
+  it.each([
+    [{ boost: 5 }, '"boost" is not a list of strings'],
+    [{ block: ["ok", 3] }, '"block" is not a list of strings'],
+    [{ llms_txt: "docs.example.com" }, '"llms_txt" is not a list of strings'],
+    [{ adblock_skip: {} }, '"adblock_skip" is not a list of strings'],
+    [{ profiles: [] }, '"profiles" is not an object'],
+    [{ profiles: { dev: "x" } }, "a profile is not an object"],
+    [
+      { profiles: { dev: { boost: "x" } } },
+      `a profile's "boost" is not a list of strings`,
+    ],
+    [{ tier_skip: ["tier1"] }, '"tier_skip" is not an object'],
+  ])(
+    "refuses a wrong-shaped field (%j) and keeps the previous config",
+    async (bad, reason) => {
+      const m = await loadWith({ boost: ["kept.example"], block: [] });
+      errSpy.mockClear();
+      h.state.raw = JSON.stringify(bad);
+      m.loadDomainConfig("/x/domains.json");
+      expect(lines()).toHaveLength(1);
+      expect(lines()[0]).toContain(reason);
+      // Lookups still work: the shape that used to throw at search time never loaded.
+      expect(m.getBoostList("dev")).toEqual(["kept.example"]);
+      expect(m.applyDomainFilters([r("https://a.example/x")])).toHaveLength(1);
+    },
+  );
+
+  it("says 'not valid JSON' for a file that does not parse", async () => {
+    const m = await loadWith({ boost: ["kept.example"], block: [] });
+    errSpy.mockClear();
+    h.state.raw = "{ half-written";
+    m.loadDomainConfig("/x/domains.json");
+    expect(lines()).toHaveLength(1);
+    expect(lines()[0]).toContain("not valid JSON");
+    expect(m.getBoostList()).toEqual(["kept.example"]);
+  });
+
   it("rejects a top-level null or array without corrupting the config", async () => {
     for (const bad of ["null", "[]", "42"]) {
       const m = await loadWith(bad);
-      expect(lines().at(-1)).toContain("not valid JSON");
+      expect(lines().at(-1)).toContain("top level is not an object");
       expect(m.getBlockList()).toEqual([]);
       expect(m.applyDomainFilters([r("https://a.example/x")])).toHaveLength(1);
     }
