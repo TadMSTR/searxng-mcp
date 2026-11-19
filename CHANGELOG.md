@@ -6,6 +6,70 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [4.0.0] - 2026-11-19
+
+Dependency majors (OpenTelemetry, jsdom, vitest), the Node versions they require, and two fixes
+to the container images: the main image now ships `domains.json`, and adblock-proxy retries a
+failed startup load instead of running unfiltered for a week. The MCP tool surface is unchanged.
+
+### Breaking
+
+- **Node `^22.22.2 || >=24.15.0` is required** (`engines.node`). Node 20 is dropped: it
+  reached end of life in April 2026, and jsdom 31 and the OpenTelemetry SDK no longer support
+  it. CI tests Node 22 and 24.
+- **The container images run Node 24** (`node:24-alpine`, digest-pinned): the main image and
+  adblock-proxy. playwright-adblock keeps the Firecrawl renderer's own base.
+
+### Changed
+
+- **OpenTelemetry JS SDK 0.301 / sdk-metrics 3 / api 1.10.** Two visible effects:
+  - spans and metrics carry the SDK's default `os.*` resource attributes and a
+    `service.instance.id`, a random UUID that changes on every process start. Group by
+    `service.name` for continuity across restarts, or set `OTEL_RESOURCE_ATTRIBUTES` to pin
+    an instance id;
+  - on Node 22.21+ and 24.5+ the OTLP HTTP exporters honour `HTTP_PROXY`, `HTTPS_PROXY` and
+    `NO_PROXY`. A deployment that sets a proxy variable now sends telemetry through it. Add the
+    collector to `NO_PROXY` if that is not wanted. See docs/architecture.md, "Observability
+    (opt-in)".
+- **jsdom 31.** Extraction is unchanged: scripts still don't run and subresources still aren't
+  loaded. jsdom 31 carries its own undici 8 for its resource loader, which this server never
+  enables. The SSRF guard's dispatcher stays on the server's own undici 7.x.
+- **vitest 5** (development only). Coverage moved by less than 0.1 point.
+- Every other dependency to its latest release in range, including undici 7.30.2.
+- **pnpm installs hold to a three-day `minimumReleaseAge`** (`pnpm-workspace.yaml`). A relock
+  had picked up a release only hours old, and Dependabot's npm updates, which re-check the
+  lockfile against their own release-age window, failed until it aged out.
+
+### Fixed
+
+- **The container image shipped without `domains.json`.** The llms.txt allowlist, the
+  boost/block lists and the domain profiles were empty in every container, so the llms.txt
+  fast path never ran. The file is now at `/app/domains.json`. On load the server logs
+  `domains: llms_txt=N boost=N block=N profiles=N`, or a `WARNING` naming the path and the
+  reason if the file can't be read or parsed. A missing file is still not fatal. The image smoke
+  tests in CI and before publishing check for the counts line, so an image without the file
+  can't be published.
+- **A `domains.json` whose top level is `null`, an array or a bare value** used to leave the
+  server with a null config that broke every later lookup. It is now rejected like any
+  unparseable file. A failed hot reload keeps the last good config.
+- **adblock-proxy ran unfiltered for up to a week after a failed startup load.** With no rule
+  set, it now retries after 1, 2, 4, 8 and 16 minutes, then every `ADBLOCK_RETRY_MAX_MINUTES`,
+  until a load succeeds, logging one line per retry. A failed scheduled refresh is unchanged:
+  the previous rule set keeps filtering.
+
+### Added
+
+- **`ADBLOCK_RETRY_MAX_MINUTES`** (adblock-proxy, default `30`): the cap on the startup retry
+  delay.
+- **`verify-ssrf-guard.sh --image <ref>`** tests a published playwright-adblock image as
+  pulled (`repo:tag@sha256:...`), without tagging anything onto it. Build mode now refuses a
+  registry-qualified or digest reference, so a source build can't take the published image's
+  local tag. The publish workflow builds under a plain local tag and tags it onto the registry
+  name only at push.
+- **A test that runs the OpenTelemetry setup against the real SDK** and a local OTLP endpoint.
+  The other OTel tests mock the SDK, and a failed init is only logged, so before this an SDK
+  change that broke the setup would have passed CI and turned tracing off.
+
 ## [3.32.0] - 2026-11-17
 
 Fixes several places that reported success while doing nothing, gives adblock-proxy a health
