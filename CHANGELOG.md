@@ -14,9 +14,10 @@ failed startup load instead of running unfiltered for a week. The MCP tool surfa
 
 ### Breaking
 
-- **Node `^22.22.2 || >=24.15.0` is required** (`engines.node`). Node 20 is dropped: it
-  reached end of life in April 2026, and jsdom 31 and the OpenTelemetry SDK no longer support
-  it. CI tests Node 22 and 24.
+- **Node `^22.22.2 || ^24.15.0 || >=26.0.0` is required** (`engines.node`). Node 20 is
+  dropped: it reached end of life in April 2026, and jsdom 31 and the OpenTelemetry SDK no
+  longer support it. Node 25 is excluded too, because jsdom 31 refuses it. CI tests Node 22
+  and 24.
 - **The container images run Node 24** (`node:24-alpine`, digest-pinned): the main image and
   adblock-proxy. playwright-adblock keeps the Firecrawl renderer's own base.
 
@@ -27,10 +28,8 @@ failed startup load instead of running unfiltered for a week. The MCP tool surfa
     `service.instance.id`, a random UUID that changes on every process start. Group by
     `service.name` for continuity across restarts, or set `OTEL_RESOURCE_ATTRIBUTES` to pin
     an instance id;
-  - on Node 22.21+ and 24.5+ the OTLP HTTP exporters honour `HTTP_PROXY`, `HTTPS_PROXY` and
-    `NO_PROXY`. A deployment that sets a proxy variable now sends telemetry through it. Add the
-    collector to `NO_PROXY` if that is not wanted. See docs/architecture.md, "Observability
-    (opt-in)".
+  - the OTLP HTTP exporters still ignore `HTTP_PROXY`, `HTTPS_PROXY` and `NO_PROXY`: telemetry
+    always goes straight to the collector. See docs/architecture.md, "Observability (opt-in)".
 - **jsdom 31.** Extraction is unchanged: scripts still don't run and subresources still aren't
   loaded. jsdom 31 carries its own undici 8 for its resource loader, which this server never
   enables. The SSRF guard's dispatcher stays on the server's own undici 7.x.
@@ -57,7 +56,9 @@ failed startup load instead of running unfiltered for a week. The MCP tool surfa
 - **adblock-proxy ran unfiltered for up to a week after a failed startup load.** With no rule
   set, it now retries after 1, 2, 4, 8 and 16 minutes, then every `ADBLOCK_RETRY_MAX_MINUTES`,
   until a load succeeds, logging one line per retry. A failed scheduled refresh is unchanged:
-  the previous rule set keeps filtering.
+  the previous rule set keeps filtering. A retry that comes due after a scheduled refresh has
+  already loaded the filters does nothing, rather than downloading every list again. A partial
+  startup load (one list fetched) is not retried; it stays partial until the next refresh.
 
 ### Added
 
@@ -68,7 +69,9 @@ failed startup load instead of running unfiltered for a week. The MCP tool surfa
   pulled (`repo:tag@sha256:...`), without tagging anything onto it. Build mode now refuses a
   registry-qualified or digest reference, so a source build can't take the published image's
   local tag. The publish workflow builds under a plain local tag and tags it onto the registry
-  name only at push.
+  name only at push. Its cleanup now always runs to the end after an early failure, and its
+  header states the exit codes accurately: exit 1 covers both a failed assertion and a failed
+  infrastructure step, and the `FAIL:` lines tell them apart.
 - **A test that sends the SSRF guard's dispatcher through Node's built-in `fetch`** against a
   local server, directly and through a redirect hop, on every CI Node version. The guard is an
   npm-undici `Agent`, and the built-in `fetch` is Node's own bundled undici, which changes with
@@ -77,6 +80,12 @@ failed startup load instead of running unfiltered for a week. The MCP tool surfa
 - **A test that runs the OpenTelemetry setup against the real SDK** and a local OTLP endpoint.
   The other OTel tests mock the SDK, and a failed init is only logged, so before this an SDK
   change that broke the setup would have passed CI and turned tracing off.
+- **A test that jsdom, built as the server builds it, fetches nothing and runs no script**,
+  with a control that shows the test can see both. jsdom's resource loader uses its own undici,
+  outside the SSRF guard, so a jsdom release that changed either default, or a call site that
+  enabled resources or scripts, now fails CI.
+- **Dependabot covers the `docker/adblock-proxy` and `docker/playwright-adblock` npm
+  projects**, which have their own lockfiles outside the pnpm workspace.
 
 ## [3.32.0] - 2026-11-17
 
