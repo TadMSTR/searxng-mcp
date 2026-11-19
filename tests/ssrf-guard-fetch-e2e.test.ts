@@ -10,10 +10,15 @@
 //
 // `localhost` is used because it is a name: the guard sits in the dispatcher's
 // connect-time lookup, and an IP literal never goes through a lookup.
+import { readdirSync, readFileSync } from "node:fs";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
+import { join, resolve } from "node:path";
+import { JSDOM } from "jsdom";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { ssrfGuardedDispatcher } from "../src/ssrf-guard.js";
+
+const SRC = resolve(import.meta.dirname, "../src");
 
 let server: Server;
 let port: number;
@@ -84,5 +89,69 @@ describe("ssrfGuardedDispatcher through the built-in fetch", () => {
     );
     expect(chain).toMatch(/SsrfBlocked|private|reserved/i);
     expect(hits).toEqual(["/redirect"]);
+  });
+});
+
+// jsdom carries its own undici (8.x under jsdom 31) for its resource loader,
+// and that path never goes through ssrfGuardedDispatcher. The server is safe
+// only because it builds every JSDOM with `{ url }` alone: no subresources are
+// fetched and no script runs. These tests make a jsdom major that changed
+// either default, or a call site that started passing `resources` or
+// `runScripts`, fail CI instead of quietly widening egress.
+describe("jsdom as the server builds it fetches nothing and runs nothing", () => {
+  const page = () => `<!doctype html><html><head>
+<link rel="stylesheet" href="http://localhost:${port}/style.css">
+<script src="http://localhost:${port}/external.js"></script>
+<script>window.__ran = "inline";</script>
+</head><body>
+<img src="http://localhost:${port}/img.png" onerror="window.__ran = 'onerror'">
+<iframe src="http://localhost:${port}/frame.html"></iframe>
+<video src="http://localhost:${port}/video.mp4"></video>
+<object data="http://localhost:${port}/object.bin"></object>
+</body></html>`;
+
+  async function settle(dom: JSDOM): Promise<void> {
+    if (dom.window.document.readyState !== "complete") {
+      await new Promise<void>((r) => {
+        dom.window.addEventListener("load", () => r());
+        setTimeout(r, 2_000);
+      });
+    }
+    await new Promise((r) => setTimeout(r, 300));
+  }
+
+  it("control: with resources and scripts enabled, the page reaches the server", async () => {
+    const dom = new JSDOM(page(), {
+      url: `http://localhost:${port}/`,
+      resources: "usable",
+      runScripts: "dangerously",
+    });
+    await settle(dom);
+    expect(hits.length).toBeGreaterThan(0);
+    expect((dom.window as unknown as { __ran?: string }).__ran).toBeDefined();
+    dom.window.close();
+  });
+
+  it("with { url } only: zero requests and no script side effect", async () => {
+    const dom = new JSDOM(page(), { url: `http://localhost:${port}/` });
+    await settle(dom);
+    expect(hits).toEqual([]);
+    expect((dom.window as unknown as { __ran?: string }).__ran).toBeUndefined();
+    dom.window.close();
+  });
+
+  it("every JSDOM in src is built with { url } alone", () => {
+    const calls: string[] = [];
+    for (const file of readdirSync(SRC, { recursive: true }) as string[]) {
+      if (!file.endsWith(".ts")) continue;
+      const text = readFileSync(join(SRC, file), "utf-8");
+      for (const m of text.matchAll(/new JSDOM\(([^;]*?)\)/g)) {
+        calls.push(`${file}: ${m[1]}`);
+      }
+    }
+    expect(calls.length).toBeGreaterThanOrEqual(5);
+    for (const c of calls) {
+      expect(c).toMatch(/, \{ url(: \w+)? \}$/);
+    }
   });
 });
