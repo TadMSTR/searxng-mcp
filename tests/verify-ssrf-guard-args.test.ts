@@ -12,7 +12,9 @@
 import { spawnSync } from "node:child_process";
 import {
   chmodSync,
+  mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   rmSync,
   writeFileSync,
@@ -34,6 +36,13 @@ let log: string;
 const DOCKER_STUB = `#!/usr/bin/env bash
 printf '%s\\n' "$*" >> "$STUB_LOG"
 case "$1" in
+  pull)
+    [ "\${STUB_PULL_FAIL:-0}" = 1 ] && exit 1
+    ;;
+  network)
+    # Real docker exits 1 on \`network rm\` of a network that doesn't exist.
+    [ "$2" = rm ] && [ "\${STUB_NETRM_FAIL:-0}" = 1 ] && exit 1
+    ;;
   run)
     for a in "$@"; do
       case "$a" in curlimages/curl*) printf 200; exit 0 ;; esac
@@ -112,6 +121,24 @@ describe("verify-ssrf-guard.sh --image", () => {
     const { status, out } = run(["--image", REF], { STUB_MARKERS: "0" });
     expect(status).toBe(1);
     expect(out).toContain("SSRF guard is bypassed");
+  });
+
+  it("cleanup runs to the end when an early step fails and network rm fails", () => {
+    // A failed pull exits before `docker network create`, so the trap's
+    // `network rm` fails. errexit applies inside the trap, so without `set +e`
+    // there the control image and the scratch copy would be left behind.
+    const scratch = join(dir, "tmp");
+    mkdirSync(scratch);
+    const { status, out, calls } = run(["--image", REF], {
+      STUB_PULL_FAIL: "1",
+      STUB_NETRM_FAIL: "1",
+      TMPDIR: scratch,
+    });
+    expect(status).toBe(1);
+    expect(out).toContain("FAIL: pull");
+    expect(calls).toContain("network rm pwverify-net");
+    expect(calls).toContain("rmi -f playwright-adblock:verify-control");
+    expect(readdirSync(scratch)).toEqual([]);
   });
 
   it.each([[["--image"]], [["--image", ""]], [["--image", REF, "extra"]]])(

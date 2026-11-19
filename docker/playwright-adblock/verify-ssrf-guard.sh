@@ -39,9 +39,12 @@
 # the matching release tag), under a scratch tag: <local-tag>-REGRESSION in
 # build mode, playwright-adblock:verify-control in --image mode.
 #
-# Exit codes: 0 PASS, 1 FAIL, 2 usage error or refused argument. Any other
-# non-zero status is an unexpected error from a command the script ran (set -e):
-# treat it as "not verified", never as a pass.
+# Exit codes: 0 PASS, 2 usage error or refused argument, any other non-zero
+# status "not verified". Exit 1 does NOT by itself mean the guard was bypassed:
+# under set -e an infrastructure step that fails (docker network create, cp,
+# sed) also ends the script with its own status, which is usually 1 (docker run
+# gives 125). An assertion failure always prints a "FAIL: ..." line first; read
+# those lines, not the status alone, to tell a bypass from a broken run.
 #
 # -e is on, so the two `grep -c` calls below are explicitly guarded: grep exits
 # 1 when it matches nothing, and "matches nothing" is the EXPECTED result for
@@ -92,7 +95,11 @@ NET=pwverify-net
 SITE=pwverify-site
 HERE="$(cd "$(dirname "$0")" && pwd)"
 WORK="$(mktemp -d)"
-trap 'docker rm -f "$SITE" pwverify-fixed pwverify-regress >/dev/null 2>&1;
+# set +e: errexit applies inside the trap too, and `docker network rm` exits 1
+# when the network was never created (an early failure). Without it cleanup
+# would stop there and leave the control image and $WORK behind.
+trap 'set +e
+      docker rm -f "$SITE" pwverify-fixed pwverify-regress >/dev/null 2>&1;
       docker network rm "$NET" >/dev/null 2>&1;
       docker rmi -f "$CONTROL" >/dev/null 2>&1;
       rm -rf "$WORK"' EXIT
