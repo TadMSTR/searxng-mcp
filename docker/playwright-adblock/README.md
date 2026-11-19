@@ -46,8 +46,19 @@ keeping control of the disposition.
 ## Verifying it
 
 ```bash
-./verify-ssrf-guard.sh
+# Build mode: build from this checkout under a local tag and test that
+./verify-ssrf-guard.sh                      # tag playwright-adblock:verify
+
+# Published-image mode: pull exactly these bytes and test them, no retagging
+./verify-ssrf-guard.sh --image ghcr.io/tadmstr/searxng-mcp-playwright-adblock:vX.Y.Z@sha256:<digest>
 ```
+
+Build mode refuses a registry-qualified tag (`ghcr.io/...`) or one with `@`.
+A source build under the published name would sit in the local image store
+where compose resolves that name, and could be run in place of the release.
+`--image` never tags anything onto the reference it tests. In both modes the
+broken control below is built from the checkout, so run `--image` from the
+release tag that produced the image.
 
 The assertion that matters is **not** "are ads blocked". The script asserts
 that upstream's handler still executes, then builds a deliberately broken

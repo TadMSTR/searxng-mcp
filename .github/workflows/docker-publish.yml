@@ -547,8 +547,12 @@ jobs:
       # works.
       #
       # It builds the image itself, so there is no separate build step here.
+      # The build goes under a plain local tag: the script refuses a registry
+      # name in build mode, so a source build can never sit under a tag that
+      # compose would resolve to the published image. The push step below
+      # tags it onto the registry name.
       - name: Build and verify playwright-adblock (SSRF guard survives)
-        run: ./docker/playwright-adblock/verify-ssrf-guard.sh "$PLAYWRIGHT_ADBLOCK_IMAGE:candidate"
+        run: ./docker/playwright-adblock/verify-ssrf-guard.sh playwright-adblock:candidate
 
       - name: Log in to GHCR
         env:
@@ -576,7 +580,7 @@ jobs:
 
           for t in "${TAGS[@]}"; do
             echo "pushing $PLAYWRIGHT_ADBLOCK_IMAGE:$t"
-            docker tag "$PLAYWRIGHT_ADBLOCK_IMAGE:candidate" "$PLAYWRIGHT_ADBLOCK_IMAGE:$t"
+            docker tag playwright-adblock:candidate "$PLAYWRIGHT_ADBLOCK_IMAGE:$t"
             docker push "$PLAYWRIGHT_ADBLOCK_IMAGE:$t"
           done
 
