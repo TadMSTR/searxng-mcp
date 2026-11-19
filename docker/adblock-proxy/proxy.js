@@ -19,6 +19,8 @@
  *   ADBLOCK_FILTERS_URL   Comma-separated filter list URLs
  *                         (default: EasyList + EasyPrivacy)
  *   ADBLOCK_REFRESH_HOURS How often to refresh filters (default: 168)
+ *   ADBLOCK_RETRY_MAX_MINUTES  Cap on the retry delay after a failed startup
+ *                         load (default: 30)
  *   LOG_BLOCKED           Log blocked request URLs (default: false)
  */
 
@@ -38,6 +40,19 @@ const FILTERS_URLS = (
   .filter(Boolean);
 const REFRESH_HOURS = parseInt(process.env.ADBLOCK_REFRESH_HOURS ?? "168", 10);
 const LOG_BLOCKED = process.env.LOG_BLOCKED === "true";
+// Accepted range 1..1440 (one day). Anything else, missing, non-numeric, zero,
+// negative or larger, falls back to the default. Both ends fail closed:
+// below 1 would be a zero-delay retry loop, and above about 35,791 minutes the
+// millisecond delay passes setTimeout's 2^31-1 limit, which Node replaces with
+// 1 ms: the same tight loop.
+const RETRY_MAX_DEFAULT = 30;
+const RETRY_MAX_LIMIT = 1440;
+function parseRetryMaxMinutes(raw) {
+  if (raw === undefined || raw === "") return RETRY_MAX_DEFAULT;
+  const n = /^[0-9]+$/.test(raw.trim()) ? Number(raw.trim()) : Number.NaN;
+  return n >= 1 && n <= RETRY_MAX_LIMIT ? n : RETRY_MAX_DEFAULT;
+}
+const RETRY_MAX_MINUTES = parseRetryMaxMinutes(process.env.ADBLOCK_RETRY_MAX_MINUTES);
 
 // Per-list byte cap. EasyList is about 2.0 MB and EasyPrivacy about 1.5 MB
 // (measured 2026-11-17), so 16 MiB is wide headroom for list growth while a
@@ -175,6 +190,77 @@ async function loadFilters({
       `filters from ${fetched}/${urls.length} list(s)`,
   );
   return true;
+}
+
+/**
+ * Delay before startup retry `attempt` (1-based): 1, 2, 4, 8, 16 minutes, then
+ * `maxMinutes` (30 by default) from then on.
+ */
+function retryDelayMinutes(attempt, maxMinutes = RETRY_MAX_MINUTES) {
+  return Math.min(2 ** (attempt - 1), maxMinutes);
+}
+
+/**
+ * After a startup load that installed no engine, retry with backoff until one
+ * succeeds. Without this the proxy passed everything unfiltered until the next
+ * scheduled refresh, a week away by default.
+ *
+ * Only the startup case retries. A failed scheduled refresh keeps the previous
+ * engine, which still filters, so it waits for the next interval as before.
+ * The periodic refresh keeps its own schedule, counted from startup.
+ *
+ * Returns `{ cancel }` so tests (and shutdown) can stop a pending retry.
+ */
+function retryStartupLoad({
+  load = () => loadFilters(),
+  maxMinutes = RETRY_MAX_MINUTES,
+} = {}) {
+  let attempt = 0;
+  let timer = null;
+  let cancelled = false;
+
+  const schedule = () => {
+    attempt += 1;
+    const minutes = retryDelayMinutes(attempt, maxMinutes);
+    console.error(
+      `[adblock-proxy] no filters loaded — startup retry ${attempt} in ${minutes} min`,
+    );
+    timer = setTimeout(run, minutes * 60 * 1000);
+  };
+
+  const run = async () => {
+    timer = null;
+    // A scheduled refresh may have installed an engine since this retry was
+    // scheduled. Don't download and parse every list again.
+    if (state.engine) {
+      console.log(
+        `[adblock-proxy] startup retry ${attempt} not needed — filters already loaded`,
+      );
+      return;
+    }
+    try {
+      await load();
+    } catch (err) {
+      console.error(`[adblock-proxy] startup retry ${attempt} error: ${oneLine(err.message)}`);
+    }
+    if (cancelled) return;
+    if (state.engine) {
+      console.log(
+        `[adblock-proxy] startup retry ${attempt} loaded filters — retries stopped`,
+      );
+      return;
+    }
+    schedule();
+  };
+
+  if (!state.engine) schedule();
+  return {
+    cancel() {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+      timer = null;
+    },
+  };
 }
 
 function isBlocked(url, sourceUrl = "") {
@@ -363,7 +449,15 @@ async function start() {
     process.exit(1);
   });
 
+  const rawRetryMax = process.env.ADBLOCK_RETRY_MAX_MINUTES;
+  if (rawRetryMax !== undefined && rawRetryMax !== "" && String(RETRY_MAX_MINUTES) !== rawRetryMax.trim()) {
+    console.error(
+      `[adblock-proxy] WARNING: ADBLOCK_RETRY_MAX_MINUTES must be a whole number from 1 to ${RETRY_MAX_LIMIT}; using ${RETRY_MAX_MINUTES}`,
+    );
+  }
+
   await loadFilters();
+  const startupRetry = retryStartupLoad();
 
   // Periodic filter refresh
   if (REFRESH_HOURS > 0) {
@@ -380,9 +474,11 @@ async function start() {
   });
 
   process.on("SIGTERM", () => {
+    startupRetry.cancel();
     server.close(() => process.exit(0));
   });
   process.on("SIGINT", () => {
+    startupRetry.cancel();
     server.close(() => process.exit(0));
   });
 }
@@ -396,4 +492,13 @@ if (require.main === module) {
   });
 }
 
-module.exports = { createServer, loadFilters, isBlocked, healthBody, state };
+module.exports = {
+  createServer,
+  loadFilters,
+  isBlocked,
+  healthBody,
+  parseRetryMaxMinutes,
+  retryDelayMinutes,
+  retryStartupLoad,
+  state,
+};

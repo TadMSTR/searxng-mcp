@@ -103,6 +103,13 @@ jobs:
           echo "runtime uid -> $uid"
           [ "$uid" = 1000 ]
 
+          # domains.json ships in the image (4.0.0). Without it the llms.txt
+          # allowlist, boost/block lists and profiles are silently empty, which
+          # is how every image before 4.0.0 ran.
+          domains=$(docker logs sxng-publish 2>&1 | grep -oE 'domains: llms_txt=[0-9]+' | head -n 1 || true)
+          echo "domains config -> ${domains:-no domains: line}"
+          [ -n "$domains" ] && [ "${domains##*=}" -gt 0 ]
+
       - name: Container logs
         if: always()
         run: docker logs sxng-publish || true
@@ -540,8 +547,12 @@ jobs:
       # works.
       #
       # It builds the image itself, so there is no separate build step here.
+      # The build goes under a plain local tag: the script refuses a registry
+      # name in build mode, so a source build can never sit under a tag that
+      # compose would resolve to the published image. The push step below
+      # tags it onto the registry name.
       - name: Build and verify playwright-adblock (SSRF guard survives)
-        run: ./docker/playwright-adblock/verify-ssrf-guard.sh "$PLAYWRIGHT_ADBLOCK_IMAGE:candidate"
+        run: ./docker/playwright-adblock/verify-ssrf-guard.sh playwright-adblock:candidate
 
       - name: Log in to GHCR
         env:
@@ -569,7 +580,7 @@ jobs:
 
           for t in "${TAGS[@]}"; do
             echo "pushing $PLAYWRIGHT_ADBLOCK_IMAGE:$t"
-            docker tag "$PLAYWRIGHT_ADBLOCK_IMAGE:candidate" "$PLAYWRIGHT_ADBLOCK_IMAGE:$t"
+            docker tag playwright-adblock:candidate "$PLAYWRIGHT_ADBLOCK_IMAGE:$t"
             docker push "$PLAYWRIGHT_ADBLOCK_IMAGE:$t"
           done
 

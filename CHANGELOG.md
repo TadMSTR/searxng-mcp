@@ -6,6 +6,87 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [4.0.0] - 2026-11-19
+
+Dependency majors (OpenTelemetry, jsdom, vitest), the Node versions they require, and two fixes
+to the container images: the main image now ships `domains.json`, and adblock-proxy retries a
+failed startup load instead of running unfiltered for a week. The MCP tool surface is unchanged.
+
+### Breaking
+
+- **Node `^22.22.2 || ^24.15.0 || >=26.0.0` is required** (`engines.node`). Node 20 is
+  dropped: it reached end of life in April 2026, and jsdom 31 and the OpenTelemetry SDK no
+  longer support it. Node 25 is excluded too, because jsdom 31 refuses it. CI tests Node 22
+  and 24.
+- **The container images run Node 24** (`node:24-alpine`, digest-pinned): the main image and
+  adblock-proxy. playwright-adblock keeps the Firecrawl renderer's own base.
+
+### Changed
+
+- **OpenTelemetry JS SDK 0.301 / sdk-metrics 3 / api 1.10.** Two visible effects:
+  - spans and metrics carry the SDK's default `os.*` resource attributes and a
+    `service.instance.id`, a random UUID that changes on every process start. Group by
+    `service.name` for continuity across restarts, or set `OTEL_RESOURCE_ATTRIBUTES` to pin
+    an instance id;
+  - the OTLP HTTP exporters still ignore `HTTP_PROXY`, `HTTPS_PROXY` and `NO_PROXY`: telemetry
+    always goes straight to the collector. See docs/architecture.md, "Observability (opt-in)".
+- **jsdom 31.** Extraction is unchanged: scripts still don't run and subresources still aren't
+  loaded. jsdom 31 carries its own undici 8 for its resource loader, which this server never
+  enables. The SSRF guard's dispatcher stays on the server's own undici 7.x.
+- **vitest 5** (development only). Coverage moved by less than 0.1 point.
+- Every other dependency to its latest release in range, including undici 7.30.2.
+- **pnpm installs hold to a three-day `minimumReleaseAge`** (`pnpm-workspace.yaml`). A relock
+  had picked up a release only hours old, and Dependabot's npm updates, which re-check the
+  lockfile against their own release-age window, failed until it aged out.
+
+### Fixed
+
+- **The container image shipped without `domains.json`.** The llms.txt allowlist, the
+  boost/block lists and the domain profiles were empty in every container, so the llms.txt
+  fast path never ran. The file is now at `/app/domains.json`. On load the server logs
+  `domains: llms_txt=N boost=N block=N profiles=N`, or a `WARNING` naming the path and the
+  reason if the file can't be read or parsed. A missing file is still not fatal. The image smoke
+  tests in CI and before publishing check for the counts line, so an image without the file
+  can't be published.
+- **A malformed `domains.json` broke searches instead of being refused.** A top level that
+  is `null`, an array or a bare value left the server with a null config, and a wrong-typed
+  field (`"boost": 5`, a profile that isn't an object) loaded and then threw on every search.
+  Both are now refused at load with a `WARNING` naming the field, and the previous config is
+  kept (at startup, the empty one). A failed hot reload keeps the last good config.
+- **adblock-proxy ran unfiltered for up to a week after a failed startup load.** With no rule
+  set, it now retries after 1, 2, 4, 8 and 16 minutes, then every `ADBLOCK_RETRY_MAX_MINUTES`,
+  until a load succeeds, logging one line per retry. A failed scheduled refresh is unchanged:
+  the previous rule set keeps filtering. A retry that comes due after a scheduled refresh has
+  already loaded the filters does nothing, rather than downloading every list again. A partial
+  startup load (one list fetched) is not retried; it stays partial until the next refresh.
+
+### Added
+
+- **`ADBLOCK_RETRY_MAX_MINUTES`** (adblock-proxy, default `30`): the cap on the startup retry
+  delay. It must be a whole number from 1 to 1440. Anything else uses the default and logs a
+  warning.
+- **`verify-ssrf-guard.sh --image <ref>`** tests a published playwright-adblock image as
+  pulled (`repo:tag@sha256:...`), without tagging anything onto it. Build mode now refuses a
+  registry-qualified or digest reference, so a source build can't take the published image's
+  local tag. The publish workflow builds under a plain local tag and tags it onto the registry
+  name only at push. Its cleanup now always runs to the end after an early failure, and its
+  header states the exit codes accurately: exit 1 covers both a failed assertion and a failed
+  infrastructure step, and the `FAIL:` lines tell them apart.
+- **A test that sends the SSRF guard's dispatcher through Node's built-in `fetch`** against a
+  local server, directly and through a redirect hop, on every CI Node version. The guard is an
+  npm-undici `Agent`, and the built-in `fetch` is Node's own bundled undici, which changes with
+  the Node line. Before this, nothing would have noticed if a Node or undici upgrade stopped
+  `fetch` honouring the guard.
+- **A test that runs the OpenTelemetry setup against the real SDK** and a local OTLP endpoint.
+  The other OTel tests mock the SDK, and a failed init is only logged, so before this an SDK
+  change that broke the setup would have passed CI and turned tracing off.
+- **A test that jsdom, built as the server builds it, fetches nothing and runs no script**,
+  with a control that shows the test can see both. jsdom's resource loader uses its own undici,
+  outside the SSRF guard, so a jsdom release that changed either default, or a call site that
+  enabled resources or scripts, now fails CI.
+- **Dependabot covers the `docker/adblock-proxy` and `docker/playwright-adblock` npm
+  projects**, which have their own lockfiles outside the pnpm workspace.
+
 ## [3.32.0] - 2026-11-17
 
 Fixes several places that reported success while doing nothing, gives adblock-proxy a health

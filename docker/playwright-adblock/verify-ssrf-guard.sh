@@ -18,32 +18,107 @@
 # DISAPPEARS — without that control, a test that always passes looks identical
 # to a test that works.
 #
-# Usage:  ./verify-ssrf-guard.sh [image-tag]
+# Two modes:
+#
+#   ./verify-ssrf-guard.sh [local-tag]
+#       Build mode (default tag playwright-adblock:verify). Builds the image
+#       from this checkout under <local-tag> and tests that. Used by CI and
+#       before publishing. <local-tag> must be a plain local name: a
+#       registry-qualified name (ghcr.io/..., anything whose first path
+#       component has a "." or ":", or localhost/...) or one containing "@" is
+#       refused, so a source build can never overwrite a tag that compose
+#       would resolve to the published image.
+#
+#   ./verify-ssrf-guard.sh --image <ref>
+#       Published-image mode. `docker pull`s <ref> (repo:tag@sha256:... is the
+#       form to use) and tests exactly those bytes. Nothing is ever tagged onto
+#       <ref>. The image's resolved digest is printed so a report can record
+#       what was tested.
+#
+# In both modes the broken control is built from this checkout (so run it from
+# the matching release tag), under a scratch tag: <local-tag>-REGRESSION in
+# build mode, playwright-adblock:verify-control in --image mode.
+#
+# Exit codes: 0 PASS, 2 usage error or refused argument, any other non-zero
+# status "not verified". Exit 1 does NOT by itself mean the guard was bypassed:
+# under set -e an infrastructure step that fails (docker network create, cp,
+# sed) also ends the script with its own status, which is usually 1 (docker run
+# gives 125). An assertion failure always prints a "FAIL: ..." line first; read
+# those lines, not the status alone, to tell a bypass from a broken run.
+#
 # -e is on, so the two `grep -c` calls below are explicitly guarded: grep exits
 # 1 when it matches nothing, and "matches nothing" is the EXPECTED result for
 # the regression build. Without the guard, -e would abort the script at exactly
 # the moment the control succeeds.
 set -euo pipefail
 
-IMAGE="${1:-playwright-adblock:verify}"
+usage() {
+  sed -n '/^# Two modes:/,/^# Exit codes:/p' "$0" | sed 's/^# \{0,1\}//' >&2
+}
+
+MODE=build
+case "${1:-}" in
+  -h|--help)
+    usage
+    exit 0
+    ;;
+  --image)
+    if [ $# -ne 2 ] || [ -z "$2" ]; then
+      echo "usage: $0 --image <repo:tag@sha256:...>" >&2
+      exit 2
+    fi
+    MODE=image
+    IMAGE="$2"
+    CONTROL=playwright-adblock:verify-control
+    ;;
+  -*)
+    echo "unknown option: $1" >&2
+    usage
+    exit 2
+    ;;
+  *)
+    [ $# -le 1 ] || { echo "usage: $0 [local-tag] | --image <ref>" >&2; exit 2; }
+    IMAGE="${1:-playwright-adblock:verify}"
+    first="${IMAGE%%/*}"
+    if [[ "$IMAGE" == *@* ]] ||
+       { [[ "$IMAGE" == */* ]] && { [[ "$first" == *.* ]] || [[ "$first" == *:* ]] || [ "$first" = localhost ]; }; }; then
+      echo "REFUSED: build mode writes a local tag, and '$IMAGE' is a registry or digest reference." >&2
+      echo "A source build under that name could be picked up by compose in place of the published image." >&2
+      echo "Use a plain local tag (e.g. playwright-adblock:verify), or test the published image with --image '$IMAGE'." >&2
+      exit 2
+    fi
+    CONTROL="${IMAGE}-REGRESSION"
+    ;;
+esac
+
 NET=pwverify-net
 SITE=pwverify-site
 HERE="$(cd "$(dirname "$0")" && pwd)"
 WORK="$(mktemp -d)"
-trap 'docker rm -f "$SITE" pwverify-fixed pwverify-regress >/dev/null 2>&1;
+# set +e: errexit applies inside the trap too, and `docker network rm` exits 1
+# when the network was never created (an early failure). Without it cleanup
+# would stop there and leave the control image and $WORK behind.
+trap 'set +e
+      docker rm -f "$SITE" pwverify-fixed pwverify-regress >/dev/null 2>&1;
       docker network rm "$NET" >/dev/null 2>&1;
-      docker rmi -f "${IMAGE}-REGRESSION" >/dev/null 2>&1;
+      docker rmi -f "$CONTROL" >/dev/null 2>&1;
       rm -rf "$WORK"' EXIT
 
-echo "==> building $IMAGE"
-docker build -q -t "$IMAGE" "$HERE" >/dev/null || { echo "FAIL: build"; exit 1; }
+if [ "$MODE" = image ]; then
+  echo "==> pulling $IMAGE"
+  docker pull -q "$IMAGE" >/dev/null || { echo "FAIL: pull $IMAGE"; exit 1; }
+  echo "    testing $(docker image inspect --format '{{join .RepoDigests " "}}' "$IMAGE")"
+else
+  echo "==> building $IMAGE"
+  docker build -q -t "$IMAGE" "$HERE" >/dev/null || { echo "FAIL: build"; exit 1; }
+fi
 
 echo "==> building the regression variant (fallback -> continue)"
 cp -r "$HERE" "$WORK/regress"
 sed -i 's/return route\.fallback();/return route.continue();/g' "$WORK/regress/init-adblock.js"
 grep -q 'return route.continue();' "$WORK/regress/init-adblock.js" \
   || { echo "FAIL: regression variant did not apply — the control is not testing anything"; exit 1; }
-docker build -q -t "${IMAGE}-REGRESSION" "$WORK/regress" >/dev/null || { echo "FAIL: regression build"; exit 1; }
+docker build -q -t "$CONTROL" "$WORK/regress" >/dev/null || { echo "FAIL: regression build"; exit 1; }
 
 docker network create "$NET" >/dev/null 2>&1
 mkdir -p "$WORK/site"
@@ -78,7 +153,7 @@ probe() {
 }
 
 probe "$IMAGE" pwverify-fixed
-probe "${IMAGE}-REGRESSION" pwverify-regress
+probe "$CONTROL" pwverify-regress
 
 fixed_http=$(cat "$WORK/pwverify-fixed.http")
 fixed_markers=$(cat "$WORK/pwverify-fixed.markers")
@@ -86,12 +161,12 @@ regress_http=$(cat "$WORK/pwverify-regress.http")
 regress_markers=$(cat "$WORK/pwverify-regress.markers")
 
 echo
-printf 'shipped build     : HTTP %s, upstream-handler markers = %s\n' "$fixed_http" "$fixed_markers"
+printf 'image under test  : HTTP %s, upstream-handler markers = %s\n' "$fixed_http" "$fixed_markers"
 printf 'regression build  : HTTP %s, upstream-handler markers = %s\n' "$regress_http" "$regress_markers"
 echo
 
 rc=0
-[ "$fixed_http" = "200" ] || { echo "FAIL: shipped build did not scrape successfully"; rc=1; }
+[ "$fixed_http" = "200" ] || { echo "FAIL: image under test did not scrape successfully"; rc=1; }
 [ "$fixed_markers" -ge 1 ] || { echo "FAIL: upstream handler did NOT run — the SSRF guard is bypassed"; rc=1; }
 [ "$regress_markers" -eq 0 ] || { echo "FAIL: control did not reproduce the bypass — this test cannot detect the regression"; rc=1; }
 

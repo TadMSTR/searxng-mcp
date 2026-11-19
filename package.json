@@ -1,7 +1,7 @@
 {
   "name": "@tadmstr/searxng-mcp",
-  "version": "3.32.0",
-  "description": "MCP server for SearXNG \u2014 private web search for Claude Code",
+  "version": "4.0.0",
+  "description": "MCP server for SearXNG — private web search for Claude Code",
   "main": "build/src/index.js",
   "bin": {
     "searxng-mcp": "build/src/index.js"
@@ -31,7 +31,7 @@
   "license": "MIT",
   "packageManager": "pnpm@10.30.3",
   "engines": {
-    "node": ">=20"
+    "node": "^22.22.2 || ^24.15.0 || >=26.0.0"
   },
   "files": [
     "build/src/",
@@ -41,34 +41,34 @@
     "CHANGELOG.md"
   ],
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.32.1",
+    "@modelcontextprotocol/sdk": "^1.32.2",
     "@mozilla/readability": "^0.6.0",
     "@nats-io/nats-core": "^3.4.0",
     "@nats-io/transport-node": "^3.4.0",
-    "@opentelemetry/api": "^1.9.1",
-    "@opentelemetry/exporter-metrics-otlp-http": "^0.223.0",
-    "@opentelemetry/exporter-trace-otlp-http": "^0.223.0",
-    "@opentelemetry/sdk-metrics": "^2.11.0",
-    "@opentelemetry/sdk-node": "^0.223.0",
-    "fast-xml-parser": "^5.12.0",
+    "@opentelemetry/api": "^1.10.0",
+    "@opentelemetry/exporter-metrics-otlp-http": "^0.301.2",
+    "@opentelemetry/exporter-trace-otlp-http": "^0.301.2",
+    "@opentelemetry/sdk-metrics": "^3.1.1",
+    "@opentelemetry/sdk-node": "^0.301.2",
+    "fast-xml-parser": "^5.12.1",
     "iovalkey": "^0.4.0",
-    "jsdom": "^29.1.1",
+    "jsdom": "^31.0.1",
     "robots-parser": "^3.0.1",
-    "undici": "^7.30.1",
-    "zod": "^4.6.6"
+    "undici": "^7.30.2",
+    "zod": "^4.6.7"
   },
   "devDependencies": {
-    "@biomejs/biome": "^2.6.2",
+    "@biomejs/biome": "^2.6.8",
     "@ghostery/adblocker": "2.18.2",
-    "@types/jsdom": "^28.0.3",
-    "@types/node": "^22.20.1",
-    "@vitest/coverage-v8": "^4.1.12",
+    "@types/jsdom": "^30.0.0",
+    "@types/node": "^22.20.5",
+    "@vitest/coverage-v8": "^5.1.0",
     "ajv": "^8.20.0",
-    "fast-check": "^4.9.0",
+    "fast-check": "^4.10.2",
     "typescript": "^5.9.3",
-    "vite": "^8.3.5",
-    "vitest": "^4.1.12",
-    "yaml": "^2.9.0"
+    "vite": "^8.3.8",
+    "vitest": "^5.1.0",
+    "yaml": "^2.9.1"
   },
   "pnpm": {
     "overrides": {

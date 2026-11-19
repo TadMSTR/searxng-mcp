@@ -57,13 +57,21 @@ export async function initObservability(): Promise<void> {
 
     const serviceName = process.env.OTEL_SERVICE_NAME ?? "searxng-mcp";
 
+    // Keep this an inline object literal. sdk-node 0.300 removed
+    // `metricReader` (singular), and the excess-property check on a literal is
+    // what turned that into a compile error. Built in a variable first, a
+    // removed key would compile and be ignored at runtime, and init would
+    // "succeed" without metrics. tests/observability-otlp-real.test.ts runs
+    // this against the real SDK for the same reason.
     const nodeSdk = new NodeSDK({
       serviceName,
       traceExporter: new OTLPTraceExporter(),
-      metricReader: new PeriodicExportingMetricReader({
-        exporter: new OTLPMetricExporter(),
-        exportIntervalMillis: 60_000,
-      }),
+      metricReaders: [
+        new PeriodicExportingMetricReader({
+          exporter: new OTLPMetricExporter(),
+          exportIntervalMillis: 60_000,
+        }),
+      ],
     });
     nodeSdk.start();
     sdk = nodeSdk;

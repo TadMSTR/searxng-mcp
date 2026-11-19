@@ -22,7 +22,7 @@ rework.
 
 ## Prerequisites
 
-- **Node.js 20+** (`engines` requires `>=20`; CI runs the suite on both 20 and 22)
+- **Node.js 22.22.2+, 24.15.0+ or 26+** (`engines` is `^22.22.2 || ^24.15.0 || >=26.0.0`: jsdom 31 refuses Node 25; CI runs the suite on both 22 and 24)
 - **pnpm 10.30.3+** (pinned in `packageManager`)
 
 pnpm specifically, not npm: `package-lock.json` is gitignored, and `pnpm-lock.yaml` is the only
