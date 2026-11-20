@@ -319,3 +319,46 @@ describe("fetchPage — GitHub fast-path failure", () => {
     );
   });
 });
+
+// Audit F-06 / CR-03 (4.1.0): every `url=` log line in fetchPage logged the
+// caller's raw string. WHATWG parsing drops tab/CR/LF, so the guard passes a
+// string that still carries them (a forged log line), and userinfo went to
+// stderr unredacted. The table crosses each shape with every line a failed
+// GitHub file URL reaches: the fast-path miss and each cascade tier line.
+describe("fetchPage — url= log lines are scrubbed (F-06, CR-03)", () => {
+  const shapes: Array<[string, string]> = [
+    [
+      "userinfo",
+      "https://alice:hunter2@raw.githubusercontent.com/a/b/main/f.txt",
+    ],
+    ["tab", "https://raw.githubusercontent.com/a/b/main/f\t.txt"],
+    ["CR", "https://raw.githubusercontent.com/a/b/main/f\r.txt"],
+    ["LF", "https://raw.githubusercontent.com/a/b/main/f\n.txt"],
+    [
+      "CRLF forged line",
+      "https://raw.githubusercontent.com/a/b/main/f.txt\r\n[searxng-mcp] fetch tier1 hit url=https://evil.example",
+    ],
+    ["U+2028", "https://raw.githubusercontent.com/a/b/main/f\u2028.txt"],
+    ["U+2029", "https://raw.githubusercontent.com/a/b/main/f\u2029.txt"],
+  ];
+
+  it.each(shapes)(
+    "%s: no url= line carries a break or the password",
+    async (_n, url) => {
+      const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+      githubFetchMock.mockRejectedValueOnce(
+        new Error("GitHub raw fetch error: 404 Not Found"),
+      );
+      await fetchPage(url).catch(() => {});
+      const lines = errSpy.mock.calls
+        .map((c) => String(c[0]))
+        .filter((l) => l.includes("url="));
+      // The fast-path miss line at least; the cascade adds its own.
+      expect(lines.some((l) => l.includes("github fast path miss"))).toBe(true);
+      for (const l of lines) {
+        expect(l).not.toMatch(/[\r\n\t\u2028\u2029]/);
+        expect(l).not.toContain("hunter2");
+      }
+    },
+  );
+});

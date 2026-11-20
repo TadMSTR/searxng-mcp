@@ -304,6 +304,22 @@ describe("W3C traceparent from an authenticated HTTP caller", () => {
     expect(body.includes(TRACE_ID)).toBe(true);
   }, 15_000);
 
+  // Audit F-01 (4.1.0): the SDK's default sampler is parentbased_always_on, so
+  // the caller's sampled flag decides whether this server records the request
+  // at all, not only which trace it joins. Documented, and pinned here: an
+  // unsampled (-00) parent keeps the trace id and exports no span. Changing the
+  // sampler is a decision for the docs as well as this test.
+  it("an unsampled (-00) parent: the call succeeds and no span is exported", async () => {
+    const r = await callProbe({
+      traceparent: `00-${TRACE_ID}-${PARENT_ID}-00`,
+    });
+    expect(r.status).toBe(200);
+    expect(r.text).toContain("ok");
+    expect(r.seen).toEqual([TRACE_ID]);
+    const body = Buffer.concat(posts("/v1/traces").map((t) => t.body));
+    expect(body.includes(TRACE_ID)).toBe(false);
+  }, 15_000);
+
   it.each([
     ["garbage", "not-a-traceparent"],
     ["all-zero trace id", `00-${"0".repeat(32)}-${PARENT_ID}-01`],

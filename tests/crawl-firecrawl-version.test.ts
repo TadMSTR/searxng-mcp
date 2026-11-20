@@ -555,3 +555,31 @@ describe("crawl error reasons are bounded and single-line", () => {
     expect(line).toContain("start error: first line x");
   });
 });
+
+describe("searxng_crawl_total counts a Firecrawl success once", () => {
+  it("one successful crawl_site via Firecrawl is one crawl increment", async () => {
+    const { incCounter } = await import("../src/observability.js");
+    const incMock = vi.mocked(incCounter);
+    mockFetch
+      .mockResolvedValueOnce(json({ success: true, id: "job1" }))
+      .mockResolvedValueOnce(
+        json({
+          status: "completed",
+          data: [
+            {
+              markdown: "page one",
+              metadata: { title: "One", sourceURL: `${SITE}/1` },
+            },
+          ],
+        }),
+      );
+    const m = await crawlSite(SITE, 5, true);
+    expect(m.strategy).toBe("firecrawl");
+    const crawlCalls = incMock.mock.calls.filter((c) => c[0] === "crawl");
+    // Was two until 4.1.0's audit (CR-08): {outcome: "hit"} from the phase and
+    // {outcome: "success"} from crawlSite, for the same attempt.
+    expect(crawlCalls).toEqual([
+      ["crawl", { strategy: "firecrawl", outcome: "hit" }],
+    ]);
+  });
+});

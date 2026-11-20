@@ -27,15 +27,18 @@ unchanged.
 - **W3C trace context:** over the HTTP transport, a request's `traceparent` (and
   `tracestate`) becomes the parent of `tool.*`, so a calling client's trace and the server's
   join up. With `SEARXNG_MCP_AUTH_TOKEN` set it is read only after the bearer check; with no
-  token set, the transport has no bearer check and any caller's header is accepted. Baggage is
-  ignored, and a missing or malformed header starts a new trace.
+  token set, the transport has no bearer check and any caller's header is accepted. The
+  caller's sampled flag is honoured: an unsampled (`-00`) parent means no server spans are
+  exported for that request (metrics, events and logs still record it). Baggage is ignored, and
+  a missing or malformed header starts a new trace.
 
 ### Fixed
 
 - **Crawl metrics were never exported.** `crawl_site` wrote to a counter and two histograms
   that were never created, and nothing failed. Instrument names are now a closed set, so a
   name that is not created doesn't compile, and a test checks that every instrument reaches the
-  exporter. The per-call crawl histogram is `searxng_crawl_duration_seconds`.
+  exporter. The per-call crawl histogram is `searxng_crawl_duration_seconds`; it counts
+  completed calls, and a call that throws is counted only in `searxng_errors_total`.
 - **`searxng_errors_total` counted only search failures.** Every tool's failure is counted
   now, once, with `tool`, `stage` and `error_type` (the error class name, never the message).
   Pages that failed inside `search_and_fetch` / `search_and_summarize` count as
@@ -47,7 +50,14 @@ unchanged.
   `GitHub raw fetch error: 404 Not Found`). `github.com/…/blob/…` and
   `raw.githubusercontent.com` URLs now fall back to the normal fetch cascade when the fast path
   fails, and the cascade's error lists the GitHub reason first. Repo root, tree, release and
-  `api.github.com` URLs still fail outright, now with the reason.
+  `api.github.com` URLs still fail outright, now with the reason. A file URL that falls back
+  goes to every cascade tier, so with `WAYBACK_ENABLED` it now reaches the archive.org lookup
+  too.
+- **`url=` log lines carried the caller's raw URL.** Every fetch log line now writes it with
+  URL credentials redacted and line breaks collapsed, as the crawl log lines already did, so a
+  URL carrying userinfo or an embedded CR/LF can't put a password or a forged line in the log.
+- **A successful Firecrawl crawl counted twice in `searxng_crawl_total`** (as `hit` and as
+  `success`). It counts once, as `hit`.
 
 ### Changed
 

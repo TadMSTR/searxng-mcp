@@ -143,6 +143,11 @@ interface TierOutcome {
 // is what cost weeks on vikunja#682. Audit: 2026-09-06/searxng-mcp-fix-pass-2026-09,
 // finding OE-02 (Low). Decision: Ted, 2026-09-06. The bound itself now lives in
 // fetch-utils.ts as boundRelayedText(), shared with hister.ts.
+// Since 4.1.0 the GitHub fast path is a third relay source under the same
+// reasoning: its failure reason (GitHub's status line, or a ref-lookup error
+// that can quote the start of GitHub's response body) reaches the caller in
+// GithubFastPathError and leads the cascade's error list, through the same
+// boundRelayedText bound. Audit: 2026-11-20/searxng-mcp-backlog-2026-11-p5-observability, F-04 (Info).
 
 async function runTier<T extends TierResult | null>(
   tier: TierName,
@@ -246,6 +251,10 @@ export async function fetchPage(
       onServed?.(served);
     };
     assertPublicUrl(url);
+    // The caller's string, not the parsed copy the guard checked: WHATWG parsing
+    // drops tab/CR/LF, so the raw string can carry them, and it can carry
+    // userinfo. Every `url=` log line below uses this form, as crawl.ts does.
+    const logUrl = boundRelayedText(url);
     // How much to actually fetch/store: at least the default (keeps cache
     // entries reusable), at most the hard ceiling, but never less than what the
     // caller asked to read back.
@@ -334,7 +343,7 @@ export async function fetchPage(
         // miss, not the end. Its reason leads the cascade's own list.
         githubFailure = { tier: "github", reason };
         console.error(
-          `[searxng-mcp] fetch github fast path miss url=${url} — falling back to the cascade`,
+          `[searxng-mcp] fetch github fast path miss url=${logUrl} — falling back to the cascade`,
         );
       }
     }
@@ -531,7 +540,7 @@ export async function fetchPage(
         const robots = await checkRobots(url, "searxng-mcp");
         if (!robots.allowed) {
           console.error(
-            `[searxng-mcp] fetch skipped_robots url=${url} reason=${robots.reason ?? "disallowed"}`,
+            `[searxng-mcp] fetch skipped_robots url=${logUrl} reason=${robots.reason ?? "disallowed"}`,
           );
           incCounter("fetch", { tier: "robots", outcome: "skipped_robots" });
           events.fetchTierSkipped({
@@ -564,7 +573,7 @@ export async function fetchPage(
           incCounter("fetch", { tier: tierName, outcome: "skipped", reason });
           events.fetchTierSkipped({ url, tier: tierName, reason });
           console.error(
-            `[searxng-mcp] fetch ${slot} skipped url=${url} reason=${reason}`,
+            `[searxng-mcp] fetch ${slot} skipped url=${logUrl} reason=${reason}`,
           );
         }
 
@@ -616,7 +625,7 @@ export async function fetchPage(
         const structuredKind = await probeStructuredContent(url);
         if (structuredKind) {
           console.error(
-            `[searxng-mcp] fetch content_type fast_path url=${url} kind=${structuredKind}`,
+            `[searxng-mcp] fetch content_type fast_path url=${logUrl} kind=${structuredKind}`,
           );
           const structured = await runTier(
             "tier3_rawfetch",
@@ -649,7 +658,7 @@ export async function fetchPage(
           // (wayback, a tier that handles the error differently), and a probe
           // must not be able to turn a fetchable URL into a hard failure.
           console.error(
-            `[searxng-mcp] fetch content_type fast_path miss url=${url} — falling through to cascade`,
+            `[searxng-mcp] fetch content_type fast_path miss url=${logUrl} — falling through to cascade`,
           );
         }
 
@@ -681,11 +690,13 @@ export async function fetchPage(
           if (fetched) {
             tierServed = tier.name;
             if (tier.slot !== "tier1") {
-              console.error(`[searxng-mcp] fetch ${tier.slot} hit url=${url}`);
+              console.error(
+                `[searxng-mcp] fetch ${tier.slot} hit url=${logUrl}`,
+              );
             }
             break;
           }
-          console.error(`[searxng-mcp] fetch ${tier.slot} miss url=${url}`);
+          console.error(`[searxng-mcp] fetch ${tier.slot} miss url=${logUrl}`);
         }
 
         // Challenge solver. Detection-gated: it fires only when a tier actually
@@ -704,7 +715,9 @@ export async function fetchPage(
         // A solver miss is expected and is not an error — it falls through to
         // wayback exactly as a tier miss does.
         if (!fetched && challengeDetected) {
-          console.error(`[searxng-mcp] fetch solver_byparr attempt url=${url}`);
+          console.error(
+            `[searxng-mcp] fetch solver_byparr attempt url=${logUrl}`,
+          );
           fetched = await runTier(
             "solver_byparr",
             url,
@@ -714,14 +727,20 @@ export async function fetchPage(
           );
           if (fetched) {
             tierServed = "solver_byparr";
-            console.error(`[searxng-mcp] fetch solver_byparr hit url=${url}`);
+            console.error(
+              `[searxng-mcp] fetch solver_byparr hit url=${logUrl}`,
+            );
           } else {
-            console.error(`[searxng-mcp] fetch solver_byparr miss url=${url}`);
+            console.error(
+              `[searxng-mcp] fetch solver_byparr miss url=${logUrl}`,
+            );
           }
         }
 
         if (!fetched && WAYBACK_ENABLED) {
-          console.error(`[searxng-mcp] fetch tier4_wayback attempt url=${url}`);
+          console.error(
+            `[searxng-mcp] fetch tier4_wayback attempt url=${logUrl}`,
+          );
           fetched = await runTier(
             "tier4_wayback",
             url,
@@ -731,9 +750,13 @@ export async function fetchPage(
           );
           if (fetched) {
             tierServed = "tier4_wayback";
-            console.error(`[searxng-mcp] fetch tier4_wayback hit url=${url}`);
+            console.error(
+              `[searxng-mcp] fetch tier4_wayback hit url=${logUrl}`,
+            );
           } else {
-            console.error(`[searxng-mcp] fetch tier4_wayback miss url=${url}`);
+            console.error(
+              `[searxng-mcp] fetch tier4_wayback miss url=${logUrl}`,
+            );
           }
         }
 

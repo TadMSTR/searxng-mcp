@@ -282,7 +282,7 @@ tree, resource attributes and the NATS subjects are in
 | `searxng_errors_total` | counter | `tool`, `stage`, `error_type` | Tool failures. `stage` is `search`, `fetch` (a page inside `search_and_fetch`/`search_and_summarize`), `crawl` (every strategy failed) or `tool` (any other throw) |
 | `searxng_degrade_total` | counter | `component`, `reason` | How often a fallback fires: `reranker` (`unavailable`, `min_score_ignored`), `ollama_expand` (`timeout`, `error`), `ollama_summarize` (`timeout`, `llm_error`, `parse_error`, `empty_response`) |
 | `searxng_crawl_total` | counter | `strategy`, `outcome` | Each `crawl_site` strategy attempt: Firecrawl, map, sitemap, BFS, and the fallbacks between them |
-| `searxng_crawl_duration_seconds` | histogram (s) | `strategy`, `cached` | `crawl_site` latency per call, by the strategy that answered |
+| `searxng_crawl_duration_seconds` | histogram (s) | `strategy`, `cached` | `crawl_site` latency per completed call (an all-strategies-failed `error` manifest included), by the strategy that answered. A call that throws (an SSRF refusal, an invalid URL) is not in it; it is in `searxng_errors_total{tool="crawl_site"}` |
 | `searxng_rerank_top_score` | histogram (0–1, tenths) | — | Best reranker relevance per reranked search: the input for choosing a `min_score` |
 
 The `domain-db-maintenance` job exports its own gauges (`searxng_domains_tracked`,
@@ -309,8 +309,11 @@ caller typed. They appear on spans only. `error_type` is an error class name, or
 share one trace. With `SEARXNG_MCP_AUTH_TOKEN` set, the headers are read only from a request
 that passed the bearer check; a rejected request never reaches them. With no token set, the
 transport has no bearer check, and any caller that can reach it can choose the trace its
-requests are recorded under. Baggage is ignored, and a missing or malformed header starts a
-new trace.
+requests are recorded under. The caller's sampled flag is honoured as well: a `traceparent`
+ending `-00` (not sampled) means the server records no spans for that request, so it sends
+nothing to the trace backend. Metrics, NATS events and log lines still record the call. A client
+that samples a fraction of its traces therefore gets server spans for the same fraction. Baggage
+is ignored, and a missing or malformed header starts a new trace.
 
 ## Documentation
 

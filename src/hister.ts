@@ -340,7 +340,7 @@ export async function histerFetch(
     if (!expectedTimeout) {
       warnDependencyFailure(err, "hister");
       console.error(
-        `[searxng-mcp] hister fetch error url=${url}: ${boundRelayedText(
+        `[searxng-mcp] hister fetch error url=${boundRelayedText(url)}: ${boundRelayedText(
           err instanceof Error ? err.message : String(err),
         )}`,
       );

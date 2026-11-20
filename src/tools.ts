@@ -668,7 +668,8 @@ export async function handleCrawlSite({
       // `searxng_crawl_total` is not incremented here: crawl.ts counts each
       // strategy attempt in it, and a per-call increment under a different
       // label set would double every crawl in a sum. The histogram's count is
-      // the per-call total.
+      // the total of completed calls (an `error` manifest included); a call
+      // that throws never gets here and is counted only in searxng_errors_total.
       recordHistogram("crawl", latency_ms / 1000, {
         strategy: manifest.strategy,
         cached: manifest.cached,

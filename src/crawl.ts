@@ -787,9 +787,9 @@ export async function crawlSite(
       excludePath,
       hostFilter,
     );
-    if (manifest) {
-      incCounter("crawl", { strategy: "firecrawl", outcome: "success" });
-    }
+    // No increment here: firecrawlCrawl's recordCrawlOutcome(url, "hit") has
+    // already counted this attempt, and a second `success` series made one
+    // crawl two attempts in searxng_crawl_total.
   }
 
   // Phase 1b: /map — v2 only. Ahead of the hand-rolled sitemap parse because it
