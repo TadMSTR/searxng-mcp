@@ -203,8 +203,10 @@ export function createHttpRequestListener(
           touch(sid);
           inFlight.set(sid, (inFlight.get(sid) ?? 0) + 1);
           try {
-            // After the bearer gate: an unauthenticated caller cannot choose
-            // the trace its request is recorded under.
+            // After the bearer gate: with SEARXNG_MCP_AUTH_TOKEN set, an
+            // unauthenticated caller cannot choose the trace its request is
+            // recorded under. With no token there is no gate, and any caller
+            // can (README "Trace context").
             await withRemoteParent(req.headers, () =>
               existing.handleRequest(req, res),
             );

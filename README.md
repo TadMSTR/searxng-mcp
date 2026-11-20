@@ -304,10 +304,13 @@ arguments and the per-tier spans)
 distinct value is a new time series, and those values are unbounded and can carry what a
 caller typed. They appear on spans only. `error_type` is an error class name, or `unknown`.
 
-**Trace context:** over the HTTP transport, an authenticated request may send a W3C
-`traceparent` (and `tracestate`). The server reads them after the bearer check, so the
-caller's span becomes the parent of `tool.*` and both sides of a call share one trace.
-Baggage is ignored, and a missing or malformed header starts a new trace.
+**Trace context:** over the HTTP transport, a request may send a W3C `traceparent` (and
+`tracestate`), and the caller's span becomes the parent of `tool.*`, so both sides of a call
+share one trace. With `SEARXNG_MCP_AUTH_TOKEN` set, the headers are read only from a request
+that passed the bearer check; a rejected request never reaches them. With no token set, the
+transport has no bearer check, and any caller that can reach it can choose the trace its
+requests are recorded under. Baggage is ignored, and a missing or malformed header starts a
+new trace.
 
 ## Documentation
 

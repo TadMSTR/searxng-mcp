@@ -349,7 +349,7 @@ Tracing, metrics, and event publishing are entirely opt-in — with none of the 
 
 - Spans (per request): `tool.<name>` → `expand_query`? → `searxng_request` → `rerank` → `fetch` (×N) → a fast-path span (`github`, `llms_full_txt`, `kiwix`, `hister`, `youtube`, `reddit`) or `tier1_firecrawl` | `tier2_crawl4ai` | `tier3_rawfetch` | `solver_byparr` | `tier4_wayback` → `post_extract`; plus `summarize_llm` for `search_and_summarize`.
 - Metrics, and the span attributes that answer usage questions (`fetch.tier_served`, `fetch.cache_hit`, `rerank.*`, `search.result_count`): one table, in the [README](../README.md#observability), with the label rule. Every instrument name is a closed set in `src/observability.ts`, and `tests/observability-otlp-real.test.ts` checks that each one reaches the exporter.
-- Over the HTTP transport, an authenticated request's W3C `traceparent` becomes the parent of `tool.*`. It is read only after the bearer check, and baggage is ignored.
+- Over the HTTP transport, a request's W3C `traceparent` becomes the parent of `tool.*`. With `SEARXNG_MCP_AUTH_TOKEN` set it is read only after the bearer check; with no token set there is no bearer check, so any caller's header is accepted. Baggage is ignored.
 
 Standard OTEL env vars apply (`OTEL_SERVICE_NAME` defaults to `searxng-mcp`).
 

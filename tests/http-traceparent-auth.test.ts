@@ -14,8 +14,8 @@ vi.mock("../src/observability.js", () => remote);
 const TOKEN = "b".repeat(64);
 let httpServer: Server | undefined;
 
-async function start(): Promise<string> {
-  vi.stubEnv("SEARXNG_MCP_AUTH_TOKEN", TOKEN);
+async function start(token: string = TOKEN): Promise<string> {
+  vi.stubEnv("SEARXNG_MCP_AUTH_TOKEN", token);
   vi.resetModules();
   const [{ createHttpRequestListener }, { McpServer }] = await Promise.all([
     import("../src/http-transport.js"),
@@ -85,5 +85,22 @@ describe("traceparent is read only after the bearer check", () => {
       string
     >;
     expect(passed.traceparent).toBe(TRACEPARENT);
+  });
+});
+
+describe("with no SEARXNG_MCP_AUTH_TOKEN there is no bearer check", () => {
+  // The documented rule (README "Trace context"): with no token configured the
+  // transport is open, so any caller's traceparent is read. Pinned so the docs
+  // and the code can't drift apart again.
+  it("any caller's traceparent reaches withRemoteParent", async () => {
+    const url = await start("");
+    const res = await fetch(url, {
+      method: "POST",
+      headers: headers(),
+      body: INIT,
+    });
+    await res.text();
+    expect(res.status).toBe(200);
+    expect(remote.withRemoteParent).toHaveBeenCalledOnce();
   });
 });

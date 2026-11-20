@@ -243,8 +243,9 @@ export function recordHistogram(
  * span becomes the parent of the `tool.*` span and the two halves of one call
  * share a trace.
  *
- * Call this only for an AUTHENTICATED request: the HTTP transport calls it
- * after the bearer check. Only `traceparent` and `tracestate` are read (no
+ * The HTTP transport calls this after its bearer check, so with
+ * SEARXNG_MCP_AUTH_TOKEN set only an authenticated request's header is read.
+ * With no token configured there is no check, and any caller's header is. Only `traceparent` and `tracestate` are read (no
  * baggage), and only into trace context. A missing or malformed header leaves
  * the context as it was, so `tool.*` starts a new root trace, which is the
  * W3C propagator's own behaviour. With observability off this calls `fn`

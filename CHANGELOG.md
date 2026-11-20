@@ -24,10 +24,11 @@ unchanged.
   `tool.fetch_url`, including cache hits, which have no tier span; `rerank.applied`,
   `rerank.returned`, `rerank.top_score`, `rerank.min_returned_score` and
   `rerank.dropped_by_min_score` on `rerank`; `search.result_count` on the search tools.
-- **W3C trace context:** over the HTTP transport, an authenticated request's `traceparent`
-  (and `tracestate`) becomes the parent of `tool.*`, so a calling client's trace and the
-  server's join up. It is read only after the bearer check. Baggage is ignored, and a missing
-  or malformed header starts a new trace.
+- **W3C trace context:** over the HTTP transport, a request's `traceparent` (and
+  `tracestate`) becomes the parent of `tool.*`, so a calling client's trace and the server's
+  join up. With `SEARXNG_MCP_AUTH_TOKEN` set it is read only after the bearer check; with no
+  token set, the transport has no bearer check and any caller's header is accepted. Baggage is
+  ignored, and a missing or malformed header starts a new trace.
 
 ### Fixed
 
