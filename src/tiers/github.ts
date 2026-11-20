@@ -59,6 +59,45 @@ export function isGithubFastPathUrl(url: string): boolean {
   return parts.length >= 4 && (parts[2] === "blob" || parts[2] === "tree");
 }
 
+/**
+ * Whether a failed fast path may fall back to the normal cascade: a file, named
+ * by a github.com `blob` URL or a raw.githubusercontent.com URL. The cascade
+ * renders those as the page they name (the blob page, or the file itself), so
+ * a rate limit, timeout or upstream error on the fast path need not fail the
+ * fetch.
+ *
+ * Every other fast-path shape (repo root, tree, releases, api.github.com)
+ * keeps failing outright. The cascade would answer those with a page the URL
+ * does not name: the rendered repo or release page buries the content under
+ * site navigation, robots.txt disallows tree pages, and an API URL rendered
+ * as a web page is just its JSON error.
+ */
+export function githubFallsBackToCascade(url: string): boolean {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return false;
+  }
+  if (parsed.hostname === "raw.githubusercontent.com") return true;
+  if (parsed.hostname !== "github.com") return false;
+  const parts = parsed.pathname.split("/").filter(Boolean);
+  return parts.length >= 4 && parts[2] === "blob";
+}
+
+/**
+ * The GitHub fast path failed for a URL that does not fall back. The message
+ * names the tier's reason (scrubbed and bounded by runTier), so the caller sees
+ * "GitHub raw fetch error: 404 Not Found" rather than only that it failed.
+ */
+export class GithubFastPathError extends Error {
+  readonly metricErrorType = "github_fetch_failed";
+  constructor(reason: string) {
+    super(`GitHub fast-path fetch failed: ${reason}`);
+    this.name = "GithubFastPathError";
+  }
+}
+
 /** API path suffix for a github.com release page, or null for shapes this tier
  * does not serve (e.g. `/releases/download/...` asset links). `rest` is
  * decoded (see decodeSegment); each tag segment is encoded on its own. */

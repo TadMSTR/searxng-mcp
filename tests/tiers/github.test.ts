@@ -10,6 +10,8 @@ const mockFetch = vi.fn();
 vi.stubGlobal("fetch", mockFetch);
 
 import {
+  GithubFastPathError,
+  githubFallsBackToCascade,
   githubFetch,
   isGithubFastPathUrl,
   isGithubUrl,
@@ -131,6 +133,42 @@ describe("isGithubFastPathUrl", () => {
   it("does not match unrelated hosts or unparseable input", () => {
     expect(isGithubFastPathUrl("https://gitlab.com/a/b")).toBe(false);
     expect(isGithubFastPathUrl("not a url")).toBe(false);
+  });
+});
+
+describe("githubFallsBackToCascade", () => {
+  // Only a file URL may fall back: the cascade renders it as the page it
+  // names. Every other fast-path shape keeps failing outright (#1570).
+  it.each([
+    "https://github.com/a/b/blob/main/README.md",
+    "https://github.com/a/b/blob/v1/docs/x.md",
+    "https://raw.githubusercontent.com/a/b/main/f.txt",
+  ])("falls back: %s", (url) => {
+    expect(githubFallsBackToCascade(url)).toBe(true);
+  });
+
+  it.each([
+    "https://github.com/a/b",
+    "https://github.com/a/b/tree/main/docs",
+    "https://github.com/a/b/releases",
+    "https://github.com/a/b/releases/tag/v1",
+    "https://github.com/a/b/blob",
+    "https://api.github.com/repos/a/b/contents/x",
+    "https://example.com/a/b/blob/main/x",
+    "not a url",
+  ])("does not fall back: %s", (url) => {
+    expect(githubFallsBackToCascade(url)).toBe(false);
+  });
+});
+
+describe("GithubFastPathError", () => {
+  it("names the reason and carries a fixed metric label", () => {
+    const err = new GithubFastPathError("GitHub API error: 404 Not Found");
+    expect(err.message).toBe(
+      "GitHub fast-path fetch failed: GitHub API error: 404 Not Found",
+    );
+    expect(err.name).toBe("GithubFastPathError");
+    expect(err.metricErrorType).toBe("github_fetch_failed");
   });
 });
 
