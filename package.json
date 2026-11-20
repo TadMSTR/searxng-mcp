@@ -1,6 +1,6 @@
 {
   "name": "@tadmstr/searxng-mcp",
-  "version": "4.0.0",
+  "version": "4.1.0",
   "description": "MCP server for SearXNG — private web search for Claude Code",
   "main": "build/src/index.js",
   "bin": {

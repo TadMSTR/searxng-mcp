@@ -6,6 +6,53 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [4.1.0] - 2026-11-20
+
+Metrics and span attributes that show which tools are used, which fetch tier serves each page,
+how often each fallback fires and what the reranker scores; crawl metrics and tool errors that
+were being dropped; and a GitHub fast path that says why it failed. The MCP tool surface is
+unchanged.
+
+### Added
+
+- **Metrics:** `searxng_crawl_total{strategy, outcome}`,
+  `searxng_crawl_duration_seconds{strategy, cached}`, `searxng_degrade_total{component, reason}`
+  (reranker and LLM expand/summarize fallbacks, counted on every occurrence while the log line
+  stays throttled), and `searxng_rerank_top_score` (raw relevance of the best candidate per
+  reranked search, buckets 0 to 1 in tenths). The README has a table of every metric.
+- **Span attributes:** `fetch.tier_served` and `fetch.cache_hit` on `fetch` and
+  `tool.fetch_url`, including cache hits, which have no tier span; `rerank.applied`,
+  `rerank.returned`, `rerank.top_score`, `rerank.min_returned_score` and
+  `rerank.dropped_by_min_score` on `rerank`; `search.result_count` on the search tools.
+- **W3C trace context:** over the HTTP transport, an authenticated request's `traceparent`
+  (and `tracestate`) becomes the parent of `tool.*`, so a calling client's trace and the
+  server's join up. It is read only after the bearer check. Baggage is ignored, and a missing
+  or malformed header starts a new trace.
+
+### Fixed
+
+- **Crawl metrics were never exported.** `crawl_site` wrote to a counter and two histograms
+  that were never created, and nothing failed. Instrument names are now a closed set, so a
+  name that is not created doesn't compile, and a test checks that every instrument reaches the
+  exporter. The per-call crawl histogram is `searxng_crawl_duration_seconds`.
+- **`searxng_errors_total` counted only search failures.** Every tool's failure is counted
+  now, once, with `tool`, `stage` and `error_type` (the error class name, never the message).
+  Pages that failed inside `search_and_fetch` / `search_and_summarize` count as
+  `stage="fetch"`, and a `crawl_site` where every strategy failed counts as `stage="crawl"`.
+  The `searxng_search_total` and `searxng_search_duration_seconds` labels are unchanged.
+- **The GitHub fast path dropped its failure cause and never fell back.** A failure said only
+  `GitHub fast-path fetch failed`, so a file deleted upstream looked like a token or URL
+  problem. The error and the `searxng.error` event now carry the reason (for example
+  `GitHub raw fetch error: 404 Not Found`). `github.com/…/blob/…` and
+  `raw.githubusercontent.com` URLs now fall back to the normal fetch cascade when the fast path
+  fails, and the cascade's error lists the GitHub reason first. Repo root, tree, release and
+  `api.github.com` URLs still fail outright, now with the reason.
+
+### Changed
+
+- `@ghostery/adblocker` and `@ghostery/adblocker-playwright` 2.20.3 (adblock-proxy,
+  playwright-adblock and the root dev dependency together).
+
 ## [4.0.0] - 2026-11-19
 
 Dependency majors (OpenTelemetry, jsdom, vitest), the Node versions they require, and two fixes
