@@ -87,6 +87,13 @@ docker pull ghcr.io/tadmstr/searxng-mcp:latest
 
 Tags, uid, and provenance verification: [Deployment](docs/deployment.md#container-image).
 
+Since 4.0.0 the image ships the default `domains.json` at `/app/domains.json` (earlier images
+had none, so the llms.txt allowlist, boost/block lists and domain profiles were empty in every
+container). On startup the server logs `domains: llms_txt=N boost=N block=N profiles=N`, or a
+`WARNING` naming the path and the reason if the file can't be read or parsed. Zero counts mean
+the file didn't load. The images run Node 24; running from source needs Node
+`^22.22.2 || ^24.15.0 || >=26.0.0` (Node 20 and 25 are not supported).
+
 The reranker ships in this repo — `cd docker/reranker && docker compose up`, or pull `ghcr.io/tadmstr/searxng-mcp-reranker`. It is CPU-only, needs no API key, and has the model baked in so there is no cold start. See [`docker/reranker/README.md`](docker/reranker/README.md).
 
 Two adblocking sidecars are also published as images, one per fetch-tier group:
@@ -96,7 +103,9 @@ Two adblocking sidecars are also published as images, one per fetch-tier group:
   [`docker/adblock-proxy/README.md`](docker/adblock-proxy/README.md) for placement. Its filter
   lists are fetched at **runtime**, from `ADBLOCK_FILTERS_URL` (defaulted to EasyList +
   EasyPrivacy) and reloaded on a schedule — the opposite approach from the playwright sidecar
-  below, deliberately: only that image sits in front of an SSRF guard.
+  below, deliberately: only that image sits in front of an SSRF guard. If the startup load
+  fails, it retries on a backoff capped by `ADBLOCK_RETRY_MAX_MINUTES` rather than running
+  unfiltered until the next scheduled refresh; the details are in its README.
 - `ghcr.io/tadmstr/searxng-mcp-playwright-adblock` — EasyList/EasyPrivacy filtering for
   Firecrawl v2's renderer (tier 1). This is an **upgrade** of upstream's existing
   `AD_SERVING_DOMAINS` token list, not a new capability — that list still applies underneath. It
@@ -178,9 +187,11 @@ this.
 
 The fetch cascade, in full. Each stage is optional and skipped cleanly when unconfigured.
 
-The `llms.txt` fast path (`llms` → `llms_fetch` below) matches against the host currently
-allowlisted in `domains.json` — `platform.claude.com` — and extracts each page's section from
-the document's `url:` front-matter (lowercase, YAML-style).
+The `llms.txt` fast path (`llms` → `llms_fetch` below) matches against the `llms_txt` hosts
+in `domains.json` — the shipped file lists `platform.claude.com`, `docs.openai.com`,
+`docs.stripe.com`, `docs.crawl4ai.com`, `docs.firecrawl.dev` and `docs.cursor.com` — and
+extracts each page's section from the document's `url:` front-matter (lowercase, YAML-style).
+The container image carries this file at `/app/domains.json` since 4.0.0.
 
 ```mermaid
 flowchart TD
