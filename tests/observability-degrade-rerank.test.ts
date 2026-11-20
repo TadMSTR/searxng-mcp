@@ -120,9 +120,7 @@ describe("rerank span and top-score histogram", () => {
     stubReranker([0.3, 0.1, 0.2]);
     const { rerankWithFallback } = await import("../src/reranker.js");
 
-    expect(await rerankWithFallback("q", pool, 5, undefined, 0.95)).toEqual(
-      [],
-    );
+    expect(await rerankWithFallback("q", pool, 5, undefined, 0.95)).toEqual([]);
     expect(spans.attrs.rerank?.[0]).toEqual({
       "rerank.applied": true,
       "rerank.returned": 0,
@@ -194,9 +192,7 @@ describe("ollama degrade counters", () => {
     vi.stubGlobal("fetch", vi.fn().mockRejectedValue(err));
     const { summarizePages } = await loadOllama();
     await summarizePages("q", pages);
-    expect(degradeCalls()).toEqual([
-      { component: "ollama_summarize", reason },
-    ]);
+    expect(degradeCalls()).toEqual([{ component: "ollama_summarize", reason }]);
   });
 
   it("summarization: parse_error", async () => {

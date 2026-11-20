@@ -146,15 +146,18 @@ describe("searxng_errors_total covers every tool, once", () => {
   it.each([
     ["search_and_fetch", handleSearchAndFetch],
     ["search_and_summarize", handleSearchAndSummarize],
-  ] as const)("%s: each failed page fetch is counted as stage=fetch", async (tool, handler) => {
-    vi.mocked(fetchPage)
-      .mockResolvedValueOnce(page)
-      .mockRejectedValueOnce(new SsrfBlockedError("no"));
-    await handler({ query: "q", fetch_count: 2 });
-    expect(errorCalls()).toEqual([
-      { tool, stage: "fetch", error_type: "SsrfBlockedError" },
-    ]);
-  });
+  ] as const)(
+    "%s: each failed page fetch is counted as stage=fetch",
+    async (tool, handler) => {
+      vi.mocked(fetchPage)
+        .mockResolvedValueOnce(page)
+        .mockRejectedValueOnce(new SsrfBlockedError("no"));
+      await handler({ query: "q", fetch_count: 2 });
+      expect(errorCalls()).toEqual([
+        { tool, stage: "fetch", error_type: "SsrfBlockedError" },
+      ]);
+    },
+  );
 
   it("a successful call counts nothing", async () => {
     vi.mocked(fetchPage).mockResolvedValueOnce(page);
@@ -215,12 +218,17 @@ describe("span attributes", () => {
     ["search", handleSearch],
     ["search_and_fetch", handleSearchAndFetch],
     ["search_and_summarize", handleSearchAndSummarize],
-  ] as const)("tool.%s carries search.result_count after reranking", async (tool, handler) => {
-    vi.mocked(fetchPage).mockResolvedValue(page);
-    await handler({ query: "q", num_results: 3, fetch_count: 1 });
-    // searxSearch returned 3; the reranker mock keeps 2.
-    expect(spans.attrs[`tool.${tool}`]).toEqual([{ "search.result_count": 2 }]);
-  });
+  ] as const)(
+    "tool.%s carries search.result_count after reranking",
+    async (tool, handler) => {
+      vi.mocked(fetchPage).mockResolvedValue(page);
+      await handler({ query: "q", num_results: 3, fetch_count: 1 });
+      // searxSearch returned 3; the reranker mock keeps 2.
+      expect(spans.attrs[`tool.${tool}`]).toEqual([
+        { "search.result_count": 2 },
+      ]);
+    },
+  );
 
   it.each([
     [{ tierServed: "tier1_firecrawl", cacheHit: false }],

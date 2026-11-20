@@ -2,10 +2,12 @@
 // OTEL_EXPORTER_OTLP_ENDPOINT set, this module no-ops and never requires the
 // OTel packages at runtime (type-only imports below are erased by tsc).
 import type {
+  Context,
   Counter,
   Histogram,
   Meter,
   Span,
+  TextMapPropagator,
   Tracer,
 } from "@opentelemetry/api";
 import { redactUrlCredentialsInText } from "./log.js";
@@ -27,6 +29,11 @@ interface OtelApi {
     getMeter(name: string, version?: string): Meter;
   };
   SpanStatusCode: { OK: SpanStatusCode; ERROR: SpanStatusCode };
+  context: {
+    active(): Context;
+    with<T>(ctx: Context, fn: () => T): T;
+  };
+  propagation: Pick<TextMapPropagator, "extract">;
 }
 
 let tracer: Tracer | null = null;
@@ -231,3 +238,37 @@ export function recordHistogram(
   histograms[name]?.record(value, cleanAttrs(attrs));
 }
 
+/**
+ * Run `fn` with a caller's W3C trace context as the parent, so the caller's
+ * span becomes the parent of the `tool.*` span and the two halves of one call
+ * share a trace.
+ *
+ * Call this only for an AUTHENTICATED request: the HTTP transport calls it
+ * after the bearer check. Only `traceparent` and `tracestate` are read (no
+ * baggage), and only into trace context. A missing or malformed header leaves
+ * the context as it was, so `tool.*` starts a new root trace, which is the
+ * W3C propagator's own behaviour. With observability off this calls `fn`
+ * directly and loads nothing.
+ */
+export function withRemoteParent<T>(
+  headers: Record<string, string | string[] | undefined>,
+  fn: () => T,
+): T {
+  if (!otelApi) return fn();
+  const carrier: Record<string, string> = {};
+  for (const key of ["traceparent", "tracestate"] as const) {
+    const v = headers[key];
+    const first = Array.isArray(v) ? v[0] : v;
+    if (typeof first === "string") carrier[key] = first;
+  }
+  if (carrier.traceparent === undefined) return fn();
+  const parent = otelApi.propagation.extract(
+    otelApi.context.active(),
+    carrier,
+    {
+      get: (c: Record<string, string>, k: string) => c[k],
+      keys: (c: Record<string, string>) => Object.keys(c),
+    },
+  );
+  return otelApi.context.with(parent, fn);
+}

@@ -204,3 +204,163 @@ describe("emitGauges against the real SDK", () => {
     expect(body.includes("searxng_domain_tier_success_ratio")).toBe(true);
   }, 10_000);
 });
+
+describe("W3C traceparent from an authenticated HTTP caller", () => {
+  const TRACE_ID = "4bf92f3577b34da6a3ce929d0e0e4736";
+  const PARENT_ID = "00f067aa0ba902b7";
+  const TOKEN = "t".repeat(64);
+  let mcp: Server | undefined;
+
+  afterEach(async () => {
+    const s = mcp;
+    mcp = undefined;
+    if (s) await new Promise<void>((r) => s.close(() => r()));
+  });
+
+  // Through the real listener and the real MCP SDK transport into a tool
+  // handler: proves the context survives StreamableHTTPServerTransport's
+  // dispatch, which a unit test of withRemoteParent alone could not.
+  async function callProbe(headers: Record<string, string>) {
+    vi.stubEnv("SEARXNG_MCP_AUTH_TOKEN", TOKEN);
+    const obs = await import("../src/observability.js");
+    await obs.initObservability();
+    const { createHttpRequestListener } = await import(
+      "../src/http-transport.js"
+    );
+    const { McpServer } = await import(
+      "@modelcontextprotocol/sdk/server/mcp.js"
+    );
+    const seen: (string | undefined)[] = [];
+    mcp = createServer(
+      createHttpRequestListener(() => {
+        const s = new McpServer({ name: "t", version: "0" });
+        s.registerTool("probe", { description: "p" }, async () =>
+          obs.withSpan("tool.probe", {}, () => {
+            seen.push(obs.getCurrentTraceId());
+            return { content: [{ type: "text" as const, text: "ok" }] };
+          }),
+        );
+        return s;
+      }),
+    );
+    await new Promise<void>((r) => mcp?.listen(0, "127.0.0.1", r));
+    const url = `http://127.0.0.1:${(mcp.address() as AddressInfo).port}/mcp`;
+    const base = {
+      "Content-Type": "application/json",
+      Accept: "application/json, text/event-stream",
+      Authorization: `Bearer ${TOKEN}`,
+    };
+    const init = await fetch(url, {
+      method: "POST",
+      headers: base,
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "initialize",
+        params: {
+          protocolVersion: "2025-06-18",
+          capabilities: {},
+          clientInfo: { name: "c", version: "0" },
+        },
+      }),
+    });
+    await init.text();
+    const sid = init.headers.get("mcp-session-id") ?? "";
+    const withSid = { ...base, "mcp-session-id": sid };
+    await (
+      await fetch(url, {
+        method: "POST",
+        headers: withSid,
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          method: "notifications/initialized",
+        }),
+      })
+    ).text();
+    const call = await fetch(url, {
+      method: "POST",
+      headers: { ...withSid, ...headers },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 2,
+        method: "tools/call",
+        params: { name: "probe", arguments: {} },
+      }),
+    });
+    const text = await call.text();
+    await obs.shutdownObservability();
+    return { seen, text, status: call.status };
+  }
+
+  it("the tool span joins the caller's trace", async () => {
+    const r = await callProbe({
+      traceparent: `00-${TRACE_ID}-${PARENT_ID}-01`,
+    });
+    expect(r.status).toBe(200);
+    expect(r.text).toContain("ok");
+    expect(r.seen).toEqual([TRACE_ID]);
+    // The exported span names the caller's span as its parent.
+    const body = Buffer.concat(posts("/v1/traces").map((t) => t.body));
+    expect(body.includes(TRACE_ID)).toBe(true);
+  }, 15_000);
+
+  it.each([
+    ["garbage", "not-a-traceparent"],
+    ["all-zero trace id", `00-${"0".repeat(32)}-${PARENT_ID}-01`],
+  ])(
+    "a %s header starts a new root trace and fails nothing",
+    async (_n, tp) => {
+      const r = await callProbe({ traceparent: tp });
+      expect(r.status).toBe(200);
+      expect(r.text).toContain("ok");
+      expect(r.seen).toHaveLength(1);
+      expect(r.seen[0]).toMatch(/^[0-9a-f]{32}$/);
+      expect(r.seen[0]).not.toBe(TRACE_ID);
+      expect(r.seen[0]).not.toBe("0".repeat(32));
+    },
+    15_000,
+  );
+
+  it("no header: a new root trace (the control)", async () => {
+    const r = await callProbe({});
+    expect(r.seen).toHaveLength(1);
+    expect(r.seen[0]).not.toBe(TRACE_ID);
+  }, 15_000);
+});
+
+describe("withRemoteParent", () => {
+  it("with observability off, runs fn and reads nothing", async () => {
+    vi.stubEnv("OTEL_EXPORTER_OTLP_ENDPOINT", "");
+    const obs = await import("../src/observability.js");
+    await obs.initObservability();
+    const out = obs.withRemoteParent(
+      {
+        traceparent: "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
+      },
+      () => obs.getCurrentTraceId() ?? "none",
+    );
+    expect(out).toBe("none");
+  });
+
+  it("takes the first value of a repeated header and ignores baggage", async () => {
+    const obs = await import("../src/observability.js");
+    await obs.initObservability();
+    const api = await import("@opentelemetry/api");
+    const out = obs.withRemoteParent(
+      {
+        traceparent: [
+          "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
+          "00-11111111111111111111111111111111-00f067aa0ba902b7-01",
+        ],
+        baggage: "k=v",
+      },
+      () => ({
+        trace: api.trace.getSpanContext(api.context.active())?.traceId,
+        baggage: api.propagation.getBaggage(api.context.active()),
+      }),
+    );
+    await obs.shutdownObservability();
+    expect(out.trace).toBe("4bf92f3577b34da6a3ce929d0e0e4736");
+    expect(out.baggage).toBeUndefined();
+  });
+});
