@@ -31,6 +31,8 @@ import { getTiers, TIER_NAME } from "./routing.js";
 import { assertResolvedPublic } from "./ssrf-guard.js";
 import {
   fetchRawHtmlForMetadata,
+  GithubFastPathError,
+  githubFallsBackToCascade,
   githubFetch,
   isGithubFastPathUrl,
   rawFetch,
@@ -141,6 +143,11 @@ interface TierOutcome {
 // is what cost weeks on vikunja#682. Audit: 2026-09-06/searxng-mcp-fix-pass-2026-09,
 // finding OE-02 (Low). Decision: Ted, 2026-09-06. The bound itself now lives in
 // fetch-utils.ts as boundRelayedText(), shared with hister.ts.
+// Since 4.1.0 the GitHub fast path is a third relay source under the same
+// reasoning: its failure reason (GitHub's status line, or a ref-lookup error
+// that can quote the start of GitHub's response body) reaches the caller in
+// GithubFastPathError and leads the cascade's error list, through the same
+// boundRelayedText bound. Audit: 2026-11-20/searxng-mcp-backlog-2026-11-p5-observability, F-04 (Info).
 
 async function runTier<T extends TierResult | null>(
   tier: TierName,
@@ -202,6 +209,13 @@ async function runTier<T extends TierResult | null>(
   }
 }
 
+/** What served a fetchPage call, as reported to its `onServed` callback. */
+export interface FetchServed {
+  /** Same value as the `fetch.completed` event's `tier_served`. */
+  tierServed: string;
+  cacheHit: boolean;
+}
+
 // The fetch cache stores content at this size and callers slice it down on
 // read. A caller requesting more than the historical 8000-char default (e.g. a
 // large fetch_url max_tokens budget) raises the store size up to this hard
@@ -215,10 +229,32 @@ export async function fetchPage(
   domainProfile?: string,
   preferFit = false,
   tuning?: FetchTuning,
+  onServed?: (served: FetchServed) => void,
 ): Promise<{ title: string; url: string; text: string }> {
-  return withSpan("fetch", { "fetch.url": url }, async () => {
+  return withSpan("fetch", { "fetch.url": url }, async (span) => {
     const t_total = Date.now();
+    // Every successful return goes through here: the NATS event, the span
+    // attributes and the caller's callback all get the same tier_served.
+    // `tier_served` was on the event only until 4.1.0, so traces could not say
+    // which tier served a page, and a cache hit (no tier span at all) left no
+    // trace marker.
+    const completed = (p: Parameters<typeof events.fetchCompleted>[0]) => {
+      events.fetchCompleted(p);
+      const served = {
+        tierServed: p.tier_served,
+        cacheHit: p.tier_served === "cache",
+      };
+      span?.setAttributes({
+        "fetch.tier_served": served.tierServed,
+        "fetch.cache_hit": served.cacheHit,
+      });
+      onServed?.(served);
+    };
     assertPublicUrl(url);
+    // The caller's string, not the parsed copy the guard checked: WHATWG parsing
+    // drops tab/CR/LF, so the raw string can carry them, and it can carry
+    // userinfo. Every `url=` log line below uses this form, as crawl.ts does.
+    const logUrl = boundRelayedText(url);
     // How much to actually fetch/store: at least the default (keeps cache
     // entries reusable), at most the hard ceiling, but never less than what the
     // caller asked to read back.
@@ -250,7 +286,7 @@ export async function fetchPage(
           url: string;
           text: string;
         };
-        events.fetchCompleted({
+        completed({
           url,
           tier_served: "cache",
           title: r.title,
@@ -263,440 +299,506 @@ export async function fetchPage(
       }
     }
 
-    let result: TierResult;
+    let result: TierResult | undefined;
     let tierServed = "github";
+    // Set when the GitHub fast path failed on a URL the cascade can also serve.
+    let githubFailure: TierOutcome | undefined;
     if (isGithubFastPathUrl(url)) {
       // GitHub fast path — only for URL shapes it can serve as the page they
       // name (repo root, blob, tree, releases, raw, API); other github.com
       // pages such as issues take the normal cascade below. Routed through
       // runTier() so its hit/miss/error is recorded in the domain-db and OTel
       // like any other tier (SXNG-10). githubFetch throws on failure; runTier
-      // catches it, records an error attempt, and returns null, so we
-      // translate that back into a throw for the caller.
-      const gh = await runTier<TierResult | null>("github", url, () =>
-        githubFetch(url, storeChars),
+      // catches it, records an error attempt, and returns null.
+      //
+      // The reason runTier hands to onOutcome is carried out. Until 4.1.0 the
+      // caller got only "GitHub fast-path fetch failed": a 404 for a file that
+      // had been deleted upstream looked exactly like a token or rewrite
+      // fault, and was investigated as one.
+      let ghOutcome: TierOutcome | undefined;
+      const gh = await runTier<TierResult | null>(
+        "github",
+        url,
+        () => githubFetch(url, storeChars),
+        undefined,
+        (o) => {
+          ghOutcome = o;
+        },
       );
-      if (!gh) {
-        events.error({
-          stage: "fetch",
-          url,
-          error_type: "github_fetch_failed",
-          message: "GitHub fast-path fetch failed",
-        });
-        throw new Error("GitHub fast-path fetch failed");
-      }
-      result = gh;
-    } else {
-      // llms.txt fast path — for whitelisted docs domains, try fetching the
-      // section from a pre-cached llms-full.txt before invoking any tier.
-      //
-      // The allowlist test is HERE rather than only inside tryLlmsTxtFetch, so
-      // the span wraps work performed instead of a call site traversed. It was
-      // the other way round, and the cost was not a tidiness one: SigNoz showed
-      // ~60 `llms_full_txt` spans over 15 days against ~105 total fetches, which
-      // reads as a path under constant use. Six domains are allowlisted, so the
-      // large majority of those spans were no-ops that never touched an
-      // llms-full.txt. A span that counts traversals makes a dead path and a busy
-      // path look identical — vikunja#640 is exactly that failure, and this is
-      // the instrumentation half of it.
-      //
-      // Shape deliberately matches the kiwix/youtube/reddit fast paths below,
-      // which guard at the call site and were always correct. The two paths that
-      // were wrong, this one and hister, were the only two that did not.
-      const llms = isLlmsTxtDomain(url)
-        ? await withSpan("llms_full_txt", { "fetch.url": url }, () =>
-            tryLlmsTxtFetch(url, storeChars),
-          )
-        : null;
-      if (llms) {
-        incCounter("fetch", { tier: "llms_full_txt", outcome: "hit" });
-        const persisted = {
-          title: llms.title,
-          url: llms.url,
-          text: llms.text,
-        };
-        await cacheSet(key, JSON.stringify(persisted), FETCH_CACHE_TTL_SECONDS);
-        events.fetchCompleted({
-          url,
-          tier_served: "llms_full_txt",
-          title: llms.title,
-          text_len: llms.text.length,
-          latency_ms: Date.now() - t_total,
-          source: "llms_full_txt",
-        });
-        return { ...persisted, text: persisted.text.slice(0, maxChars) };
-      }
-
-      // Kiwix fast path — intercepts Wikipedia, Stack Overflow, Arch Wiki
-      // requests and serves from local Kiwix before the tier cascade.
-      if (isKiwixHost(url)) {
-        const kiwix = await withSpan("kiwix", { "fetch.url": url }, () =>
-          kiwixFetch(url, storeChars),
+      if (gh) {
+        result = gh;
+      } else {
+        const reason = ghOutcome?.reason ?? "attempted, no content";
+        if (!githubFallsBackToCascade(url)) {
+          const err = new GithubFastPathError(reason);
+          events.error({
+            stage: "fetch",
+            url,
+            error_type: "github_fetch_failed",
+            message: err.message,
+          });
+          throw err;
+        }
+        // A file URL: the cascade can render it, so a fast-path failure is a
+        // miss, not the end. Its reason leads the cascade's own list.
+        githubFailure = { tier: "github", reason };
+        console.error(
+          `[searxng-mcp] fetch github fast path miss url=${logUrl} — falling back to the cascade`,
         );
-        if (kiwix) {
-          incCounter("fetch", { tier: "kiwix", outcome: "hit" });
+      }
+    }
+    if (!result) {
+      try {
+        // llms.txt fast path — for whitelisted docs domains, try fetching the
+        // section from a pre-cached llms-full.txt before invoking any tier.
+        //
+        // The allowlist test is HERE rather than only inside tryLlmsTxtFetch, so
+        // the span wraps work performed instead of a call site traversed. It was
+        // the other way round, and the cost was not a tidiness one: SigNoz showed
+        // ~60 `llms_full_txt` spans over 15 days against ~105 total fetches, which
+        // reads as a path under constant use. Six domains are allowlisted, so the
+        // large majority of those spans were no-ops that never touched an
+        // llms-full.txt. A span that counts traversals makes a dead path and a busy
+        // path look identical — vikunja#640 is exactly that failure, and this is
+        // the instrumentation half of it.
+        //
+        // Shape deliberately matches the kiwix/youtube/reddit fast paths below,
+        // which guard at the call site and were always correct. The two paths that
+        // were wrong, this one and hister, were the only two that did not.
+        const llms = isLlmsTxtDomain(url)
+          ? await withSpan("llms_full_txt", { "fetch.url": url }, () =>
+              tryLlmsTxtFetch(url, storeChars),
+            )
+          : null;
+        if (llms) {
+          incCounter("fetch", { tier: "llms_full_txt", outcome: "hit" });
           const persisted = {
-            title: kiwix.title,
-            url: kiwix.url,
-            text: kiwix.text,
+            title: llms.title,
+            url: llms.url,
+            text: llms.text,
           };
           await cacheSet(
             key,
             JSON.stringify(persisted),
             FETCH_CACHE_TTL_SECONDS,
           );
-          events.fetchCompleted({
+          completed({
             url,
-            tier_served: "kiwix",
-            title: kiwix.title,
-            text_len: kiwix.text.length,
+            tier_served: "llms_full_txt",
+            title: llms.title,
+            text_len: llms.text.length,
             latency_ms: Date.now() - t_total,
-            source: "kiwix",
+            source: "llms_full_txt",
           });
           return { ...persisted, text: persisted.text.slice(0, maxChars) };
         }
-        // Kiwix miss (article not in ZIM or Kiwix down) — fall through to cascade
-        incCounter("fetch", { tier: "kiwix", outcome: "miss" });
-      }
 
-      // Hister fast path — check Ted's browsing-history index before the tier
-      // cascade. Serves pages that are login-walled or JS-heavy (already rendered
-      // by Firefox) and avoids re-fetching stable docs that are indexed here.
-      //
-      // GUARDED AT THE CALL SITE. The configuration test used to live inside
-      // histerFetch while the span wrapped the call unconditionally, and the
-      // running container has no HISTER_* set at all — so SigNoz showed ~60
-      // `hister` spans over 15 days and every single one was a no-op that returned
-      // at the first line. Zero Hister lookups have ever happened. Do not read
-      // that span count as a baseline for anything: the correct pre-fix number of
-      // real probes is zero (vikunja#643).
-      //
-      // The miss counter moved in here for the same reason. Outside the guard it
-      // counted every fetch that got this far as a Hister miss, so the metric
-      // agreed with the spans and the two corroborated each other into looking
-      // like evidence.
-      //
-      // Shape matches kiwix/youtube/reddit above, which were always correct.
-      const hister = histerConfigured()
-        ? await withSpan("hister", { "fetch.url": url }, () =>
-            histerFetch(url, storeChars),
-          )
-        : null;
-      if (hister) {
-        // No incCounter(hit) here either. histerFetch owns its own accounting on
-        // BOTH outcomes, and counting the hit in two places inflated it by exactly
-        // 2x — which, on a build whose whole subject is telemetry that
-        // misreports reality, is worth stating rather than quietly deleting.
-        // Caught by CodeRabbit on PR #65.
-        const persisted = {
-          title: hister.title,
-          url: hister.url,
-          text: hister.text,
-        };
-        await cacheSet(key, JSON.stringify(persisted), FETCH_CACHE_TTL_SECONDS);
-        events.fetchCompleted({
-          url,
-          tier_served: "hister",
-          title: hister.title,
-          text_len: hister.text.length,
-          latency_ms: Date.now() - t_total,
-          source: "hister",
-        });
-        return { ...persisted, text: persisted.text.slice(0, maxChars) };
-      }
-      // No `incCounter(miss)` here. histerFetch records its own miss and, unlike
-      // this line, records WHY — "not-indexed" reads very differently from
-      // "schema-mismatch" or "http-error", and collapsing them into one
-      // reasonless miss is what made a totally broken parser look like an empty
-      // index for months (vikunja#643). A count here as well would double every
-      // miss and reintroduce the reasonless one.
-
-      // YouTube transcript fast path — timedtext captions for known video URLs.
-      // Robots-gated by default (see youtubeFetch); on miss, falls through so
-      // the cascade can still fetch the watch page's title/description.
-      if (isYouTubeHost(url)) {
-        const yt = await withSpan("youtube", { "fetch.url": url }, () =>
-          youtubeFetch(url, storeChars),
-        );
-        if (yt) {
-          incCounter("fetch", { tier: "youtube", outcome: "hit" });
-          const persisted = { title: yt.title, url: yt.url, text: yt.text };
-          await cacheSet(
-            key,
-            JSON.stringify(persisted),
-            FETCH_CACHE_TTL_SECONDS,
+        // Kiwix fast path — intercepts Wikipedia, Stack Overflow, Arch Wiki
+        // requests and serves from local Kiwix before the tier cascade.
+        if (isKiwixHost(url)) {
+          const kiwix = await withSpan("kiwix", { "fetch.url": url }, () =>
+            kiwixFetch(url, storeChars),
           );
-          events.fetchCompleted({
-            url,
-            tier_served: "youtube",
-            title: yt.title,
-            text_len: yt.text.length,
-            latency_ms: Date.now() - t_total,
-            source: "youtube",
-          });
-          return { ...persisted, text: persisted.text.slice(0, maxChars) };
-        }
-        incCounter("fetch", { tier: "youtube", outcome: "miss" });
-      }
-
-      // Reddit fast path — public .json for post + top comments. Robots-gated by
-      // default (see redditFetch); on miss, falls through to the cascade.
-      if (isRedditHost(url)) {
-        const rd = await withSpan("reddit", { "fetch.url": url }, () =>
-          redditFetch(url, storeChars),
-        );
-        if (rd) {
-          incCounter("fetch", { tier: "reddit", outcome: "hit" });
-          const persisted = { title: rd.title, url: rd.url, text: rd.text };
-          await cacheSet(
-            key,
-            JSON.stringify(persisted),
-            FETCH_CACHE_TTL_SECONDS,
-          );
-          events.fetchCompleted({
-            url,
-            tier_served: "reddit",
-            title: rd.title,
-            text_len: rd.text.length,
-            latency_ms: Date.now() - t_total,
-            source: "reddit",
-          });
-          return { ...persisted, text: persisted.text.slice(0, maxChars) };
-        }
-        incCounter("fetch", { tier: "reddit", outcome: "miss" });
-      }
-
-      // robots.txt gate — skips fetch on disallow (cached 24h per origin)
-      const robots = await checkRobots(url, "searxng-mcp");
-      if (!robots.allowed) {
-        console.error(
-          `[searxng-mcp] fetch skipped_robots url=${url} reason=${robots.reason ?? "disallowed"}`,
-        );
-        incCounter("fetch", { tier: "robots", outcome: "skipped_robots" });
-        events.fetchTierSkipped({
-          url,
-          tier: "robots",
-          reason: robots.reason ?? "disallowed",
-        });
-        throw new RobotsDisallowedError(url);
-      }
-
-      // Armed by runTier when any tier reports a challenge for this URL. A
-      // plain local, so it is request-scoped by construction — the solver must
-      // never fire on the strength of a challenge seen in some other request.
-      let challengeDetected = false;
-      const onChallenge = () => {
-        challengeDetected = true;
-      };
-
-      // Resolve data-driven + operator skips before kicking off the cascade.
-      const { active: activeTiers, skipped: skipDecisions } =
-        await getTiers(url);
-      // Announce all skipped tiers up front (metrics + events + logs).
-      for (const { tier: slot, reason } of skipDecisions) {
-        const tierName = TIER_NAME[slot];
-        // `reason` is labelled here, not just carried on the event: without it
-        // searxng_fetch_total{outcome="skipped"} cannot tell a tier that is not
-        // configured from one that is failing. Three values, so cardinality is
-        // a non-issue, and existing queries that do not select on reason still
-        // aggregate the same total.
-        incCounter("fetch", { tier: tierName, outcome: "skipped", reason });
-        events.fetchTierSkipped({ url, tier: tierName, reason });
-        console.error(
-          `[searxng-mcp] fetch ${slot} skipped url=${url} reason=${reason}`,
-        );
-      }
-
-      // Tier1 (Firecrawl) and tier2 (Crawl4AI) resolve and fetch the URL on our
-      // behalf, so the connect-time DNS guard can't cover them. Pre-resolve the
-      // hostname here (once, before any external-fetcher dispatch) so a public
-      // hostname that DNS-rebinds to an internal address is rejected before it's
-      // handed to those services — the string-level assertPublicUrl above only
-      // catches literal private IPs. Throws SsrfBlockedError on a private
-      // resolution (surfaces to the caller as a fetch error).
-      await assertResolvedPublic(url);
-
-      // SECURITY[accepted]: PDF URLs now take this path to tier 1 rather than
-      // being diverted earlier, so they share tier 1's pre-existing SSRF-10
-      // exposure — Firecrawl and Crawl4AI resolve and connect in their own
-      // processes, so the pre-check above narrows but cannot fully close the
-      // DNS-rebinding TOCTOU window for them. No new code-level gap: the gap is
-      // unchanged, only the set of URLs traversing it grew. Audit:
-      // 2026-09-06/searxng-mcp-fix-pass-2026-09, finding SSRF-10 (Low) —
-      // auditor's own disposition was "no action required from this build".
-      // Since 3.32.0 the URLs reaching tier 1 also include off-site links that
-      // a crawled page chose: crawl_site with same_domain_only false and BFS
-      // enabled sends them through fetchPage. So this residual covers URLs a
-      // third-party page author picked, not only URLs a caller supplied. BFS is
-      // off by default. Audit 2026-11-17, finding F-09 (Info).
-      // SECURITY[control]: assertResolvedPublic runs once here, before any tier
-      // dispatch, for every URL including PDFs.
-
-      // No PDF fast path. There used to be one here, routing every `.pdf` URL
-      // straight to tier 2 on the strength of "Firecrawl can't extract PDF
-      // text". That was true of trieve/firecrawl v0.0.55 and is false of v2,
-      // which extracts PDFs natively (see FirecrawlCapabilities.pdf). Worse,
-      // the tier it diverted to cannot do the job at all: Crawl4AI renders the
-      // PDF in a browser, finds no text nodes, and misfires its anti-bot
-      // heuristic, and the resulting null was reported as "CRAWL4AI_URL not
-      // configured" on containers where it plainly was. PDFs now take the
-      // ordinary cascade, so tier 1 serves them and a v1 backend degrades
-      // through to the message in tiers/raw.ts (vikunja#682).
-
-      // Content-type fast path — a JSON/XML/YAML/CSV/plain-text endpoint has
-      // nothing for a headless browser to render. Firecrawl returns empty
-      // markdown for these and runTier books it as `empty_result`, which is how
-      // tier1 accumulated a 0/27 lifetime record made up almost entirely of API
-      // and CDN hosts while Firecrawl itself was healthy.
-      //
-      // Probe is fail-open: an unreachable, HEAD-refusing or HTML-serving host
-      // returns null and drops through to the normal cascade unchanged. Only a
-      // positive identification diverts.
-      const structuredKind = await probeStructuredContent(url);
-      if (structuredKind) {
-        console.error(
-          `[searxng-mcp] fetch content_type fast_path url=${url} kind=${structuredKind}`,
-        );
-        const structured = await runTier(
-          "tier3_rawfetch",
-          url,
-          () => rawFetch(url, storeChars, tuning),
-          onChallenge,
-        );
-        if (structured) {
-          const persisted = {
-            title: structured.title,
-            url: structured.url,
-            text: structured.text,
-          };
-          await cacheSet(
-            key,
-            JSON.stringify(persisted),
-            FETCH_CACHE_TTL_SECONDS,
-          );
-          events.fetchCompleted({
-            url,
-            tier_served: "tier3_rawfetch",
-            title: structured.title,
-            text_len: structured.text.length,
-            latency_ms: Date.now() - t_total,
-          });
-          return { ...persisted, text: persisted.text.slice(0, maxChars) };
-        }
-        // Raw fetch failed on something the probe said was structured — fall
-        // through rather than throwing. The cascade may still have an answer
-        // (wayback, a tier that handles the error differently), and a probe
-        // must not be able to turn a fetchable URL into a hard failure.
-        console.error(
-          `[searxng-mcp] fetch content_type fast_path miss url=${url} — falling through to cascade`,
-        );
-      }
-
-      // Run tier cascade and side-channel raw-HTML metadata fetch in parallel.
-      const metadataHtmlPromise = fetchRawHtmlForMetadata(url);
-
-      // Why each tier produced nothing, in cascade order. Seeded with the
-      // tiers that never ran, so "skipped because unconfigured" and "ran and
-      // came back empty" stay distinguishable in the final error rather than
-      // collapsing into one unexplained failure (vikunja#682).
-      const outcomes: TierOutcome[] = skipDecisions.map((d) => ({
-        tier: TIER_NAME[d.tier],
-        reason: `skipped (${d.reason})`,
-      }));
-      const noteOutcome = (o: TierOutcome) => outcomes.push(o);
-
-      let fetched: TierResult | null = null;
-      for (const tier of activeTiers) {
-        fetched = await runTier(
-          tier.name,
-          url,
-          () => tier.fetch(url, storeChars, preferFit, tuning),
-          onChallenge,
-          noteOutcome,
-        );
-        if (fetched) {
-          tierServed = tier.name;
-          if (tier.slot !== "tier1") {
-            console.error(`[searxng-mcp] fetch ${tier.slot} hit url=${url}`);
+          if (kiwix) {
+            incCounter("fetch", { tier: "kiwix", outcome: "hit" });
+            const persisted = {
+              title: kiwix.title,
+              url: kiwix.url,
+              text: kiwix.text,
+            };
+            await cacheSet(
+              key,
+              JSON.stringify(persisted),
+              FETCH_CACHE_TTL_SECONDS,
+            );
+            completed({
+              url,
+              tier_served: "kiwix",
+              title: kiwix.title,
+              text_len: kiwix.text.length,
+              latency_ms: Date.now() - t_total,
+              source: "kiwix",
+            });
+            return { ...persisted, text: persisted.text.slice(0, maxChars) };
           }
-          break;
+          // Kiwix miss (article not in ZIM or Kiwix down) — fall through to cascade
+          incCounter("fetch", { tier: "kiwix", outcome: "miss" });
         }
-        console.error(`[searxng-mcp] fetch ${tier.slot} miss url=${url}`);
-      }
 
-      // Challenge solver. Detection-gated: it fires only when a tier actually
-      // reported `challenge_detected` for this URL, never on an unchallenged
-      // one. searxng-mcp already runs two browser-rendering tiers ahead of
-      // this, so solving unconditionally would re-render pages that were never
-      // challenged, at seconds of latency and hundreds of MB of RAM each.
-      //
-      // Dispatched directly here rather than as a cascade tier, following
-      // tier4_wayback and github: it takes a TierName but no TierSlot, which
-      // keeps it out of computeTierSkips and the tier_skip domain config.
-      // Placed after tier3 because a browser must not run ahead of a cheap raw
-      // fetch that frequently succeeds, and before tier4_wayback because a
-      // solved live page beats an archived one.
-      //
-      // A solver miss is expected and is not an error — it falls through to
-      // wayback exactly as a tier miss does.
-      if (!fetched && challengeDetected) {
-        console.error(`[searxng-mcp] fetch solver_byparr attempt url=${url}`);
-        fetched = await runTier(
-          "solver_byparr",
-          url,
-          () => solverFetch(url, storeChars, tuning),
-          undefined,
-          noteOutcome,
+        // Hister fast path — check Ted's browsing-history index before the tier
+        // cascade. Serves pages that are login-walled or JS-heavy (already rendered
+        // by Firefox) and avoids re-fetching stable docs that are indexed here.
+        //
+        // GUARDED AT THE CALL SITE. The configuration test used to live inside
+        // histerFetch while the span wrapped the call unconditionally, and the
+        // running container has no HISTER_* set at all — so SigNoz showed ~60
+        // `hister` spans over 15 days and every single one was a no-op that returned
+        // at the first line. Zero Hister lookups have ever happened. Do not read
+        // that span count as a baseline for anything: the correct pre-fix number of
+        // real probes is zero (vikunja#643).
+        //
+        // The miss counter moved in here for the same reason. Outside the guard it
+        // counted every fetch that got this far as a Hister miss, so the metric
+        // agreed with the spans and the two corroborated each other into looking
+        // like evidence.
+        //
+        // Shape matches kiwix/youtube/reddit above, which were always correct.
+        const hister = histerConfigured()
+          ? await withSpan("hister", { "fetch.url": url }, () =>
+              histerFetch(url, storeChars),
+            )
+          : null;
+        if (hister) {
+          // No incCounter(hit) here either. histerFetch owns its own accounting on
+          // BOTH outcomes, and counting the hit in two places inflated it by exactly
+          // 2x — which, on a build whose whole subject is telemetry that
+          // misreports reality, is worth stating rather than quietly deleting.
+          // Caught by CodeRabbit on PR #65.
+          const persisted = {
+            title: hister.title,
+            url: hister.url,
+            text: hister.text,
+          };
+          await cacheSet(
+            key,
+            JSON.stringify(persisted),
+            FETCH_CACHE_TTL_SECONDS,
+          );
+          completed({
+            url,
+            tier_served: "hister",
+            title: hister.title,
+            text_len: hister.text.length,
+            latency_ms: Date.now() - t_total,
+            source: "hister",
+          });
+          return { ...persisted, text: persisted.text.slice(0, maxChars) };
+        }
+        // No `incCounter(miss)` here. histerFetch records its own miss and, unlike
+        // this line, records WHY — "not-indexed" reads very differently from
+        // "schema-mismatch" or "http-error", and collapsing them into one
+        // reasonless miss is what made a totally broken parser look like an empty
+        // index for months (vikunja#643). A count here as well would double every
+        // miss and reintroduce the reasonless one.
+
+        // YouTube transcript fast path — timedtext captions for known video URLs.
+        // Robots-gated by default (see youtubeFetch); on miss, falls through so
+        // the cascade can still fetch the watch page's title/description.
+        if (isYouTubeHost(url)) {
+          const yt = await withSpan("youtube", { "fetch.url": url }, () =>
+            youtubeFetch(url, storeChars),
+          );
+          if (yt) {
+            incCounter("fetch", { tier: "youtube", outcome: "hit" });
+            const persisted = { title: yt.title, url: yt.url, text: yt.text };
+            await cacheSet(
+              key,
+              JSON.stringify(persisted),
+              FETCH_CACHE_TTL_SECONDS,
+            );
+            completed({
+              url,
+              tier_served: "youtube",
+              title: yt.title,
+              text_len: yt.text.length,
+              latency_ms: Date.now() - t_total,
+              source: "youtube",
+            });
+            return { ...persisted, text: persisted.text.slice(0, maxChars) };
+          }
+          incCounter("fetch", { tier: "youtube", outcome: "miss" });
+        }
+
+        // Reddit fast path — public .json for post + top comments. Robots-gated by
+        // default (see redditFetch); on miss, falls through to the cascade.
+        if (isRedditHost(url)) {
+          const rd = await withSpan("reddit", { "fetch.url": url }, () =>
+            redditFetch(url, storeChars),
+          );
+          if (rd) {
+            incCounter("fetch", { tier: "reddit", outcome: "hit" });
+            const persisted = { title: rd.title, url: rd.url, text: rd.text };
+            await cacheSet(
+              key,
+              JSON.stringify(persisted),
+              FETCH_CACHE_TTL_SECONDS,
+            );
+            completed({
+              url,
+              tier_served: "reddit",
+              title: rd.title,
+              text_len: rd.text.length,
+              latency_ms: Date.now() - t_total,
+              source: "reddit",
+            });
+            return { ...persisted, text: persisted.text.slice(0, maxChars) };
+          }
+          incCounter("fetch", { tier: "reddit", outcome: "miss" });
+        }
+
+        // robots.txt gate — skips fetch on disallow (cached 24h per origin)
+        const robots = await checkRobots(url, "searxng-mcp");
+        if (!robots.allowed) {
+          console.error(
+            `[searxng-mcp] fetch skipped_robots url=${logUrl} reason=${robots.reason ?? "disallowed"}`,
+          );
+          incCounter("fetch", { tier: "robots", outcome: "skipped_robots" });
+          events.fetchTierSkipped({
+            url,
+            tier: "robots",
+            reason: robots.reason ?? "disallowed",
+          });
+          throw new RobotsDisallowedError(url);
+        }
+
+        // Armed by runTier when any tier reports a challenge for this URL. A
+        // plain local, so it is request-scoped by construction — the solver must
+        // never fire on the strength of a challenge seen in some other request.
+        let challengeDetected = false;
+        const onChallenge = () => {
+          challengeDetected = true;
+        };
+
+        // Resolve data-driven + operator skips before kicking off the cascade.
+        const { active: activeTiers, skipped: skipDecisions } =
+          await getTiers(url);
+        // Announce all skipped tiers up front (metrics + events + logs).
+        for (const { tier: slot, reason } of skipDecisions) {
+          const tierName = TIER_NAME[slot];
+          // `reason` is labelled here, not just carried on the event: without it
+          // searxng_fetch_total{outcome="skipped"} cannot tell a tier that is not
+          // configured from one that is failing. Three values, so cardinality is
+          // a non-issue, and existing queries that do not select on reason still
+          // aggregate the same total.
+          incCounter("fetch", { tier: tierName, outcome: "skipped", reason });
+          events.fetchTierSkipped({ url, tier: tierName, reason });
+          console.error(
+            `[searxng-mcp] fetch ${slot} skipped url=${logUrl} reason=${reason}`,
+          );
+        }
+
+        // Tier1 (Firecrawl) and tier2 (Crawl4AI) resolve and fetch the URL on our
+        // behalf, so the connect-time DNS guard can't cover them. Pre-resolve the
+        // hostname here (once, before any external-fetcher dispatch) so a public
+        // hostname that DNS-rebinds to an internal address is rejected before it's
+        // handed to those services — the string-level assertPublicUrl above only
+        // catches literal private IPs. Throws SsrfBlockedError on a private
+        // resolution (surfaces to the caller as a fetch error).
+        await assertResolvedPublic(url);
+
+        // SECURITY[accepted]: PDF URLs now take this path to tier 1 rather than
+        // being diverted earlier, so they share tier 1's pre-existing SSRF-10
+        // exposure — Firecrawl and Crawl4AI resolve and connect in their own
+        // processes, so the pre-check above narrows but cannot fully close the
+        // DNS-rebinding TOCTOU window for them. No new code-level gap: the gap is
+        // unchanged, only the set of URLs traversing it grew. Audit:
+        // 2026-09-06/searxng-mcp-fix-pass-2026-09, finding SSRF-10 (Low) —
+        // auditor's own disposition was "no action required from this build".
+        // Since 3.32.0 the URLs reaching tier 1 also include off-site links that
+        // a crawled page chose: crawl_site with same_domain_only false and BFS
+        // enabled sends them through fetchPage. So this residual covers URLs a
+        // third-party page author picked, not only URLs a caller supplied. BFS is
+        // off by default. Audit 2026-11-17, finding F-09 (Info).
+        // SECURITY[control]: assertResolvedPublic runs once here, before any tier
+        // dispatch, for every URL including PDFs.
+
+        // No PDF fast path. There used to be one here, routing every `.pdf` URL
+        // straight to tier 2 on the strength of "Firecrawl can't extract PDF
+        // text". That was true of trieve/firecrawl v0.0.55 and is false of v2,
+        // which extracts PDFs natively (see FirecrawlCapabilities.pdf). Worse,
+        // the tier it diverted to cannot do the job at all: Crawl4AI renders the
+        // PDF in a browser, finds no text nodes, and misfires its anti-bot
+        // heuristic, and the resulting null was reported as "CRAWL4AI_URL not
+        // configured" on containers where it plainly was. PDFs now take the
+        // ordinary cascade, so tier 1 serves them and a v1 backend degrades
+        // through to the message in tiers/raw.ts (vikunja#682).
+
+        // Content-type fast path — a JSON/XML/YAML/CSV/plain-text endpoint has
+        // nothing for a headless browser to render. Firecrawl returns empty
+        // markdown for these and runTier books it as `empty_result`, which is how
+        // tier1 accumulated a 0/27 lifetime record made up almost entirely of API
+        // and CDN hosts while Firecrawl itself was healthy.
+        //
+        // Probe is fail-open: an unreachable, HEAD-refusing or HTML-serving host
+        // returns null and drops through to the normal cascade unchanged. Only a
+        // positive identification diverts.
+        const structuredKind = await probeStructuredContent(url);
+        if (structuredKind) {
+          console.error(
+            `[searxng-mcp] fetch content_type fast_path url=${logUrl} kind=${structuredKind}`,
+          );
+          const structured = await runTier(
+            "tier3_rawfetch",
+            url,
+            () => rawFetch(url, storeChars, tuning),
+            onChallenge,
+          );
+          if (structured) {
+            const persisted = {
+              title: structured.title,
+              url: structured.url,
+              text: structured.text,
+            };
+            await cacheSet(
+              key,
+              JSON.stringify(persisted),
+              FETCH_CACHE_TTL_SECONDS,
+            );
+            completed({
+              url,
+              tier_served: "tier3_rawfetch",
+              title: structured.title,
+              text_len: structured.text.length,
+              latency_ms: Date.now() - t_total,
+            });
+            return { ...persisted, text: persisted.text.slice(0, maxChars) };
+          }
+          // Raw fetch failed on something the probe said was structured — fall
+          // through rather than throwing. The cascade may still have an answer
+          // (wayback, a tier that handles the error differently), and a probe
+          // must not be able to turn a fetchable URL into a hard failure.
+          console.error(
+            `[searxng-mcp] fetch content_type fast_path miss url=${logUrl} — falling through to cascade`,
+          );
+        }
+
+        // Run tier cascade and side-channel raw-HTML metadata fetch in parallel.
+        const metadataHtmlPromise = fetchRawHtmlForMetadata(url);
+
+        // Why each tier produced nothing, in cascade order. Seeded with the
+        // tiers that never ran, so "skipped because unconfigured" and "ran and
+        // came back empty" stay distinguishable in the final error rather than
+        // collapsing into one unexplained failure (vikunja#682).
+        const outcomes: TierOutcome[] = [
+          ...(githubFailure ? [githubFailure] : []),
+          ...skipDecisions.map((d) => ({
+            tier: TIER_NAME[d.tier],
+            reason: `skipped (${d.reason})`,
+          })),
+        ];
+        const noteOutcome = (o: TierOutcome) => outcomes.push(o);
+
+        let fetched: TierResult | null = null;
+        for (const tier of activeTiers) {
+          fetched = await runTier(
+            tier.name,
+            url,
+            () => tier.fetch(url, storeChars, preferFit, tuning),
+            onChallenge,
+            noteOutcome,
+          );
+          if (fetched) {
+            tierServed = tier.name;
+            if (tier.slot !== "tier1") {
+              console.error(
+                `[searxng-mcp] fetch ${tier.slot} hit url=${logUrl}`,
+              );
+            }
+            break;
+          }
+          console.error(`[searxng-mcp] fetch ${tier.slot} miss url=${logUrl}`);
+        }
+
+        // Challenge solver. Detection-gated: it fires only when a tier actually
+        // reported `challenge_detected` for this URL, never on an unchallenged
+        // one. searxng-mcp already runs two browser-rendering tiers ahead of
+        // this, so solving unconditionally would re-render pages that were never
+        // challenged, at seconds of latency and hundreds of MB of RAM each.
+        //
+        // Dispatched directly here rather than as a cascade tier, following
+        // tier4_wayback and github: it takes a TierName but no TierSlot, which
+        // keeps it out of computeTierSkips and the tier_skip domain config.
+        // Placed after tier3 because a browser must not run ahead of a cheap raw
+        // fetch that frequently succeeds, and before tier4_wayback because a
+        // solved live page beats an archived one.
+        //
+        // A solver miss is expected and is not an error — it falls through to
+        // wayback exactly as a tier miss does.
+        if (!fetched && challengeDetected) {
+          console.error(
+            `[searxng-mcp] fetch solver_byparr attempt url=${logUrl}`,
+          );
+          fetched = await runTier(
+            "solver_byparr",
+            url,
+            () => solverFetch(url, storeChars, tuning),
+            undefined,
+            noteOutcome,
+          );
+          if (fetched) {
+            tierServed = "solver_byparr";
+            console.error(
+              `[searxng-mcp] fetch solver_byparr hit url=${logUrl}`,
+            );
+          } else {
+            console.error(
+              `[searxng-mcp] fetch solver_byparr miss url=${logUrl}`,
+            );
+          }
+        }
+
+        if (!fetched && WAYBACK_ENABLED) {
+          console.error(
+            `[searxng-mcp] fetch tier4_wayback attempt url=${logUrl}`,
+          );
+          fetched = await runTier(
+            "tier4_wayback",
+            url,
+            () => waybackFetch(url, storeChars),
+            undefined,
+            noteOutcome,
+          );
+          if (fetched) {
+            tierServed = "tier4_wayback";
+            console.error(
+              `[searxng-mcp] fetch tier4_wayback hit url=${logUrl}`,
+            );
+          } else {
+            console.error(
+              `[searxng-mcp] fetch tier4_wayback miss url=${logUrl}`,
+            );
+          }
+        }
+
+        if (!fetched) {
+          // Name every tier and why. "All fetch tiers failed" on its own is the
+          // shape of error that hid #682 for weeks: it is equally consistent with
+          // nothing being configured, with a backend being down, and with the
+          // page genuinely having no content, so it sends the reader nowhere.
+          const detail = outcomes
+            .map((o) => `${o.tier}: ${o.reason}`)
+            .join("; ");
+          const message = detail
+            ? `All fetch tiers failed — ${detail}`
+            : "All fetch tiers failed";
+          events.error({
+            stage: "fetch",
+            url,
+            error_type: "all_tiers_failed",
+            message,
+          });
+          throw new Error(message);
+        }
+
+        const tierFetched: TierResult = fetched;
+        const metadataHtml = await metadataHtmlPromise;
+        recordMetadataFetchAttempt(url, metadataHtml !== null).catch(() => {});
+        result = await withSpan("post_extract", { "fetch.url": url }, () =>
+          applyPostExtract(tierFetched, url, metadataHtml, storeChars),
         );
-        if (fetched) {
-          tierServed = "solver_byparr";
-          console.error(`[searxng-mcp] fetch solver_byparr hit url=${url}`);
-        } else {
-          console.error(`[searxng-mcp] fetch solver_byparr miss url=${url}`);
+      } catch (err) {
+        // A fallback that failed for another reason (robots, a blocked
+        // domain) must still say why the fast path missed. "All fetch tiers
+        // failed" already lists it, seeded below.
+        if (
+          githubFailure &&
+          err instanceof Error &&
+          !err.message.startsWith("All fetch tiers failed")
+        ) {
+          err.message = `GitHub fast path failed (${githubFailure.reason}), then: ${err.message}`;
         }
+        throw err;
       }
-
-      if (!fetched && WAYBACK_ENABLED) {
-        console.error(`[searxng-mcp] fetch tier4_wayback attempt url=${url}`);
-        fetched = await runTier(
-          "tier4_wayback",
-          url,
-          () => waybackFetch(url, storeChars),
-          undefined,
-          noteOutcome,
-        );
-        if (fetched) {
-          tierServed = "tier4_wayback";
-          console.error(`[searxng-mcp] fetch tier4_wayback hit url=${url}`);
-        } else {
-          console.error(`[searxng-mcp] fetch tier4_wayback miss url=${url}`);
-        }
-      }
-
-      if (!fetched) {
-        // Name every tier and why. "All fetch tiers failed" on its own is the
-        // shape of error that hid #682 for weeks: it is equally consistent with
-        // nothing being configured, with a backend being down, and with the
-        // page genuinely having no content, so it sends the reader nowhere.
-        const detail = outcomes.map((o) => `${o.tier}: ${o.reason}`).join("; ");
-        const message = detail
-          ? `All fetch tiers failed — ${detail}`
-          : "All fetch tiers failed";
-        events.error({
-          stage: "fetch",
-          url,
-          error_type: "all_tiers_failed",
-          message,
-        });
-        throw new Error(message);
-      }
-
-      const tierFetched: TierResult = fetched;
-      const metadataHtml = await metadataHtmlPromise;
-      recordMetadataFetchAttempt(url, metadataHtml !== null).catch(() => {});
-      result = await withSpan("post_extract", { "fetch.url": url }, () =>
-        applyPostExtract(tierFetched, url, metadataHtml, storeChars),
-      );
     }
 
     // Strip html from cache payload — only the resolved title/text/url are persisted
@@ -707,7 +809,7 @@ export async function fetchPage(
     };
     await cacheSet(key, JSON.stringify(persisted), FETCH_CACHE_TTL_SECONDS);
 
-    events.fetchCompleted({
+    completed({
       url,
       tier_served: tierServed,
       title: result.title,

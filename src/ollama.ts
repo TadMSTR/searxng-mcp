@@ -10,6 +10,7 @@ import {
   OLLAMA_URL,
 } from "./config.js";
 import { logThrottled } from "./log.js";
+import { incCounter } from "./observability.js";
 import type {
   Citation,
   OllamaChatResponse,
@@ -155,12 +156,28 @@ export async function expandQuery(query: string): Promise<string[]> {
       .slice(0, 3);
   } catch (err) {
     // Timeout, connection refused, or any error — fall back to original query.
+    // The log line is throttled; the counter counts every occurrence.
+    incCounter("degrade", {
+      component: "ollama_expand",
+      reason: isTimeout(err) ? "timeout" : "error",
+    });
     logThrottled(
       "degrade:ollama-expand",
       `query expansion unavailable — searching the original query only: ${err instanceof Error ? err.message : String(err)}`,
     );
     return [];
   }
+}
+
+/**
+ * AbortSignal.timeout() rejects with a DOMException named TimeoutError.
+ * Some runtimes surface an abort as AbortError; treat both as the budget.
+ */
+function isTimeout(err: unknown): boolean {
+  return (
+    err instanceof Error &&
+    (err.name === "TimeoutError" || err.name === "AbortError")
+  );
 }
 
 /**
@@ -171,12 +188,7 @@ export async function expandQuery(query: string): Promise<string[]> {
  */
 function classifySummaryFailure(err: unknown): SummaryFailure {
   const detail = err instanceof Error ? err.message : String(err);
-  // AbortSignal.timeout() rejects with a DOMException named TimeoutError.
-  // Some runtimes surface an abort as AbortError; treat both as the budget.
-  if (
-    err instanceof Error &&
-    (err.name === "TimeoutError" || err.name === "AbortError")
-  ) {
+  if (isTimeout(err)) {
     return { kind: "timeout", detail };
   }
   if (err instanceof SyntaxError) {
@@ -298,6 +310,10 @@ export async function summarizePages(
       // Parsed cleanly, but there is no synthesis in it. Nothing failed; the
       // model declined or answered off-schema. Still a fallback, still must
       // announce itself.
+      incCounter("degrade", {
+        component: "ollama_summarize",
+        reason: "empty_response",
+      });
       logThrottled(
         "degrade:ollama-summarize",
         "summarization unavailable - the model returned no summary field; returning raw pages instead of a synthesis",
@@ -314,11 +330,17 @@ export async function summarizePages(
     return { summary, citations };
   } catch (err) {
     // Ollama unavailable, timeout, or parse error — signal fallback to raw pages.
+    const failure = classifySummaryFailure(err);
+    incCounter("degrade", {
+      component: "ollama_summarize",
+      // timeout | parse_error | llm_error: a fixed set (classifySummaryFailure).
+      reason: failure.kind.replace("-", "_"),
+    });
     logThrottled(
       "degrade:ollama-summarize",
       `summarization unavailable — returning raw pages instead of a synthesis: ${err instanceof Error ? err.message : String(err)}`,
     );
-    return { summary: "", citations: [], failure: classifySummaryFailure(err) };
+    return { summary: "", citations: [], failure };
   }
 }
 

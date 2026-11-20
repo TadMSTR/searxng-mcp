@@ -347,9 +347,9 @@ Tracing, metrics, and event publishing are entirely opt-in — with none of the 
 
 **OpenTelemetry (traces + metrics)** — set `OTEL_EXPORTER_OTLP_ENDPOINT` to your collector's HTTP endpoint and the server emits:
 
-- Spans (per request): `tool.<name>` → `expand_query`? → `searxng_request` → `rerank` → `fetch` (×N) → `tier1_firecrawl` | `tier2_crawl4ai` | `tier3_rawfetch` | `solver_byparr` → `post_extract`; plus `summarize_llm` for `search_and_summarize`.
-- Counters: `searxng_search_total{profile, expand}`, `searxng_fetch_total{tier, outcome}`, `searxng_cache_total{namespace, outcome}`, `searxng_errors_total{stage, error_type}`.
-- Histograms: `searxng_search_duration_seconds{profile}`, `searxng_fetch_duration_seconds{tier, outcome}`.
+- Spans (per request): `tool.<name>` → `expand_query`? → `searxng_request` → `rerank` → `fetch` (×N) → a fast-path span (`github`, `llms_full_txt`, `kiwix`, `hister`, `youtube`, `reddit`) or `tier1_firecrawl` | `tier2_crawl4ai` | `tier3_rawfetch` | `solver_byparr` | `tier4_wayback` → `post_extract`; plus `summarize_llm` for `search_and_summarize`.
+- Metrics, and the span attributes that answer usage questions (`fetch.tier_served`, `fetch.cache_hit`, `rerank.*`, `search.result_count`): one table, in the [README](../README.md#observability), with the label rule. Every instrument name is a closed set in `src/observability.ts`, and `tests/observability-otlp-real.test.ts` checks that each one reaches the exporter.
+- Over the HTTP transport, a request's W3C `traceparent` becomes the parent of `tool.*`. With `SEARXNG_MCP_AUTH_TOKEN` set it is read only after the bearer check; with no token set there is no bearer check, so any caller's header is accepted. The caller's sampled flag decides whether the server records spans for the request (an unsampled `-00` parent exports none); metrics, events and logs are unaffected. Baggage is ignored.
 
 Standard OTEL env vars apply (`OTEL_SERVICE_NAME` defaults to `searxng-mcp`).
 

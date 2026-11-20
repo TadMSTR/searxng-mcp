@@ -263,6 +263,58 @@ flowchart TD
 Read the rest — tier semantics, the domain capability database, adblocking, every fast path,
 resilience and observability — in [`docs/architecture.md`](docs/architecture.md).
 
+## Observability
+
+Off by default. Set `OTEL_EXPORTER_OTLP_ENDPOINT` to an OTLP/HTTP collector and the server
+exports traces and the metrics below; set `NATS_URL` for structured events. Setup, the span
+tree, resource attributes and the NATS subjects are in
+[`docs/architecture.md`](docs/architecture.md#observability-opt-in).
+
+**Metrics**
+
+| Metric | Type | Labels | Answers |
+|---|---|---|---|
+| `searxng_search_total` | counter | `tool`, `profile`, `expand` | How often each search tool is used, and with which profile |
+| `searxng_search_duration_seconds` | histogram (s) | `tool`, `profile`, `outcome` | Search latency per tool, successes and failures kept apart |
+| `searxng_fetch_total` | counter | `tier`, `outcome`, `reason`? | Which fetch tier hits, misses, errors or is skipped (`reason` on skips and Hister misses) |
+| `searxng_fetch_duration_seconds` | histogram (s) | `tier`, `outcome` | Latency per fetch tier |
+| `searxng_cache_total` | counter | `namespace`, `outcome` | Cache hit rate, and how often the cache is unavailable |
+| `searxng_errors_total` | counter | `tool`, `stage`, `error_type` | Tool failures. `stage` is `search`, `fetch` (a page inside `search_and_fetch`/`search_and_summarize`), `crawl` (every strategy failed) or `tool` (any other throw) |
+| `searxng_degrade_total` | counter | `component`, `reason` | How often a fallback fires: `reranker` (`unavailable`, `min_score_ignored`), `ollama_expand` (`timeout`, `error`), `ollama_summarize` (`timeout`, `llm_error`, `parse_error`, `empty_response`) |
+| `searxng_crawl_total` | counter | `strategy`, `outcome` | Each `crawl_site` strategy attempt: Firecrawl, map, sitemap, BFS, and the fallbacks between them |
+| `searxng_crawl_duration_seconds` | histogram (s) | `strategy`, `cached` | `crawl_site` latency per completed call (an all-strategies-failed `error` manifest included), by the strategy that answered. A call that throws (an SSRF refusal, an invalid URL) is not in it; it is in `searxng_errors_total{tool="crawl_site"}` |
+| `searxng_rerank_top_score` | histogram (0–1, tenths) | — | Best reranker relevance per reranked search: the input for choosing a `min_score` |
+
+The `domain-db-maintenance` job exports its own gauges (`searxng_domains_tracked`,
+`searxng_domains_failing`, `searxng_domain_tier_success_ratio{tier}`).
+
+**Span attributes for usage questions** (in addition to `mcp.tool`, `fetch.url`, the parsed
+arguments and the per-tier spans)
+
+| Span | Attribute | Meaning |
+|---|---|---|
+| `fetch`, `tool.fetch_url` | `fetch.tier_served` | What served the page: a tier name, a fast path (`github`, `llms_full_txt`, …) or `cache` |
+| `fetch`, `tool.fetch_url` | `fetch.cache_hit` | `true` when the fetch cache answered (no tier span exists then) |
+| `rerank` | `rerank.applied` | `false` when the reranker is switched off or fell back to SearXNG order |
+| `rerank` | `rerank.returned`, `rerank.dropped_by_min_score` | Results kept, and how many `min_score` removed |
+| `rerank` | `rerank.top_score`, `rerank.min_returned_score` | Raw relevance (0–1) of the best candidate and of the weakest result returned |
+| `tool.search`, `tool.search_and_*` | `search.result_count` | Results returned, after reranking and `min_score` |
+
+**Label rule:** no URL, domain, query text or error message is ever a metric label. Each
+distinct value is a new time series, and those values are unbounded and can carry what a
+caller typed. They appear on spans only. `error_type` is an error class name, or `unknown`.
+
+**Trace context:** over the HTTP transport, a request may send a W3C `traceparent` (and
+`tracestate`), and the caller's span becomes the parent of `tool.*`, so both sides of a call
+share one trace. With `SEARXNG_MCP_AUTH_TOKEN` set, the headers are read only from a request
+that passed the bearer check; a rejected request never reaches them. With no token set, the
+transport has no bearer check, and any caller that can reach it can choose the trace its
+requests are recorded under. The caller's sampled flag is honoured as well: a `traceparent`
+ending `-00` (not sampled) means the server records no spans for that request, so it sends
+nothing to the trace backend. Metrics, NATS events and log lines still record the call. A client
+that samples a fraction of its traces therefore gets server spans for the same fraction. Baggage
+is ignored, and a missing or malformed header starts a new trace.
+
 ## Documentation
 
 | | |

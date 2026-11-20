@@ -11,6 +11,7 @@ import {
   HTTP_SESSION_IDLE_TIMEOUT_MS,
 } from "./config.js";
 import { logError, logThrottled, logWarn } from "./log.js";
+import { withRemoteParent } from "./observability.js";
 
 const SESSION_SWEEP_INTERVAL_MS = 60_000;
 
@@ -202,7 +203,13 @@ export function createHttpRequestListener(
           touch(sid);
           inFlight.set(sid, (inFlight.get(sid) ?? 0) + 1);
           try {
-            await existing.handleRequest(req, res);
+            // After the bearer gate: with SEARXNG_MCP_AUTH_TOKEN set, an
+            // unauthenticated caller cannot choose the trace its request is
+            // recorded under. With no token there is no gate, and any caller
+            // can (README "Trace context").
+            await withRemoteParent(req.headers, () =>
+              existing.handleRequest(req, res),
+            );
           } finally {
             inFlight.set(sid, Math.max(0, (inFlight.get(sid) ?? 1) - 1));
             // Re-stamp on completion so idle is measured from last-activity-END,
@@ -284,7 +291,9 @@ export function createHttpRequestListener(
 
         const server = createServer();
         await server.connect(transport);
-        await transport.handleRequest(req, res, parsedBody);
+        await withRemoteParent(req.headers, () =>
+          transport.handleRequest(req, res, parsedBody),
+        );
       } catch (err: unknown) {
         logError(
           `HTTP transport error: ${err instanceof Error ? (err.stack ?? err.message) : String(err)}`,

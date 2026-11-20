@@ -51,6 +51,8 @@ Direct `raw.githubusercontent.com` and `api.github.com` URLs previously matched 
 
 Any other `github.com` page — issues, pull requests, commits, wiki, owner pages, release asset downloads — is not handled here and takes the normal fetch cascade, which renders the page. Until 3.30.x those were claimed by the fast path too and answered with the **repo-root README**, with nothing in the result to say it was not the requested page.
 
+When the fast path fails, the error names the cause (for example `GitHub fast-path fetch failed: GitHub raw fetch error: 404 Not Found`). A **file** URL (a `blob` URL or a `raw.githubusercontent.com` URL) then falls back to the normal fetch cascade instead of failing: a rate limit or upstream error need not lose the page. The fallback sends the URL to every cascade tier, including the archive.org Wayback lookup when `WAYBACK_ENABLED` is set. If the cascade fails too, its error lists the GitHub reason first. Repo root, directory, release and `api.github.com` URLs still fail outright, because the cascade can't render them as the page they name. A 404 there usually means the path really is gone: a file moved, or a tag renamed.
+
 Unauthenticated requests are rate-limited to 60/hour. Set `GITHUB_TOKEN` to raise this to 5,000/hour. The token is sent only for URLs shaped like the fast path's repository endpoints (README, contents, releases, ref lookup, raw files); any other api.github.com URL is fetched without it. The match is by URL shape, not by who built the URL, so a caller-supplied URL of those shapes gets the token for any repository it can read, including private-repo files and draft releases. Scope the token accordingly (see [configuration](configuration.md)).
 
 ---

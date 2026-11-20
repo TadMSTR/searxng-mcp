@@ -295,6 +295,7 @@ describe("handleFetchUrl", () => {
       undefined,
       false,
       undefined,
+      expect.any(Function),
     );
     expect(result.content[0].text).toContain("Title: Fetched Page");
     expect(result.content[0].text).toContain("URL: https://example.com/1");
@@ -309,6 +310,7 @@ describe("handleFetchUrl", () => {
       undefined,
       false,
       undefined,
+      expect.any(Function),
     );
   });
 
@@ -324,6 +326,7 @@ describe("handleFetchUrl", () => {
       undefined,
       false,
       { targetSelector: "article", waitForSelector: ".loaded" },
+      expect.any(Function),
     );
   });
 
