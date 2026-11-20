@@ -56,6 +56,15 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  // @opentelemetry/api keeps its global providers on globalThis, which
+  // vi.resetModules does not reset. Without this, a second test's
+  // getMeter()/getTracer() resolves to the first test's shut-down SDK and
+  // exports nothing. (Production initialises once per process.)
+  const api = await import("@opentelemetry/api");
+  api.metrics.disable();
+  api.trace.disable();
+  api.propagation.disable();
+  api.context.disable();
   errSpy.mockRestore();
   vi.unstubAllEnvs();
   await new Promise<void>((r) => server.close(() => r()));
@@ -91,7 +100,7 @@ describe("initObservability against the real SDK", () => {
     const traces = posts("/v1/traces");
     expect(traces.length).toBeGreaterThanOrEqual(1);
     const traceBody = Buffer.concat(traces.map((t) => t.body));
-    // Protobuf carries strings as raw UTF-8, so the names are findable bytes.
+    // The HTTP exporters post OTLP/JSON, so the names are findable bytes.
     expect(traceBody.includes("otlp_real_sdk_probe")).toBe(true);
     expect(traceBody.includes("searxng-mcp-otlp-test")).toBe(true);
     // Default resource detectors since sdk-node 0.300 (CHANGELOG 4.0.0).
@@ -104,6 +113,74 @@ describe("initObservability against the real SDK", () => {
         "searxng_search_total",
       ),
     ).toBe(true);
+  }, 10_000);
+});
+
+describe("every instrument observability.ts creates is exported", () => {
+  // incCounter("crawl") compiled and exported nothing for several releases:
+  // the instrument maps were Record<string, …>, and crawl was never created.
+  // The expected list comes from the same constants the module creates from,
+  // so a new instrument is covered here without anyone remembering to add it.
+  it("one recording per instrument reaches /v1/metrics under its name", async () => {
+    const obs = await import("../src/observability.js");
+    await obs.initObservability();
+
+    const counterKeys = Object.keys(
+      obs.COUNTER_NAMES,
+    ) as (keyof typeof obs.COUNTER_NAMES)[];
+    const histogramKeys = Object.keys(
+      obs.HISTOGRAM_DEFS,
+    ) as (keyof typeof obs.HISTOGRAM_DEFS)[];
+    for (const k of counterKeys) obs.incCounter(k, { probe: "yes" });
+    for (const k of histogramKeys) obs.recordHistogram(k, 0.25);
+
+    await obs.shutdownObservability();
+
+    const body = Buffer.concat(posts("/v1/metrics").map((m) => m.body));
+    const expected = [
+      ...counterKeys.map((k) => obs.COUNTER_NAMES[k]),
+      ...histogramKeys.map((k) => obs.HISTOGRAM_DEFS[k].name),
+    ];
+    // The 4.1.0 additions, named so a refactor that drops one from the
+    // constants can't pass by shrinking the expected list too.
+    expect(expected).toEqual(
+      expect.arrayContaining([
+        "searxng_crawl_total",
+        "searxng_crawl_duration_seconds",
+        "searxng_degrade_total",
+        "searxng_rerank_top_score",
+        "searxng_errors_total",
+      ]),
+    );
+    const missing = expected.filter((name) => !body.includes(name));
+    expect(missing).toEqual([]);
+  }, 10_000);
+
+  it("the rerank score histogram uses the 0..1 tenths buckets", async () => {
+    const obs = await import("../src/observability.js");
+    await obs.initObservability();
+    obs.recordHistogram("rerank_top_score", 0.42);
+    await obs.shutdownObservability();
+
+    // The HTTP exporter posts OTLP/JSON. Find the histogram's data point and
+    // read its bounds; the SDK default buckets (0, 5, 10, 25, …) would fail.
+    type Metric = {
+      name: string;
+      histogram?: { dataPoints: { explicitBounds: number[] }[] };
+    };
+    const metricsOut: Metric[] = posts("/v1/metrics").flatMap((m) =>
+      (
+        JSON.parse(m.body.toString("utf8")) as {
+          resourceMetrics: { scopeMetrics: { metrics: Metric[] }[] }[];
+        }
+      ).resourceMetrics.flatMap((rm) =>
+        rm.scopeMetrics.flatMap((sm) => sm.metrics),
+      ),
+    );
+    const score = metricsOut.find((m) => m.name === "searxng_rerank_top_score");
+    expect(score?.histogram?.dataPoints[0]?.explicitBounds).toEqual(
+      obs.RERANK_SCORE_BUCKETS,
+    );
   }, 10_000);
 });
 

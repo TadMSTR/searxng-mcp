@@ -202,6 +202,13 @@ async function runTier<T extends TierResult | null>(
   }
 }
 
+/** What served a fetchPage call, as reported to its `onServed` callback. */
+export interface FetchServed {
+  /** Same value as the `fetch.completed` event's `tier_served`. */
+  tierServed: string;
+  cacheHit: boolean;
+}
+
 // The fetch cache stores content at this size and callers slice it down on
 // read. A caller requesting more than the historical 8000-char default (e.g. a
 // large fetch_url max_tokens budget) raises the store size up to this hard
@@ -215,9 +222,27 @@ export async function fetchPage(
   domainProfile?: string,
   preferFit = false,
   tuning?: FetchTuning,
+  onServed?: (served: FetchServed) => void,
 ): Promise<{ title: string; url: string; text: string }> {
-  return withSpan("fetch", { "fetch.url": url }, async () => {
+  return withSpan("fetch", { "fetch.url": url }, async (span) => {
     const t_total = Date.now();
+    // Every successful return goes through here: the NATS event, the span
+    // attributes and the caller's callback all get the same tier_served.
+    // `tier_served` was on the event only until 4.1.0, so traces could not say
+    // which tier served a page, and a cache hit (no tier span at all) left no
+    // trace marker.
+    const completed = (p: Parameters<typeof events.fetchCompleted>[0]) => {
+      events.fetchCompleted(p);
+      const served = {
+        tierServed: p.tier_served,
+        cacheHit: p.tier_served === "cache",
+      };
+      span?.setAttributes({
+        "fetch.tier_served": served.tierServed,
+        "fetch.cache_hit": served.cacheHit,
+      });
+      onServed?.(served);
+    };
     assertPublicUrl(url);
     // How much to actually fetch/store: at least the default (keeps cache
     // entries reusable), at most the hard ceiling, but never less than what the
@@ -250,7 +275,7 @@ export async function fetchPage(
           url: string;
           text: string;
         };
-        events.fetchCompleted({
+        completed({
           url,
           tier_served: "cache",
           title: r.title,
@@ -316,7 +341,7 @@ export async function fetchPage(
           text: llms.text,
         };
         await cacheSet(key, JSON.stringify(persisted), FETCH_CACHE_TTL_SECONDS);
-        events.fetchCompleted({
+        completed({
           url,
           tier_served: "llms_full_txt",
           title: llms.title,
@@ -345,7 +370,7 @@ export async function fetchPage(
             JSON.stringify(persisted),
             FETCH_CACHE_TTL_SECONDS,
           );
-          events.fetchCompleted({
+          completed({
             url,
             tier_served: "kiwix",
             title: kiwix.title,
@@ -394,7 +419,7 @@ export async function fetchPage(
           text: hister.text,
         };
         await cacheSet(key, JSON.stringify(persisted), FETCH_CACHE_TTL_SECONDS);
-        events.fetchCompleted({
+        completed({
           url,
           tier_served: "hister",
           title: hister.title,
@@ -426,7 +451,7 @@ export async function fetchPage(
             JSON.stringify(persisted),
             FETCH_CACHE_TTL_SECONDS,
           );
-          events.fetchCompleted({
+          completed({
             url,
             tier_served: "youtube",
             title: yt.title,
@@ -453,7 +478,7 @@ export async function fetchPage(
             JSON.stringify(persisted),
             FETCH_CACHE_TTL_SECONDS,
           );
-          events.fetchCompleted({
+          completed({
             url,
             tier_served: "reddit",
             title: rd.title,
@@ -574,7 +599,7 @@ export async function fetchPage(
             JSON.stringify(persisted),
             FETCH_CACHE_TTL_SECONDS,
           );
-          events.fetchCompleted({
+          completed({
             url,
             tier_served: "tier3_rawfetch",
             title: structured.title,
@@ -707,7 +732,7 @@ export async function fetchPage(
     };
     await cacheSet(key, JSON.stringify(persisted), FETCH_CACHE_TTL_SECONDS);
 
-    events.fetchCompleted({
+    completed({
       url,
       tier_served: tierServed,
       title: result.title,

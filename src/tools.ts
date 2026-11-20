@@ -20,7 +20,13 @@ import { events } from "./events.js";
 import { fetchPage } from "./fetch.js";
 import type { FetchTuning } from "./fetch-utils.js";
 import { redactUrlCredentialsInText } from "./log.js";
-import { incCounter, recordHistogram, withSpan } from "./observability.js";
+import { errorTypeLabel } from "./metric-labels.js";
+import {
+  incCounter,
+  recordHistogram,
+  type ToolSpan,
+  withSpan,
+} from "./observability.js";
 import {
   formatSummaryFallbackNotice,
   formatSummaryResult,
@@ -41,15 +47,58 @@ import {
  * `attrs` carries PARSED argument values onto the tool span, so a check can
  * read what the server understood (a boolean sent as the string "false", for
  * example) from traces rather than from the caller's request.
+ *
+ * A throw from `fn` is counted once in `searxng_errors_total{tool, stage:
+ * "tool"}` here, for every tool. The search tools pass `countErrors: false`
+ * because withSearchEvents already counts their failures with
+ * `stage: "search"`; counting here too would book each one twice.
  */
 async function instrumentTool<T>(
   toolName: string,
-  fn: () => Promise<T>,
+  fn: (span: ToolSpan | undefined) => Promise<T>,
   attrs: Record<string, string | number | boolean> = {},
+  { countErrors = true }: { countErrors?: boolean } = {},
 ): Promise<T> {
   return withRequestId(newRequestId(), () =>
-    withSpan(`tool.${toolName}`, { "mcp.tool": toolName, ...attrs }, fn),
+    withSpan(
+      `tool.${toolName}`,
+      { "mcp.tool": toolName, ...attrs },
+      async (span) => {
+        try {
+          return await fn(span);
+        } catch (err) {
+          if (countErrors) {
+            incCounter("errors", {
+              tool: toolName,
+              stage: "tool",
+              error_type: errorTypeLabel(err),
+            });
+          }
+          throw err;
+        }
+      },
+    ),
   );
+}
+
+/**
+ * Count the per-page fetch failures of search_and_fetch/search_and_summarize.
+ * Those tools use Promise.allSettled, so a failed page is reported in the
+ * output and never reaches instrumentTool's catch.
+ */
+function countFetchStageErrors(
+  toolName: SearchToolName,
+  settled: PromiseSettledResult<unknown>[],
+): void {
+  for (const r of settled) {
+    if (r.status === "rejected") {
+      incCounter("errors", {
+        tool: toolName,
+        stage: "fetch",
+        error_type: errorTypeLabel(r.reason),
+      });
+    }
+  }
 }
 
 interface SearchEventCtx {
@@ -115,7 +164,7 @@ async function withSearchEvents<T>(
     incCounter("errors", {
       tool: toolName,
       stage: "search",
-      error_type: err instanceof Error ? err.name : "unknown",
+      error_type: errorTypeLabel(err),
     });
     // Scrubbed: this is a generic sink reached by errors from any source, and
     // it fires even on the single-instance path where the failover-specific
@@ -151,11 +200,22 @@ async function instrumentSearchTool<T>(
     rerankApplied: boolean;
   }>,
 ): Promise<T> {
-  return instrumentTool(toolName, () => withSearchEvents(toolName, ctx, fn), {
-    // The value searxSearch acts on: an omitted `expand` takes the server
-    // default, so `=== true` reported false whenever the default expanded.
-    "search.expand": ctx.expand ?? EXPAND_QUERIES_DEFAULT,
-  });
+  return instrumentTool(
+    toolName,
+    (span) =>
+      withSearchEvents(toolName, ctx, async () => {
+        const out = await fn();
+        // After reranking and min_score: what the caller actually got.
+        span?.setAttributes({ "search.result_count": out.ranked.length });
+        return out;
+      }),
+    {
+      // The value searxSearch acts on: an omitted `expand` takes the server
+      // default, so `=== true` reported false whenever the default expanded.
+      "search.expand": ctx.expand ?? EXPAND_QUERIES_DEFAULT,
+    },
+    { countErrors: false },
+  );
 }
 
 const DomainProfileSchema = optionalArg(z.string().optional()).describe(
@@ -369,6 +429,7 @@ export async function handleSearchAndFetch({
       const fetched = await Promise.allSettled(
         toFetch.map((r) => fetchPage(r.url, maxCharsPerPage, domain_profile)),
       );
+      countFetchStageErrors("search_and_fetch", fetched);
       const fetchedSections = fetched
         .map((result, i) => {
           if (result.status === "fulfilled") {
@@ -468,6 +529,7 @@ export async function handleSearchAndSummarize({
       const fetched = await Promise.allSettled(
         toFetch.map((r) => fetchPage(r.url, 4000, domain_profile, true)),
       );
+      countFetchStageErrors("search_and_summarize", fetched);
       const successfulPages = fetched
         .map((r) => (r.status === "fulfilled" ? r.value : null))
         .filter(
@@ -539,7 +601,7 @@ export async function handleFetchUrl({
   target_selector?: string;
   wait_for_selector?: string;
 }) {
-  return instrumentTool("fetch_url", async () => {
+  return instrumentTool("fetch_url", async (span) => {
     const maxChars = max_tokens
       ? max_tokens * CHARS_PER_TOKEN
       : FETCH_DEFAULT_CHARS;
@@ -554,7 +616,14 @@ export async function handleFetchUrl({
       title,
       url: fetchedUrl,
       text,
-    } = await fetchPage(url, maxChars, domain_profile, false, tuning);
+    } = await fetchPage(url, maxChars, domain_profile, false, tuning, (s) =>
+      // Copied onto the tool span so a query on tool.fetch_url alone can
+      // answer "which tier served it" without joining the child span.
+      span?.setAttributes({
+        "fetch.tier_served": s.tierServed,
+        "fetch.cache_hit": s.cacheHit,
+      }),
+    );
     const output = [`Title: ${title}`, `URL: ${fetchedUrl}`, "", text].join(
       "\n",
     );
@@ -595,10 +664,24 @@ export async function handleCrawlSite({
         latency_ms,
         cached: manifest.cached,
       });
-      incCounter("crawl", {
-        outcome: manifest.strategy === "error" ? "error" : "success",
+      // One recording per call, labelled with the strategy that answered.
+      // `searxng_crawl_total` is not incremented here: crawl.ts counts each
+      // strategy attempt in it, and a per-call increment under a different
+      // label set would double every crawl in a sum. The histogram's count is
+      // the per-call total.
+      recordHistogram("crawl", latency_ms / 1000, {
+        strategy: manifest.strategy,
+        cached: manifest.cached,
       });
-      recordHistogram("tool.crawl_site", latency_ms / 1000, {});
+      if (manifest.strategy === "error") {
+        // crawlSite reports "every strategy failed" as a manifest, not a
+        // throw, so instrumentTool's catch never sees it.
+        incCounter("errors", {
+          tool: "crawl_site",
+          stage: "crawl",
+          error_type: "all_strategies_failed",
+        });
+      }
       return {
         content: [
           { type: "text" as const, text: formatCrawlManifest(manifest) },

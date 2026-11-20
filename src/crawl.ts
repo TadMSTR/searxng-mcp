@@ -20,7 +20,7 @@ import {
   firecrawlSupportsMap,
 } from "./firecrawl-api.js";
 import { logWarn } from "./log.js";
-import { incCounter, recordHistogram } from "./observability.js";
+import { incCounter } from "./observability.js";
 import { checkRobots, getRobotsForOrigin } from "./robots.js";
 import { assertResolvedPublic } from "./ssrf-guard.js";
 import { warnDependencyFailure } from "./transport-failure.js";
@@ -723,7 +723,6 @@ export async function crawlSite(
   // the hostname here to reject a DNS-rebind to an internal address before the
   // URL is handed off (parity with fetchPage's tier1/tier2 guard).
   await assertResolvedPublic(url);
-  const t0 = Date.now();
   // An explicit include_path — including "/" for the whole site — replaces the
   // default scope rather than narrowing it.
   const scope = includePath === undefined ? defaultCrawlScope(url) : undefined;
@@ -881,9 +880,6 @@ export async function crawlSite(
     JSON.stringify(manifest),
     CRAWL_MANIFEST_TTL_SECONDS,
   );
-
-  const durationSeconds = (Date.now() - t0) / 1000;
-  recordHistogram("crawl", durationSeconds, { strategy: manifest.strategy });
 
   return manifest;
 }
