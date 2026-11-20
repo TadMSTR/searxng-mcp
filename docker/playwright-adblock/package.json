@@ -5,7 +5,7 @@
   "description": "EasyList/EasyPrivacy layer for Firecrawl v2's playwright-service",
   "type": "commonjs",
   "dependencies": {
-    "@ghostery/adblocker-playwright": "^2.3.0",
+    "@ghostery/adblocker-playwright": "^2.20.3",
     "cross-fetch": "^4.1.0"
   },
   "engines": {

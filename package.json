@@ -59,7 +59,7 @@
   },
   "devDependencies": {
     "@biomejs/biome": "^2.6.8",
-    "@ghostery/adblocker": "2.18.2",
+    "@ghostery/adblocker": "2.20.3",
     "@types/jsdom": "^30.0.0",
     "@types/node": "^22.20.5",
     "@vitest/coverage-v8": "^5.1.0",
