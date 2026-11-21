@@ -193,13 +193,21 @@ in `domains.json` — the shipped file lists `platform.claude.com`, `docs.openai
 extracts each page's section from the document's `url:` front-matter (lowercase, YAML-style).
 The container image carries this file at `/app/domains.json` since 4.0.0.
 
+If the GitHub fast path fails on a file URL (`github.com/…/blob/…` or
+`raw.githubusercontent.com`), the URL falls back to the rest of the cascade below, including
+Wayback when `WAYBACK_ENABLED=true`. If the cascade also fails, its error lists the GitHub reason
+first. Repo root, tree, release and `api.github.com` URLs do not fall back. They fail with the
+cause named in the error (for example `GitHub fast-path fetch failed: GitHub API error: 404 Not Found`). Details in
+[docs/tools.md](docs/tools.md#github-urls).
+
 ```mermaid
 flowchart TD
     entry["fetchPage(url)"]
     cache{"Valkey cache hit?"}
     cached["→ return cached { title, url, text }"]
     github{"GitHub fast-path URL?\nraw · api · repo root · blob · tree · releases\n(repo root / releases with a ?query → cascade)"}
-    gh_fetch["GitHub API / raw.githubusercontent.com / api.github.com\n→ return"]
+    gh_fetch["GitHub API / raw.githubusercontent.com / api.github.com\nsuccess → return"]
+    gh_err["Error naming the GitHub cause"]
     llms{"llms.txt domain?"}
     llms_fetch["Probe /llms-full.txt\nextract matching section\n→ return"]
     kiwix{"Kiwix host?\nKIWIX_URL set"}
@@ -220,6 +228,8 @@ flowchart TD
     cache -->|miss| github
     github -->|yes| gh_fetch
     github -->|no| llms
+    gh_fetch -->|"fails: blob / raw file URL"| llms
+    gh_fetch -->|"fails: repo root / tree / releases / api"| gh_err
     llms -->|yes| llms_fetch
     llms -->|no| kiwix
     kiwix -->|yes| kiwix_fetch
@@ -244,6 +254,7 @@ flowchart TD
     style cached fill:#ffffff,stroke:#333333,color:#000000
     style github fill:#dae8fc,stroke:#6c8ebf,color:#000000
     style gh_fetch fill:#dae8fc,stroke:#6c8ebf,color:#000000
+    style gh_err fill:#f8cecc,stroke:#a03030,color:#000000
     style llms fill:#dae8fc,stroke:#6c8ebf,color:#000000
     style llms_fetch fill:#dae8fc,stroke:#6c8ebf,color:#000000
     style kiwix fill:#fff9c4,stroke:#b8860b,color:#000000
